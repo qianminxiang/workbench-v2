@@ -16,7 +16,11 @@
  * 一旦将来出 macOS/Linux 包，把对应平台换成真实 URL+签名即可。
  *
  * 用法：CI 里在产出安装包后运行。
- *   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD 走环境变量。
+ *   WB_SIGNATURE（签名内容）/ WB_UPDATE_BASE（下载基址）走环境变量。
+ *   注意：本脚本**不需要** TAURI_SIGNING_PRIVATE_KEY——签名内容已由上游步骤
+ *   从 .sig 产物读入 WB_SIGNATURE，私钥本身不参与清单生成。此前版本错误地
+ *   把私钥变量列入必查项，导致 CI 里（该变量只在构建步作用域内）清单被
+ *   跳过、发布步拿不到 latest.json 而红（run 40488769032 实测暴露）。
  * 安装包下载 URL 由环境变量 WB_UPDATE_BASE 提供，例如：
  *   WB_UPDATE_BASE=https://github.com/qianminxiang/workbench-v2/releases/download/v2.1.0
  */
@@ -25,7 +29,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const base = process.env.WB_UPDATE_BASE || "";
-const key = process.env.TAURI_SIGNING_PRIVATE_KEY;
 const sig = (process.env.WB_SIGNATURE || "").trim();
 
 // 2026-10-27 修复：此前缺少 WB_UPDATE_BASE 就直接 exit(1)，而 CI 里从未设置它，
@@ -34,7 +37,6 @@ const sig = (process.env.WB_SIGNATURE || "").trim();
 // 而不是让整条构建失败。真正需要清单的发布流程请设置下面三个环境变量。
 const missing = [];
 if (!base) missing.push("WB_UPDATE_BASE");
-if (!key)  missing.push("TAURI_SIGNING_PRIVATE_KEY");
 if (!sig)  missing.push("WB_SIGNATURE");
 if (missing.length) {
   console.warn(`[make-manifest] 跳过更新清单生成：缺少 ${missing.join(" / ")}`);
