@@ -74,6 +74,11 @@ jobs:
       # 后者由签署人负责，门禁判不了。
       - name: 图标质量门禁（两条腿：掩膜交并比 + 逐档摘要白名单）
         shell: pwsh
+        env:
+          # Windows 上 Python stdout 默认 cp1252，脚本正文是中文，第一行 print 就会
+          # UnicodeEncodeError 退出（run 40595558619 实测）。Linux 默认 UTF-8 所以本地
+          # 跑不出来 —— 这个洞只在真机上露。显式指定，别依赖 runner 的 locale。
+          PYTHONIOENCODING: utf-8
         run: |
           python scripts/check-icon.py apps/desktop/src-tauri/icons/icon.ico apps/desktop/src-tauri/icons/icon.png
           if ($LASTEXITCODE -ne 0) { throw "图标质量门禁未通过（见上方逐项 FAIL）" }
