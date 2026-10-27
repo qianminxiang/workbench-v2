@@ -499,11 +499,27 @@ pub fn run() {
         // 二次启动（任务栏最小化态 / 托盘态 / 快速双击竞态）把已有主窗口置前，
         // 随后本次进程立即退出，用户视角始终只有一个窗口。
         .plugin(tauri_plugin_single_instance::init(|app: &tauri::AppHandle, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize(); // 覆盖任务栏最小化态
-                let _ = w.show(); // 覆盖托盘隐藏态（B7：点关闭仅 hide 不退出）
-                let _ = w.set_focus();
-            }
+            // 回调在首实例主线程的 WM_COPYDATA（跨进程同步 sent 消息）WndProc 里执行，
+            // 二次启动方正阻塞等它返回才退出。若在这里内联做窗口操作——尤其托盘
+            // 隐藏态下 show() 会触发 WebView2 controller 的跨线程握手，在 sent 消息
+            // 上下文内无法完成——主线程一旦挂起，二次启动方的 SendMessageTimeoutW
+            // 在消息已被接收方开始处理后便不再受超时保护，双方一起挂死
+            // （run 40597450315 场景2：25s 后双进程常驻、启动方不退出）。
+            // 故回调内零窗口操作、立即返回（二次启动方随之 exit(0)，无论后续恢复
+            // 动作成败——防多开红线由「先退出」结构性保证）；恢复窗口的动作经
+            // 事件循环以队列任务执行，与托盘菜单同一上下文，安全。
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                let handle2 = handle.clone();
+                // 从非主线程调用 run_on_main_thread → event proxy 异步入队（fire-and-forget）
+                let _ = handle.run_on_main_thread(move || {
+                    if let Some(w) = handle2.get_webview_window("main") {
+                        let _ = w.show(); // 托盘隐藏态（B7：点×仅 hide 不退出）：先恢复可见
+                        let _ = w.unminimize(); // 任务栏最小化态
+                        let _ = w.set_focus(); // 最后置前
+                    }
+                });
+            });
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
