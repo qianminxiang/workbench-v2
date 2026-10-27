@@ -55,6 +55,30 @@ jobs:
           $p = Join-Path "apps/desktop/src-tauri" $ico
           if (-not (Test-Path $p)) { throw "配置文件声明的图标不存在：$p" }
           Write-Host "图标就绪：$p"
+      # ── 图标质量门禁（两条腿，缺一不可）──────────────────────────────
+      # 为什么是两条腿，各自拦什么，都有实测反例撑着：
+      #
+      #  腿一 · 黄金掩膜交并比 IoU >= 99.5%（逐档，alpha>=128 的二值掩膜）
+      #    拦：侵蚀（1/2/3px）、内部挖孔、纯色方块顶替、近似满幅替换。
+      #    实测：纯色方块 62%（零图形像素）不透明率 62.26% 正常落在带内，
+      #          率带放行，靠 IoU 90.4~96.4% 拦下。
+      #
+      #  腿二 · 逐档摘要白名单（7 个 md5，按「解码后 RGBA」算，不按 PNG 文件 md5）
+      #    拦：水印写进不透明区（alpha 不动）、灰度化、RGB 反相、单像素改色。
+      #    实测：这三类 IoU 全部 100.0%——IoU 只回答「哪些像素还活着」，
+      #          不回答「活着的像素里画了什么」。
+      #    反面：按 PNG 文件 md5 算会把纯重编码误红（zlib level 1 重编码后
+      #          143,237 B -> 213,380 B、像素一个没动），故必须按解码后 RGBA。
+      #
+      # 本步只证明「和签署的那张一模一样」，不证明「那张图本身没有水印」——
+      # 后者由签署人负责，门禁判不了。
+      - name: 图标质量门禁（两条腿：掩膜交并比 + 逐档摘要白名单）
+        shell: pwsh
+        run: |
+          python scripts/check-icon.py apps/desktop/src-tauri/icons/icon.ico apps/desktop/src-tauri/icons/icon.png
+          if ($LASTEXITCODE -ne 0) { throw "图标质量门禁未通过（见上方逐项 FAIL）" }
+          Write-Host "图标质量门禁通过：7 档与已签署基线逐像素一致（掩膜交并比 >=99.5% + 逐档摘要相等）、托盘图标与 ICO 256 档字节一致"
+          Write-Host "注：本条只证明「和签署的那张一模一样」，不证明「那张图本身没有水印」——后者由签署人负责。"
       - name: 构建 NSIS 安装包（签名私钥走环境变量，绝不进仓库）
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
