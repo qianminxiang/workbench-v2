@@ -41,7 +41,18 @@
     ],
     "resources": [],
     "shortDescription": "本地优先的个人工作台（安徽大区公关）",
-    "publisher": "安徽大区小团队"
+    "publisher": "安徽大区小团队",
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "languages": [
+          "SimpChinese",
+          "English"
+        ]
+      }
+    }
   },
   "plugins": {}
 }
