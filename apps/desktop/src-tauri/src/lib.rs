@@ -507,7 +507,9 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::init())
+        // tauri-plugin-updater 2.14 起移除了 init()，改用 Builder；
+        // pubkey/endpoints 从 tauri.conf.json plugins.updater 读取。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             import_excel,
             list_items,
