@@ -79,19 +79,24 @@ jobs:
           $ver = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
           $nsisDir = "target/release/bundle/nsis"
           $msiDir  = "target/release/bundle/msi"
-          Get-ChildItem "$nsisDir/*.exe" -File | Where-Object { $_.Name -notlike "workbench_*" } | ForEach-Object {
-            $src  = $_.FullName
-            $dst  = Join-Path $nsisDir "workbench_$($ver)_x64-setup.exe"
-            $oldSig = "$src.sig"
-            Move-Item -Force $src $dst
-            if (Test-Path $oldSig) { Move-Item -Force $oldSig "$dst.sig"; Write-Host "签名：→ $(Split-Path -Leaf "$dst.sig")" }
-            Write-Host "NSIS：$($_.Name) → $(Split-Path -Leaf $dst)"
+          # 按**扩展名**建立 ASCII 目标名映射，而不是逐个匹配 .exe/.msi：
+          # 首轮修补只改了 .exe/.msi，漏掉 MSI 的 .msi.sig，被下面的一致性复核
+          # 当场拦下（实测：仍存在非 ASCII 文件名：个人工作台_2.1.0_x64_zh-CN.msi.sig）。
+          # 凡是浏览器会剥离的字符，一个都不能留——签名文件同样要上传到 Release。
+          $map = [ordered]@{
+            ".exe.sig" = "workbench_${ver}_x64-setup.exe.sig"
+            ".exe"     = "workbench_${ver}_x64-setup.exe"
+            ".msi.sig" = "workbench_${ver}_x64_zh-CN.msi.sig"
+            ".msi"     = "workbench_${ver}_x64_zh-CN.msi"
           }
-          Get-ChildItem "$msiDir/*.msi" -File | Where-Object { $_.Name -notlike "workbench_*" } | ForEach-Object {
-            $src = $_.FullName
-            $dst = Join-Path $msiDir "workbench_$($ver)_x64_zh-CN.msi"
-            Move-Item -Force $src $dst
-            Write-Host "MSI：$($_.Name) → $(Split-Path -Leaf $dst)"
+          foreach ($f in @(Get-ChildItem $nsisDir, $msiDir -File)) {
+            if ($f.Name -notmatch '[^\x20-\x7E]') { continue }
+            $hit = $null
+            foreach ($ext in $map.Keys) { if ($f.Name -like "*$ext") { $hit = $ext } }
+            if (-not $hit) { throw "未预期的产物类型：$($f.Name)（请在上面的映射里补齐）" }
+            $dst = Join-Path $f.DirectoryName $map[$hit]
+            Move-Item -Force $f.FullName $dst
+            Write-Host "改名：$($f.Name) → $($map[$hit])"
           }
           # 复核：改名后目录内不允许再残留非 ASCII 文件名，否则清单仍会指向 404
           $bad = @(Get-ChildItem $nsisDir, $msiDir -File | Where-Object { $_.Name -match '[^\x20-\x7E]' })
