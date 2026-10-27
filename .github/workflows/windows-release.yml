@@ -110,7 +110,13 @@ jobs:
         shell: pwsh
         run: |
           $cfg = Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
-          $base = "https://github.com/qianminxiang/workbench-v2/releases/download/v$($cfg.version)"
+          # 资产位必须用**本次 Release 的 tag 名**，不能用 tauri.conf.json 的 version 拼：
+          # 两者语义不同（tag 可带补丁后缀如 v2.1.1，version 是产品版本），
+          # 用 version 拼会在 tag≠v<version> 时把清单指向一个不存在的 Release。
+          # 手动触发（workflow_dispatch 无 tag）时退回 v<version>，只作占位不发 Release。
+          $tagName = $env:GITHUB_REF_NAME
+          if ([string]::IsNullOrWhiteSpace($tagName) -or $tagName -notlike "v*") { $tagName = "v$($cfg.version)" }
+          $base = "https://github.com/qianminxiang/workbench-v2/releases/download/$tagName"
           $sigFile = Get-ChildItem "target/release/bundle/nsis/*.exe.sig" -ErrorAction SilentlyContinue |
             Sort-Object Name | Select-Object -First 1
           if (-not $sigFile) { throw "未找到 NSIS 签名产物（target/release/bundle/nsis/*.exe.sig）——createUpdaterArtifacts 未生效？" }
