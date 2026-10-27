@@ -469,10 +469,11 @@ jobs:
           # 签名内容仍取本地 .sig 产物（与上传的二进制一一对应）
           $sigFile = Get-ChildItem "target/release/bundle/nsis/workbench_*-setup.exe.sig" -File | Select-Object -First 1
           $sigBody = (Get-Content $sigFile.FullName | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
-          # 2026-10-28 修复：GITHUB_ENV 只对"后续 step"生效，同一 step 内读不到。
-          # 下面两行必须直接赋 $env:；用 Out-File $env:GITHUB_ENV 会让
-          # make-manifest.cjs:61 拿不到 WB_RELEASE_ASSET，发布步必红。
-          $env:WB_SIGNATURE = $sigBody
+          # ⚠️ 必须直接赋 $env:（进程环境），不能只写 GITHUB_ENV：
+          # GITHUB_ENV 的写入只对**后续步骤**生效，本步骤内启动的 node 读不到。
+          # run 40508417582 即败于此：make-manifest 报「缺少 WB_RELEASE_ASSET」，
+          # 而变量其实已经算出来了，只是写错了地方。
+          $env:WB_SIGNATURE     = $sigBody
           $env:WB_RELEASE_ASSET = $exe[0]
 
           Write-Host "③ 按真实资产名重新生成清单"
