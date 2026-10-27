@@ -389,7 +389,13 @@ function bindView() {
         const r = await invoke("verify_update", {
           manifestText, currentVersion: "2.0.0", platform: "windows-x86_64",
         });
-        alert(r.decision === "available" ? `发现新版本 ${r.latest}` : "已是最新版本。");
+        // 拒绝（验签失败/清单损坏）必须把原因亮给用户——拒绝绝不等于「已是最新」。
+        const msg = r.decision === "available"
+          ? `发现新版本 ${r.latest}`
+          : r.decision === "refused"
+            ? `更新被拒绝（保持当前版本）：${r.notes ?? "原因未提供"}`
+            : "已是最新版本。";
+        alert(msg);
       } catch (e) { alert("更新检查失败（离线时保留当前版本）：" + e); }
     });
     $("#theme")?.addEventListener("change", (e) => {

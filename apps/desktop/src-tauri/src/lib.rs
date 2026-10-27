@@ -17,7 +17,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use wb_core::{
-    brief::{self, BriefVerdict, DeliveryState, QuietHours},
+    brief::{self, DeliveryState, QuietHours},
     rules::{self, Ruleset},
     CivilDate, Store, StoreError,
 };
@@ -202,6 +202,12 @@ fn verify_update(
         wb_core::UpdateDecision::UpToDate => ("up_to_date", current_version, None),
         wb_core::UpdateDecision::Available { version, notes, .. } => {
             ("available", version.to_string(), notes)
+        }
+        // wb-core 的铁律：任何拒绝（验签失败 / 清单损坏 / 平台缺失）都必须终止流程，
+        // 绝不「忽略签名继续装」。所以拒绝必须作为 decision=refused 显式冒泡给前端，
+        // 连原因一起带上——不能静默掉，更不能伪装成「已是最新」。
+        wb_core::UpdateDecision::Refused { reason } => {
+            ("refused", current_version, Some(reason))
         }
     };
     Ok(serde_json::json!({
@@ -634,7 +640,7 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("个人工作台")
                 .menu(&menu)
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "open" => {
                         if let Some(w) = app.get_webview_window("main") {
