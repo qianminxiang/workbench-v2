@@ -7,6 +7,14 @@
 //! - 9:00 本地时钟调度：不依赖网络与服务端，断网照常；迟到补发；
 //! - **状态必须落盘**：`last_brief.json` 是「完全退出后下次启动补推」的唯一依据，
 //!   缺了写入方，补推链路就是空壳（2026-10-27 复核指出的洞）。
+//!
+//! v2.1 变更（用户 2026-10-27 版本目标）：
+//! - 单机化：移除多端同步的传输层调用与设置页入口（server/ 与 wb-core sync
+//!   纯函数保留不删，可逆决策）；
+//! - B7① 修复：today()/now_minutes() 加本地时区偏移——now_iso() 本体不动
+//!   （sync LWW 依赖 UTC 单调串），换算走 wb-core::local_time 纯函数；
+//! - 免打扰可编辑 + 语音播报上线（F10）：偏好持久化走 sync_state 键值表；
+//! - 桌面自动更新：tauri-plugin-updater 打通「检查 → 下载 → 验签 → 重启安装」。
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -16,9 +24,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 use wb_core::{
     brief::{self, DeliveryState, QuietHours},
     rules::{self, Ruleset},
+    sync_client,
     CivilDate, Store, StoreError,
 };
 
@@ -31,18 +41,59 @@ fn err_string(e: StoreError) -> String {
     e.to_string()
 }
 
-/// 今天（本机时区的自然日）。时间只由系统层提供（架构 §4.11-4）。
-fn today() -> CivilDate {
+/// 本机时区相对 UTC 的偏移分钟（东八区 = +480）。时间只由系统层提供（架构 §4.11-4）。
+fn local_offset_minutes() -> i32 {
+    chrono::Local::now().offset().local_minus_utc()
+}
+
+/// 现在（本地时区）：自然日 + 当日分钟数，一次性换算保持二者一致。
+/// B7① 修复点：此前直接截 `now_iso()` 的 UTC 字段，UTC+8 下晨报 9:00 要拖到
+/// 本地 17:00 才成立、免打扰窗口整体错 8 小时。换算是 wb-core 纯函数，
+/// UTC+8 语义在 test-core 里被穷举单测（local_time.rs 八条回归）。
+fn now_local() -> (CivilDate, u32) {
     let iso = wb_core::store::now_iso_pub();
-    CivilDate::parse(&iso[..10]).unwrap_or_else(|| CivilDate::new(2026, 1, 1))
+    wb_core::local_time::civil_and_minutes(&iso, local_offset_minutes())
+        .unwrap_or_else(|| (CivilDate::new(2026, 1, 1), 0))
+}
+
+/// 今天（本机时区的自然日）。
+fn today() -> CivilDate {
+    now_local().0
 }
 
 /// 当日分钟数（本地时间）。**从系统时钟取，不在领域层各读一遍**。
 fn now_minutes() -> u32 {
-    let iso = wb_core::store::now_iso_pub();
-    let hh: u32 = iso[11..13].parse().unwrap_or(0);
-    let mm: u32 = iso[14..16].parse().unwrap_or(0);
-    hh * 60 + mm
+    now_local().1
+}
+
+// ─────────────────────── 单机偏好（免打扰 / 语音播报） ───────────────────────
+
+/// 读偏好：免打扰窗口 + 语音播报开关。持久化通道是 sync_state 键值表——
+/// 多端模式已放弃，但键值表仍是官方通道（老 workbench.db 无需迁移、可逆）。
+/// 免打扰缺省回 22:00–8:00（与首版默认一致）；语音开关**缺省开启**
+/// （2026-10-27 统筹者裁决：PRD 的「默认关闭」是功能未实现时代的口径）。
+fn load_prefs(conn: &rusqlite::Connection) -> (QuietHours, bool) {
+    let hhmm = |key: &str| {
+        sync_client::state_get(conn, key).and_then(|v| wb_core::local_time::parse_hhmm(&v))
+    };
+    let quiet = QuietHours {
+        start_minute: hhmm(sync_client::keys::QUIET_START).unwrap_or(22 * 60),
+        end_minute: hhmm(sync_client::keys::QUIET_END).unwrap_or(8 * 60),
+    };
+    let voice_enabled = sync_client::state_get(conn, sync_client::keys::VOICE_ENABLED)
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    (quiet, voice_enabled)
+}
+
+/// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
+fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
+    let (quiet, voice_enabled) = load_prefs(conn);
+    serde_json::json!({
+        "quiet_start": wb_core::local_time::fmt_hhmm(quiet.start_minute),
+        "quiet_end": wb_core::local_time::fmt_hhmm(quiet.end_minute),
+        "voice_enabled": voice_enabled,
+    })
 }
 
 fn open_store(paths: &AppPaths) -> Result<Store, String> {
@@ -189,33 +240,89 @@ fn backup_now(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String
     }))
 }
 
-/// 更新检查（架构 §8）：静态 JSON 清单 + Ed25519 验签，零鉴权。
+/// 单机偏好读取（设置页回填 + 主界面开关初始化）。
 #[tauri::command]
-fn verify_update(
-    manifest_text: String,
-    current_version: String,
-    platform: String,
+fn get_prefs(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    Ok(prefs_json(store.conn()))
+}
+
+/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关。
+/// 时间格式在本地就拦下，不合法不落库；成功返回回读后的规范值。
+#[tauri::command]
+fn set_prefs(
+    paths: State<Mutex<AppPaths>>,
+    quiet_start: String,
+    quiet_end: String,
+    voice_enabled: bool,
 ) -> Result<serde_json::Value, String> {
-    let manifest = wb_core::update::parse_manifest(&manifest_text).map_err(|e| e.to_string())?;
-    let decision = wb_core::update::decide(&current_version, &manifest, &platform);
-    let (decision_name, latest, notes) = match decision {
-        wb_core::UpdateDecision::UpToDate => ("up_to_date", current_version, None),
-        wb_core::UpdateDecision::Available { version, notes, .. } => {
-            ("available", version.to_string(), notes)
-        }
-        // wb-core 的铁律：任何拒绝（验签失败 / 清单损坏 / 平台缺失）都必须终止流程，
-        // 绝不「忽略签名继续装」。所以拒绝必须作为 decision=refused 显式冒泡给前端，
-        // 连原因一起带上——不能静默掉，更不能伪装成「已是最新」。
-        wb_core::UpdateDecision::Refused { reason } => {
-            ("refused", current_version, Some(reason))
-        }
+    let s = wb_core::local_time::parse_hhmm(&quiet_start)
+        .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
+    let e = wb_core::local_time::parse_hhmm(&quiet_end)
+        .ok_or_else(|| "免打扰结束时间格式不合法（应为 HH:MM）".to_string())?;
+    {
+        let paths = paths.lock().unwrap();
+        let store = open_store(&paths)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::QUIET_START,
+            &wb_core::local_time::fmt_hhmm(s),
+        )
+        .map_err(err_string)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::QUIET_END,
+            &wb_core::local_time::fmt_hhmm(e),
+        )
+        .map_err(err_string)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::VOICE_ENABLED,
+            if voice_enabled { "1" } else { "0" },
+        )
+        .map_err(err_string)?;
+        Ok(prefs_json(store.conn()))
+    }
+}
+
+// ─────────────────────── 桌面自动更新（v2.1 目标①） ───────────────────────
+
+/// 检查更新：拉 latest.json → 比版本 → **只报结果不落盘**。
+/// 端点与公钥在 tauri.conf.json 的 plugins.updater 里配置；清单损坏 / 签名
+/// 体系不可用 / 网络失败都如实冒泡给前端展示，绝不静默当「已是最新」。
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(u)) => Ok(serde_json::json!({
+            "available": true,
+            "version": u.version,
+            "notes": u.body,
+            // OffsetDateTime 直接 to_string（serde 特性未必然开启，不赌）
+            "date": u.date.map(|d| d.to_string()),
+        })),
+        Ok(None) => Ok(serde_json::json!({ "available": false })),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 用户确认后执行「下载 → 验签 → 重启安装」。
+/// 验签在 tauri-plugin-updater 内部：minisign/Ed25519 公钥不匹配直接报错，
+/// 绝不安装未验签的包（与 wb-core::update 同一铁律）。
+/// 构建期依赖 TAURI_SIGNING_PRIVATE_KEY 签出 .sig 文件，私钥不入仓库。
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(u) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Err("没有可安装的更新（清单已变更或已是最新）".into());
     };
-    Ok(serde_json::json!({
-        "decision": decision_name,
-        "latest": latest,
-        "notes": notes,
-        "pub_date": manifest.pub_date,
-    }))
+    // 两个回调留给进度条用（二期），空闭包即「静默下载」。
+    // Windows：安装器接管后本函数会直接退出进程，restart_after_install
+    // 默认 true（安装完成后自动重启进新版）；走到下方 restart() 的只有
+    // macOS / Linux——tauri-plugin-updater 2.14 download_and_install 文档口径。
+    u.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart();
 }
 
 // ─────────────────────── F1：手工快速录入 ───────────────────────
@@ -258,216 +365,6 @@ fn add_item(
     }))
 }
 
-// ─────────────────────── P0-1：同步命令 ───────────────────────
-
-/// HTTP 传输实现。壳里只放「怎么连」，合并与编排全在 wb-core::sync_client。
-struct HttpTransport;
-
-fn http_err(e: ureq::Error) -> wb_core::sync_client::TransportError {
-    use wb_core::sync_client::TransportError;
-    // ureq 2.x 的错误只有两个变体：Status(u16, Response) 与 Transport(Transport)。
-    match e {
-        ureq::Error::Status(code, _) => match code {
-            401 | 403 => TransportError::Unauthorized,
-            409 => TransportError::SchemaMismatch { server: 0 },
-            _ => TransportError::Rejected(format!("HTTP {code}")),
-        },
-        ureq::Error::Transport(t) => {
-            use ureq::ErrorKind;
-            match t.kind() {
-                // 连不上、DNS 失败、超时、TLS 握手失败——一律按「离线」处理，
-                // 这样壳会走 push 队列等恢复，而不是把用户踢成「需重新登录」。
-                ErrorKind::Dns
-                | ErrorKind::ConnectionFailed
-                | ErrorKind::Io
-                | ErrorKind::TooManyRedirects
-                | ErrorKind::ProxyConnect => TransportError::Unreachable(t.to_string()),
-                _ => TransportError::Rejected(t.to_string()),
-            }
-        }
-    }
-}
-
-impl wb_core::sync_client::Transport for HttpTransport {
-    fn login(
-        &self,
-        base_url: &str,
-        username: &str,
-        password: &str,
-        device_id: &str,
-    ) -> Result<wb_core::sync_client::LoginResult, wb_core::sync_client::TransportError> {
-        use wb_core::sync_client::TransportError;
-        let url = format!("{base_url}/login");
-        let resp = ureq::post(&url)
-            .timeout(Duration::from_secs(15))
-            .send_json(serde_json::json!({
-                "username": username,
-                "password": password,
-                "device_id": device_id,
-            }))
-            .map_err(http_err)?;
-        let v: serde_json::Value = resp.into_json().map_err(|e| TransportError::Rejected(e.to_string()))?;
-        if v["ok"].as_bool() != Some(true) {
-            return Err(TransportError::Unauthorized);
-        }
-        Ok(wb_core::sync_client::LoginResult {
-            member_id: v["member_id"].as_str().unwrap_or_default().to_string(),
-            role: v["role"].as_str().unwrap_or("member").to_string(),
-            token: v["token"].as_str().unwrap_or_default().to_string(),
-            device_id: v["device_id"].as_str().unwrap_or(device_id).to_string(),
-            active_tokens: v["active_tokens"].as_i64().unwrap_or(1),
-        })
-    }
-
-    fn push(
-        &self,
-        base_url: &str,
-        token: &str,
-        rows: &[wb_core::sync::SyncRow],
-    ) -> Result<wb_core::sync_client::PushResult, wb_core::sync_client::TransportError> {
-        use wb_core::sync_client::TransportError;
-        let url = format!("{base_url}/sync/push");
-        let resp = ureq::post(&url)
-            .timeout(Duration::from_secs(30))
-            .set("authorization", &format!("Bearer {token}"))
-            .send_json(serde_json::json!({
-                "schema_version": wb_core::sync_client::CLIENT_SCHEMA_VERSION,
-                "rows": rows,
-            }))
-            .map_err(http_err)?;
-        let v: serde_json::Value = resp.into_json().map_err(|e| TransportError::Rejected(e.to_string()))?;
-        let applied = v["applied"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .map(|x| wb_core::sync_client::AppliedRow {
-                        table: x["table"].as_str().unwrap_or("work_item").to_string(),
-                        id: x["id"].as_str().unwrap_or_default().to_string(),
-                        decision: x["decision"].as_str().unwrap_or("inserted").to_string(),
-                        seq: x["seq"].as_i64().unwrap_or(0),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(wb_core::sync_client::PushResult {
-            applied,
-            conflicts: v["conflicts"].as_array().map(|a| a.len()).unwrap_or(0) as i64,
-            server_seq: v["seq"].as_i64().unwrap_or(0),
-        })
-    }
-
-    fn pull(
-        &self,
-        base_url: &str,
-        token: &str,
-        cursor: i64,
-        limit: usize,
-    ) -> Result<wb_core::sync_client::PullResult, wb_core::sync_client::TransportError> {
-        use wb_core::sync_client::TransportError;
-        let url = format!("{base_url}/sync/pull?cursor={cursor}&limit={limit}");
-        let resp = ureq::get(&url)
-            .timeout(Duration::from_secs(30))
-            .set("authorization", &format!("Bearer {token}"))
-            .call()
-            .map_err(http_err)?;
-        let v: serde_json::Value = resp.into_json().map_err(|e| TransportError::Rejected(e.to_string()))?;
-        let rows = v["rows"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| serde_json::from_value::<wb_core::sync::SyncRow>(x.clone()).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(wb_core::sync_client::PullResult {
-            rows,
-            cursor: v["cursor"].as_i64().unwrap_or(cursor),
-            has_more: v["has_more"].as_bool().unwrap_or(false),
-            server_seq: v["server_seq"].as_i64().unwrap_or(0),
-        })
-    }
-
-    fn logout(&self, base_url: &str, token: &str) -> Result<(), wb_core::sync_client::TransportError> {
-        let url = format!("{base_url}/logout");
-        let _ = ureq::post(&url)
-            .timeout(Duration::from_secs(10))
-            .set("authorization", &format!("Bearer {token}"))
-            .send_json(serde_json::json!({}));
-        Ok(())
-    }
-}
-
-/// 设置页读取同步状态（不含令牌本身）。
-#[tauri::command]
-fn sync_status(paths: State<Mutex<AppPaths>>) -> Result<wb_core::sync_client::SyncStatus, String> {
-    let paths = paths.lock().unwrap();
-    let store = open_store(&paths)?;
-    Ok(wb_core::sync_client::read_status(store.conn()))
-}
-
-/// 保存同步地址（只校验 + 保存，不发起登录）。
-#[tauri::command]
-fn set_sync_url(paths: State<Mutex<AppPaths>>, base_url: String) -> Result<String, String> {
-    let paths = paths.lock().unwrap();
-    let store = open_store(&paths)?;
-    let url = wb_core::sync_client::validate_base_url(&base_url)?;
-    wb_core::sync_client::state_set(store.conn(), wb_core::sync_client::keys::BASE_URL, &url)
-        .map_err(err_string)?;
-    Ok(url)
-}
-
-/// 登录（地址 + 口令 → 设备令牌）。地址不合法在本地就拦下，不发出请求。
-#[tauri::command]
-fn sync_login(
-    paths: State<Mutex<AppPaths>>,
-    base_url: String,
-    username: String,
-    password: String,
-) -> Result<wb_core::sync_client::SyncStatus, String> {
-    let paths = paths.lock().unwrap();
-    let store = open_store(&paths)?;
-    let seed = paths.data_dir.to_string_lossy().to_string();
-    wb_core::sync_client::login(
-        store.conn(),
-        &base_url,
-        &username,
-        &password,
-        &seed,
-        &HttpTransport,
-        &wb_core::store::now_iso_pub(),
-    )
-    .map_err(|e| e.describe())
-}
-
-#[tauri::command]
-fn sync_logout(paths: State<Mutex<AppPaths>>) -> Result<wb_core::sync_client::SyncStatus, String> {
-    let paths = paths.lock().unwrap();
-    let store = open_store(&paths)?;
-    wb_core::sync_client::logout(store.conn(), &HttpTransport).map_err(|e| e.describe())
-}
-
-/// 立即同步：推空队列 → 拉增量。断网时改动留在队列，恢复后（下次调用或定时）自动补推。
-#[tauri::command]
-fn sync_now(paths: State<Mutex<AppPaths>>) -> Result<wb_core::sync_client::SyncReport, String> {
-    let paths = paths.lock().unwrap();
-    let store = open_store(&paths)?;
-    let base_url = wb_core::sync_client::state_get(store.conn(), wb_core::sync_client::keys::BASE_URL)
-        .unwrap_or_default();
-    let token = wb_core::sync_client::state_get(store.conn(), wb_core::sync_client::keys::TOKEN)
-        .unwrap_or_default();
-    if base_url.is_empty() || token.is_empty() {
-        return Err("尚未配置同步地址或未登录".into());
-    }
-    Ok(wb_core::sync_client::sync_once(
-        store.conn(),
-        &base_url,
-        &token,
-        &HttpTransport,
-        wb_core::store::now_ms_pub(),
-        &wb_core::store::now_iso_pub(),
-    ))
-}
-
 // ─────────────────────── B7：晨报送达（落盘 + 补推） ───────────────────────
 
 /// 待送达晨报状态文件（简单 JSON，落在数据目录）。
@@ -488,6 +385,8 @@ fn write_delivery(paths: &AppPaths, state: &DeliveryState) {
 }
 
 /// 生成晨报并投递系统通知；成功返回通知正文，失败返回 Err 说明。
+/// v2.1：免打扰窗口从 sync_state 读真实偏好（不再写死 default）；
+/// 输出附带播报文本与语音开关，前端据此决定是否朗读（免打扰只通知不播报）。
 fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json::Value, String> {
     let store = open_store(paths)?;
     let year = today().year;
@@ -497,8 +396,10 @@ fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json:
     let decision = brief::decide(t, now_minutes(), &read_delivery(paths));
     let b = rules::morning_brief(t, &items, &rs);
     let (title, body) = brief::notification_text(&b, &decision);
+    let (quiet, voice_enabled) = load_prefs(store.conn());
+    let speech = brief::speech_text(&b, &decision);
 
-    let suppressed = brief::notification_suppressed(now_minutes(), QuietHours::default());
+    let suppressed = brief::notification_suppressed(now_minutes(), quiet);
     if !suppressed {
         app.notification()
             .builder()
@@ -520,6 +421,8 @@ fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json:
         "verdict": format!("{:?}", decision.verdict),
         "late_minutes": decision.late_minutes,
         "notification_suppressed": suppressed,
+        "voice_enabled": voice_enabled,
+        "speech": speech,
         "title": title,
         "body": body,
         "counts": {
@@ -592,8 +495,19 @@ fn spawn_brief_scheduler(app: tauri::AppHandle) {
 /// 应用启动入口。
 pub fn run() {
     tauri::Builder::default()
+        // v2.1 防多开：必须注册在插件链最前面——
+        // 二次启动（任务栏最小化态 / 托盘态 / 快速双击竞态）把已有主窗口置前，
+        // 随后本次进程立即退出，用户视角始终只有一个窗口。
+        .plugin(tauri_plugin_single_instance::init(|app: &tauri::AppHandle, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize(); // 覆盖任务栏最小化态
+                let _ = w.show(); // 覆盖托盘隐藏态（B7：点关闭仅 hide 不退出）
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::init())
         .invoke_handler(tauri::generate_handler![
             import_excel,
             list_items,
@@ -601,13 +515,11 @@ pub fn run() {
             alerts,
             units,
             backup_now,
-            verify_update,
             add_item,
-            sync_status,
-            set_sync_url,
-            sync_login,
-            sync_logout,
-            sync_now,
+            get_prefs,
+            set_prefs,
+            check_update,
+            install_update,
             get_pending_brief,
             trigger_brief,
             mark_brief_delivered,
@@ -632,9 +544,8 @@ pub fn run() {
             let handle = app.handle().clone();
             let open_item = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
             let brief_item = MenuItem::with_id(app, "brief", "查看晨报", true, None::<&str>)?;
-            let sync_item = MenuItem::with_id(app, "sync", "立即同步", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_item, &brief_item, &sync_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&open_item, &brief_item, &quit_item])?;
 
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -653,11 +564,6 @@ pub fn run() {
                             let _ = w.show();
                             let _ = w.set_focus();
                             let _ = w.emit("brief-open", ());
-                        }
-                    }
-                    "sync" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.emit("sync-requested", ());
                         }
                     }
                     "quit" => app.exit(0),
@@ -680,7 +586,21 @@ pub fn run() {
             }
 
             // 9:00 调度线程
-            spawn_brief_scheduler(handle);
+            spawn_brief_scheduler(handle.clone());
+
+            // ── 启动静默检查更新（v2.1 默认策略）──
+            // 只检查不安装；发现新版 emit 给前端，由用户确认后才走 install_update。
+            // 失败静默（离线/端点未就绪是常态），设置页仍保留手动检查入口。
+            tauri::async_runtime::spawn(async move {
+                if let Ok(updater) = handle.updater() {
+                    if let Ok(Some(u)) = updater.check().await {
+                        let _ = handle.emit("update-available", serde_json::json!({
+                            "version": u.version,
+                            "notes": u.body,
+                        }));
+                    }
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

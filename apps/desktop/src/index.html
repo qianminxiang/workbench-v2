@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>个人工作台 v2.0</title>
+<title>个人工作台 v2.1</title>
 <link rel="stylesheet" href="tokens.css">
 <style>
   .shell { padding: 16px 24px 48px; max-width: 1280px; margin: 0 auto; }
@@ -15,6 +15,7 @@
   .kanban .card { margin-bottom: 8px; display: flex; gap: 8px; }
   .kanban .card .body { flex: 1; min-width: 0; }
   .kanban .card .body b { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kanban--focus { grid-template-columns: repeat(2, minmax(320px, 1fr)); }  /* L1：板块聚焦 2 列 */
   .rowline { display: flex; align-items: center; gap: 12px; }
   .muted { color: var(--mech-text-3); }
   .mini { font-size: 11px; color: var(--mech-text-3); }
@@ -39,6 +40,7 @@
     background: var(--mech-amber-bg); color: var(--mech-amber-fg); border-radius: 4px; font-weight: 600; }
   .banner button { all: unset; cursor: pointer; margin-left: auto; padding: 4px 12px; border-radius: 2px;
     background: rgba(0,0,0,0.25); }
+  .banner--update { background: var(--mech-ok-bg, rgba(46, 204, 113, 0.12)); color: var(--mech-ok, #2ecc73); }
   #f10-lamp { display: inline-flex; }
   .empty { padding: 40px; text-align: center; color: var(--mech-text-3); }
 </style>
@@ -46,15 +48,22 @@
 <body>
 <div class="shell">
 
-  <!-- 顶部：标题 + F10 总开关（PRD 定稿：默认关闭、入口在主界面显眼位置） -->
+  <!-- 顶部：标题 + F10 总开关（v2.1 统筹者裁决：默认开启、入口在主界面显眼位置） -->
   <div class="top">
-    <h1>个人工作台 <span class="mini">v2.0 · 安徽大区</span></h1>
+    <h1>个人工作台 <span class="mini">v2.1 · 安徽大区</span></h1>
     <div class="top-right">
       <span class="mini">语音播报</span>
-      <label class="switch" title="F10 语音播报（二期）：首版仅预留开关，默认关闭">
-        <input id="f10-master" type="checkbox" disabled>
+      <label class="switch" title="F10 语音播报：晨报送达时播报要点（免打扰时段只通知不播报）">
+        <!-- boot() 启动时从偏好库回填真实状态（默认开启）；读取成功前 disabled 防误触 -->
+        <input id="f10-master" type="checkbox" checked disabled>
       </label>
     </div>
+  </div>
+
+  <!-- v2.1 自动更新：启动静默检查发现新版时提示，用户确认后才下载安装 -->
+  <div id="update-bar" class="banner banner--update" hidden>
+    <span>◆ 发现新版本，可以更新。</span>
+    <button id="update-go">立即更新</button>
   </div>
 
   <!-- B7 验收②：完全退出后未送达的晨报，启动时明确补推，不静默失败 -->
@@ -89,7 +98,7 @@
     <button data-view="settings">设置</button>
   </nav>
 
-  <main id="main" class="view"></main>
+  <main id="main"></main>
 </div>
 <script src="app.js"></script>
 </body>

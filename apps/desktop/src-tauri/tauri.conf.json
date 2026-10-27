@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "个人工作台",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "identifier": "com.anhui.pr.workbench",
   "build": {
     "frontendDist": "../src",
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "个人工作台 v2.0",
+        "title": "个人工作台 v2.1",
         "width": 1280,
         "height": 800,
         "minWidth": 1024,
@@ -42,6 +42,7 @@
     "resources": [],
     "shortDescription": "本地优先的个人工作台（安徽大区公关）",
     "publisher": "安徽大区小团队",
+    "createUpdaterArtifacts": true,
     "windows": {
       "wix": {
         "language": "zh-CN"
@@ -54,5 +55,12 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/qianminxiang/workbench-v2/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4OTNEQUQ0MzE1Q0IwRUYKUldUdnNGd3gxTnFUbURhdzgyUDYwcCsveFFPTWpjSHhSVlp1YnNjN0NpQlBxWklLMWJyYm9jSHQK"
+    }
+  }
 }

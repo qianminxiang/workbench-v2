@@ -1,92 +1,145 @@
-/* 个人工作台 v2.0 · Design Token（档位 B「中度变形金刚」，UI 提案第四章定稿值）
-   两套模式独立校准而非反色（提案 4.1）：亮色=办公态，暗色=机甲态。
-   对比度均按 WCAG 相对亮度公式实算（见提案表 4.1），不要凭感觉改值。
-   硬规则：三文字只允许出现在面板/画布底；凹陷底（表头、轨道、筛选 chip）用次文字。
-   琥珀警示底上必须用深字（白字仅 2.16:1）；红警示底上必须用白字（深字仅 3.46:1）。
-   板块色仅作 4px 色条与时间线行程块，不作正文文字色。 */
+/* 个人工作台 v2.1 · Design Token（档位 B+「变形金刚·鲜明」，UI 升级规范第二章定稿值）
+   两套模式独立校准而非反色：亮色=办公态（靠结构缝 seam 建层级），暗色=机甲态（靠明度阶梯建层级）。
+   所有对比度值来自 UI 规范文档第二章实测表，不要凭感觉改值。
+   关键纪律：
+   - 五层表面栈 canvas→panel→plate→inset→groove；卡片从面板里「抬起来」：
+     亮色靠 1px seam 描边（对 plate 1.97），暗色靠 plate/panel 明度差（1.16）——两者都要。
+   - 语义色（brand/amber/red/ok）禁止出现在 groove 深槽面上（实测亮色 groove 上 brand 仅 4.19）。
+   - 文字三级 v2.1 修正：text-3 压深到 #585D62，对全部 5 表面 ≥4.66，「凹陷底不用三文字」的旧限制取消。
+   - 警示块文字取色必须按底色定：亮色琥珀底深字（8.43）、亮色红底白字（5.26）、暗色红底深字（6.75）。
+   - 板块色仅作色条与行程块，不作正文文字色（与 v2.0 完全一致，一个值都没改）。 */
 
 /* 亮色（办公态，默认跟随系统） */
 :root {
-  --mech-canvas: #F2F4F6;
-  --mech-panel: #FFFFFF;
-  --mech-inset: #EAEDF1;
+  /* ── 五层表面栈（2.1）── */
+  --mech-canvas: #E8ECF1;
+  --mech-panel: #F9FBFC;
+  --mech-plate: #FFFFFF;
+  --mech-inset: #DBE2E9;
+  --mech-groove: #D1D9E1;
+  --mech-seam: #AEBAC8;          /* 结构缝：亮色卡片边界感的主力（对 plate 1.97） */
+  --mech-seam-hover: #829CCC;    /* 派生值：seam 与 brand 30% 混色（hover 态，4.1） */
+  --mech-ctl: #7B8694;           /* 控件描边（2.5 --w-ctl 用色，对 plate ≥3:1） */
+  /* ── 文字三级（2.2）── */
   --mech-text-1: #151A20;
   --mech-text-2: #48525C;
-  --mech-text-3: #646E79;
+  --mech-text-3: #585D62;        /* v2.1 修正：原 #646E79 在凹陷底仅 4.42，现对 5 表面最低 4.66 */
+  /* ── 交互与语义色（2.3）── */
   --mech-brand: #1B5BD6;
-  /* 悬停纯色（不用 filter）：亮色下压深一档 */
-  --mech-brand-hover: #1749AE;
-  --mech-warn-amber: #9A5B00;
-  --mech-warn-red: #B22C24;
-  --mech-ok: #0D6F63;
-  --mech-border: #DCE1E6;
-  --mech-amber-bg: #E8A33D;
-  --mech-amber-fg: #12161A;
-  --mech-red-bg: #C7362E;
-  --mech-red-fg: #FFFFFF;
+  --mech-brand-hover: #1749AE;   /* 悬停纯色（不用 filter） */
+  --mech-brand-pressed: #123C8F;  /* v2.1 新增：按下纯色 */
+  --mech-warn-amber: #854F00;     /* 仅临期（≤3 天） */
+  --mech-warn-red: #B22C24;      /* 仅逾期 */
+  --mech-ok: #0D6F63;            /* 已闭环 / 数据源正常 */
+  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;  /* 亮琥珀底必须深字（白字仅 2.16） */
+  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;     /* 亮红底必须白字（深字仅 3.46） */
+  /* ── 板块识别色（2.4，仅色条与行程块）── */
   --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
   --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
-  --radius-panel: 4px;
-  --radius-card: 6px;
-  --radius-badge: 2px;
-  --chamfer: 8px;
+  /* ── 字体（2.5）── */
+  --font-ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  --fs-body: 13px; --lh-body: 20px;
+  --fs-card-title: 12.5px;
+  --fs-th: 12px;
+  --fs-mini: 11px;
+  --fs-kpi: 28px;
+  /* ── 间距 / 圆角 / 切角（2.5）── */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
-  --motion-switch: 200ms;
-  --motion-reflow: 120ms;
-  --ease-in-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
-  --ease-out-quad: cubic-bezier(0.55, 0.06, 0.68, 0.19);
+  --radius-panel: 4px;
+  --radius-card: 4px;             /* v2.0 是 6px；v2.1 收紧，配合切角更「硬」 */
+  --radius-badge: 2px;
+  --chamfer-panel: 8px;
+  --chamfer-card: 6px;            /* 仅临期/逾期卡右上 */
+  /* ── 描边与条纹（2.5 / L6 / L7）── */
+  --w-seam: 1px;
+  --w-rule: 1px;
+  --w-ctl: 1px;
+  --w-board-strip: 4px;
+  --w-alert-strip: 3px;
+  --card-h: 82px;                /* L2 标准档卡高（紧凑 70 / 展开 98 由 data-density 切换） */
+  --card-h-compact: 70px;
+  --card-h-expanded: 98px;
+  /* ── 阴影（2.5：1 层、模糊 ≤8px、禁止双层）── */
+  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-focus: 0 0 0 2px var(--mech-brand);  /* 实色环，非 glow */
+  /* ── 动效（2.5）── */
+  --motion-morph: 240ms;      /* 形态切换硬上限 */
+  --motion-item: 140ms;      /* 卡片位移 */
+  --motion-reflow: 120ms;    /* 列表重排（沿用 v2.0） */
+  --motion-micro: 60ms;      /* hover */
+  --motion-press: 40ms;      /* 按下（必须 ≤100ms 出首个反馈） */
+  --motion-gauge: 200ms;     /* 进度填充（5 段 × 40ms 顺序点亮） */
+  --motion-lock: 180ms;      /* 完成锁定 */
+  --motion-degraded: 80ms;   /* 降级：交叉淡入，零位移零 clip-path */
+  --ease-morph-in: cubic-bezier(0.16, 0.84, 0.24, 1);    /* decelerate 前快后慢 */
+  --ease-morph-out: cubic-bezier(0.4, 0, 0.84, 0.32);    /* accelerate 前慢后快 */
+  --ease-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --ease-micro: linear;      /* 仅颜色与描边，不做位移 */
+  /* v2.0 兼容别名：index.html 旧引用走新 Token，var() 动态解析、暗色自动跟随 */
+  --mech-border: var(--mech-seam);
+  --ease-in-quad: var(--ease-standard);
 }
 
-/* 暗色（机甲态） */
+/* 暗色（机甲态）：层级靠明度阶梯（panel→plate 必须 ≥1.10 才可感知） */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --mech-canvas: #12161A;
-    --mech-panel: #1B2127;
-    --mech-inset: #232A31;
+    --mech-canvas: #0C1015;
+    --mech-panel: #181E25;
+    --mech-plate: #222A32;
+    --mech-inset: #14191E;
+    --mech-groove: #0A0E12;
+    --mech-seam: #303A45;
+    --mech-seam-hover: #475B7A;  /* 派生值：seam 与暗色 brand 30% 混色 */
+    --mech-ctl: #4A5560;
     --mech-text-1: #E8ECEF;
     --mech-text-2: #A9B3BC;
-    --mech-text-3: #87929C;
+    --mech-text-3: #93A0AA;
     --mech-brand: #7CA9F5;
-  /* 悬停纯色（不用 filter）：暗色下提亮一档 */
-  --mech-brand-hover: #A6C6FF;
+    --mech-brand-hover: #A6C6FF;
+    --mech-brand-pressed: #5F8FE0;
     --mech-warn-amber: #E0A13A;
     --mech-warn-red: #F27A72;
     --mech-ok: #4FC3AE;
-    --mech-border: #2B333B;
-    --mech-amber-bg: #E0A13A;
-    --mech-amber-fg: #12161A;
-    --mech-red-bg: #F27A72;
-    --mech-red-fg: #12161A;
+    --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
+    --mech-red-bg: #F27A72; --mech-red-fg: #12161A;      /* 暗红底必须深字（白字仅 2.69）——与亮色红底白字相反，最易统一错 */
     --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
     --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
+    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
   }
 }
 
 /* 手动锁定（设置页） */
 :root[data-theme="light"] {
-  --mech-canvas: #F2F4F6; --mech-panel: #FFFFFF; --mech-inset: #EAEDF1;
-  --mech-text-1: #151A20; --mech-text-2: #48525C; --mech-text-3: #646E79;
-  --mech-brand: #1B5BD6; --mech-warn-amber: #9A5B00; --mech-warn-red: #B22C24;
-  --mech-ok: #0D6F63; --mech-border: #DCE1E6;
+  --mech-canvas: #E8ECF1; --mech-panel: #F9FBFC; --mech-plate: #FFFFFF;
+  --mech-inset: #DBE2E9; --mech-groove: #D1D9E1;
+  --mech-seam: #AEBAC8; --mech-seam-hover: #829CCC; --mech-ctl: #7B8694;
+  --mech-text-1: #151A20; --mech-text-2: #48525C; --mech-text-3: #585D62;
+  --mech-brand: #1B5BD6; --mech-brand-hover: #1749AE; --mech-brand-pressed: #123C8F;
+  --mech-warn-amber: #854F00; --mech-warn-red: #B22C24; --mech-ok: #0D6F63;
   --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;
   --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;
   --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
   --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
+  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 :root[data-theme="dark"] {
-  --mech-canvas: #12161A; --mech-panel: #1B2127; --mech-inset: #232A31;
-  --mech-text-1: #E8ECEF; --mech-text-2: #A9B3BC; --mech-text-3: #87929C;
-  --mech-brand: #7CA9F5; --mech-warn-amber: #E0A13A; --mech-warn-red: #F27A72;
-  --mech-ok: #4FC3AE; --mech-border: #2B333B;
+  --mech-canvas: #0C1015; --mech-panel: #181E25; --mech-plate: #222A32;
+  --mech-inset: #14191E; --mech-groove: #0A0E12;
+  --mech-seam: #303A45; --mech-seam-hover: #475B7A; --mech-ctl: #4A5560;
+  --mech-text-1: #E8ECEF; --mech-text-2: #A9B3BC; --mech-text-3: #93A0AA;
+  --mech-brand: #7CA9F5; --mech-brand-hover: #A6C6FF; --mech-brand-pressed: #5F8FE0;
+  --mech-warn-amber: #E0A13A; --mech-warn-red: #F27A72; --mech-ok: #4FC3AE;
   --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
   --mech-red-bg: #F27A72; --mech-red-fg: #12161A;
   --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
   --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
+  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-/* 减少动效：降级 80ms 交叉淡入，不位移（提案 P7） */
+/* 减少动效：降级 80ms 交叉淡入，零位移零 clip-path（规范 2.5 --motion-degraded） */
 @media (prefers-reduced-motion: reduce) {
-  :root { --motion-switch: 80ms; --motion-reflow: 80ms; }
+  :root { --motion-morph: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
 }
 
 * { box-sizing: border-box; }
@@ -94,22 +147,22 @@ html, body {
   margin: 0; padding: 0;
   background: var(--mech-canvas);
   color: var(--mech-text-1);
-  font: 13px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font: var(--fs-body)/var(--lh-body) var(--font-ui);
 }
 
-/* 层级只用 3 级：画布 → 面板 → 卡片。靠明度差与 1px 描边，不用投影堆叠。 */
+/* ── 五层表面栈（2.1）：panel 容器 / plate 卡片 / inset 凹陷 / groove 深槽 ── */
 .panel {
   background: var(--mech-panel);
-  border: 1px solid var(--mech-border);
+  border: var(--w-rule) solid var(--mech-seam);
   border-radius: var(--radius-panel);
   position: relative;
   margin-bottom: var(--sp-4);
 }
-/* 档位 B 机甲符号：主面板右上 8px 切角（每屏不超过 6 处） */
+/* 面板右上 8px 切角（L6：单屏切角总数 ≤8 处） */
 .panel--chamfer {
-  clip-path: polygon(0 0, calc(100% - var(--chamfer)) 0, 100% var(--chamfer), 100% 100%, 0 100%);
+  clip-path: polygon(0 0, calc(100% - var(--chamfer-panel)) 0, 100% var(--chamfer-panel), 100% 100%, 0 100%);
 }
-/* 顶部 2px 状态灯带：用板块色，仅作识别、不表现异常（提案 P6） */
+/* 顶部 2px 状态灯带：用板块色，仅作识别、不表现异常（P6） */
 .panel::before {
   content: "";
   position: absolute;
@@ -120,90 +173,224 @@ html, body {
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
 }
 
+/* 卡片（装甲板）：plate 抬起。亮色边界感来自 seam 描边、暗色来自 plate/panel 明度差——两者都要（2.1 callout）。
+   hover 只改颜色与描边（4.1 硬规则），唯一允许的尺寸变化是板块条 4→5px。 */
 .card {
-  background: var(--mech-panel);
-  border: 1px solid var(--mech-border);
+  background: var(--mech-plate);
+  border: var(--w-seam) solid var(--mech-seam);
   border-radius: var(--radius-card);
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) 18px;  /* L7：板块条4+gap2+警示条3=9px 共享左内边距 → 18px */
+  min-height: var(--card-h);
+  display: flex;
+  align-items: flex-start;
+  transition: border-color var(--motion-micro) var(--ease-micro),
+              box-shadow var(--motion-micro) var(--ease-micro);
 }
+.card:hover {
+  border-color: var(--mech-seam-hover);
+  box-shadow: var(--shadow-lift);  /* 0 层 → 1 层，仅 1 层 */
+}
+.card:active {
+  transform: scale(0.994);         /* 4.1 按下：40ms 内完成，无位移 */
+  transition: transform var(--motion-press) var(--ease-micro);
+}
+/* 卡标题：单行截断（L3 四件套固定扫读路径） */
+.card b {
+  font-size: var(--fs-card-title); font-weight: 600;
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 临期/逾期卡：右上 6px 切角 + 左侧警示条（4.4 第四通道——位置即异常语义） */
+.card--alert {
+  clip-path: polygon(0 0, calc(100% - var(--chamfer-card)) 0, 100% var(--chamfer-card), 100% 100%, 0 100%);
+}
+.card--amber .alert-strip { background: var(--mech-amber-bg); }
+.card--red   .alert-strip { background: var(--mech-red-bg); }
+.alert-strip {
+  display: inline-block; width: var(--w-alert-strip);
+  align-self: stretch; border-radius: 1px; margin-right: var(--sp-2);
+}
+/* 板块条：4px，悬停该卡时 5px（唯一允许的尺寸变化，不参与布局流感知） */
+.board-strip {
+  display: inline-block; width: var(--w-board-strip);
+  align-self: stretch; border-radius: 2px; margin-right: var(--sp-2);
+  transition: width var(--motion-micro) var(--ease-micro);
+}
+.card:hover .board-strip { width: 5px; }
 
-.divider { border: 0; border-top: 1px solid var(--mech-border); margin: var(--sp-4) 0; }
+.divider { border: 0; border-top: var(--w-rule) solid var(--mech-seam); margin: var(--sp-4) 0; }
 .text-2 { color: var(--mech-text-2); }
 .text-3 { color: var(--mech-text-3); }
+.mono { font-family: var(--font-mono); }  /* L9：数字、日期、KPI 统一 mono，纵向对齐 */
 
-.board-strip { display: inline-block; width: 4px; align-self: stretch; border-radius: 2px; margin-right: var(--sp-2); }
-
-/* 警示灯（P6 形状冗余：颜色 + 形状 + 文字三通道，色弱不丢信息） */
+/* 警示灯（4.4：色 + 形 + 文字三通道冗余，色弱不丢信息；不循环闪烁） */
 .lamp {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; padding: 2px 8px; border-radius: var(--radius-badge);
+  font-size: var(--fs-th); padding: 2px 8px; border-radius: var(--radius-badge);
 }
 .lamp--amber { background: var(--mech-amber-bg); color: var(--mech-amber-fg); }
 .lamp--red   { background: var(--mech-red-bg); color: var(--mech-red-fg); }
 .lamp--amber::before { content: "▮"; }
 .lamp--red::before   { content: "◆"; }
+/* 警示进入：每卡每次会话只播 1 次 180ms 脉冲（opacity .7→1），不循环（4.4 警报疲劳控制） */
+@keyframes lamp-pulse { from { opacity: 0.7; } to { opacity: 1; } }
+.lamp--pulse { animation: lamp-pulse var(--motion-lock) var(--ease-standard); }
 
-/* 分段式进度槽（每段 20%，能量槽语义） */
+/* 分段式能量槽（4.2）：groove 深槽为轨道（语义色不进 groove 作文字），ok 点亮，每段 40ms */
 .gauge { display: flex; gap: 2px; height: 8px; }
-.gauge i { flex: 1; background: var(--mech-inset); border-radius: 1px; }
+.gauge i { flex: 1; background: var(--mech-groove); border-radius: 1px; transition: background 40ms var(--ease-micro); }
 .gauge i.on { background: var(--mech-ok); }
+
+/* 完成态锁定（4.3：180ms，切角先张后收 + ✓ 徽标；不弹窗、不阻塞输入） */
+@keyframes lock-chamfer {
+  0%   { clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); }
+  40%  { clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%); }
+  100% { clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); }
+}
+.card--done { animation: lock-chamfer var(--motion-lock) var(--ease-morph-in); filter: saturate(0.6); }
+/* 注意：filter 只允许 1 层（红线：禁止双层 filter/glow 堆叠），且仅作用于完成卡本身 */
 
 /* 时间线区间带（F6：月粒度画整月带，不编日精度） */
 .tl-band { height: 14px; border-radius: 2px; opacity: 0.85; }
 .tl-band--month {
-  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0,0,0,0.18) 4px 6px);
+  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0, 0, 0, 0.18) 4px 6px);
 }
 
-/* 导航与形态切换（≤240ms 轴向变换） */
+/* ── 导航（4.1）：tab hover 文字 text-2→text-1、底 inset→panel，不做下划线滑动 ── */
 .nav { display: flex; gap: var(--sp-1); padding: var(--sp-2); background: var(--mech-inset); border-radius: var(--radius-panel); }
 .nav button {
   all: unset; cursor: pointer; padding: 6px 14px; border-radius: var(--radius-badge);
   color: var(--mech-text-2);
-  transition: background var(--motion-reflow) var(--ease-in-quad), color var(--motion-reflow) var(--ease-in-quad);
+  transition: background var(--motion-micro) var(--ease-micro), color var(--motion-micro) var(--ease-micro);
 }
+.nav button:hover { color: var(--mech-text-1); }
 .nav button[aria-current="true"] {
   background: var(--mech-panel);
   color: var(--mech-text-1);
-  box-shadow: inset 0 0 0 1px var(--mech-border);
+  box-shadow: inset 0 0 0 var(--w-rule) solid var(--mech-seam);
 }
-.view { animation: view-in var(--motion-switch) var(--ease-in-quad); }
-@keyframes view-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: none; }
+.nav button:active { background: var(--mech-inset); }
+
+/* ── 形态切换（第三章：四阶段 240ms，由 app.js 驱动时序，这里只放每阶段的关键帧）──
+   容器层只做 transform/opacity（合成器路径），严禁容器 clip-path（规范 3.3 红线）；
+   逐卡变形只允许 ≤6 张（规范 3.5 并发上限），由 JS 加 .morph-card 标记。 */
+.morph-out {                 /* ① 拆解 72ms（accelerate）→ ② 传递续淡出至 156ms */
+  animation: morph-container-out 156ms var(--ease-morph-out) forwards;
 }
+@keyframes morph-container-out {
+  0%   { opacity: 1; transform: none; }
+  46%  { opacity: 0.35; transform: scale(0.98); }   /* 72ms 处：拆解到位 */
+  100% { opacity: 0; }                                /* 156ms 处：旧形态退场完毕 */
+}
+.morph-in {                  /* ③ 重组 84ms（decelerate），与旧形态淡出尾部重叠 24ms */
+  animation: morph-container-in 84ms var(--ease-morph-in) forwards;
+}
+@keyframes morph-container-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.morph-lock {                /* ④ 锁定 24ms：描边短暂提到 brand 后回常态 */
+  outline: 2px solid var(--mech-brand);
+  outline-offset: -2px;
+}
+/* 逐卡变形（3.3 参数：横向=时间尺度 scaleX(.32) scaleY(.28)；纵向=明细 scaleY(.42)）。
+   只加在 ≤6 张卡上（JS 控制），其余卡直接终态。 */
+.morph-card { animation: card-morph-in 60ms var(--ease-morph-in) both; }
+main[data-morph="h"] .morph-card { animation-name: card-morph-in-h; }
+main[data-morph="v"] .morph-card { animation-name: card-morph-in-v; }
+@keyframes card-morph-in-h {
+  from { opacity: 0; transform: scaleX(0.32) scaleY(0.28); clip-path: inset(32% 34% 32% 34%); }
+  to   { opacity: 1; transform: scaleX(1) scaleY(1); clip-path: inset(0); }
+}
+@keyframes card-morph-in-v {
+  from { opacity: 0; transform: scaleY(0.42); clip-path: inset(0 0 58% 0); }
+  to   { opacity: 1; transform: scaleY(1); clip-path: inset(0); }
+}
+@keyframes card-morph-in { from { opacity: 0; } to { opacity: 1; } }
+/* 筛选重排（3.4）：≤120ms，只位移不变形；命中数 80ms 数字滚动→v2.1 取 0ms 直替 */
+.reflow-fade { animation: reflow-fade var(--motion-reflow) var(--ease-standard); }
+@keyframes reflow-fade { from { opacity: 0.6; } to { opacity: 1; } }
+/* 降级（prefers-reduced-motion）：80ms 交叉淡入，零位移零 clip-path */
 @media (prefers-reduced-motion: reduce) {
-  .view { animation: view-fade 80ms linear; }
-  @keyframes view-fade { from { opacity: 0; } to { opacity: 1; } }
+  .morph-out { animation: reflow-fade var(--motion-degraded) linear forwards; }
+  .morph-in { animation: reflow-fade var(--motion-degraded) linear forwards; }
+  .morph-card { animation: card-morph-in var(--motion-degraded) linear both; }
 }
 
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--mech-border); }
-th { background: var(--mech-inset); color: var(--mech-text-2); font-weight: 600; position: sticky; top: 0; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: var(--w-rule) solid var(--mech-seam); }
+th { background: var(--mech-inset); color: var(--mech-text-2); font-weight: 600; font-size: var(--fs-th); position: sticky; top: 0; }
+th.mono, td.mono { font-family: var(--font-mono); }
+/* L10：表格首列吸附（横向滚动不丢「这行是哪一项」） */
+td:first-child, th:first-child { position: sticky; left: 0; background: var(--mech-plate); }
+tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-seam)); }
 
 .chip {
   all: unset; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--mech-inset); color: var(--mech-text-2);
   padding: 4px 12px; border-radius: var(--radius-badge);
-  box-shadow: inset 0 0 0 1px var(--mech-border);
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl);
+  transition: box-shadow var(--motion-micro) var(--ease-micro), background var(--motion-micro) var(--ease-micro);
 }
+.chip:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
+.chip:active { background: var(--mech-groove); }
 .chip[data-active="true"] {
-  box-shadow: inset 0 0 0 1px var(--mech-border), inset 2px 0 0 var(--mech-brand);
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), inset 2px 0 0 var(--mech-brand);
 }
 
 .btn {
   all: unset; cursor: pointer;
   padding: 6px 16px; border-radius: var(--radius-badge);
-  background: var(--mech-brand); color: var(--mech-panel);
-  /* 档位 B「无滤镜」：悬停不用 filter（会触发合成层、暗色下色偏），
-     改为纯色底 + 1px 内描边，动效时长仍是 120ms，肉眼观感等价而不引入滤镜。 */
-  transition: background-color var(--motion-reflow) var(--ease-in-quad),
-              box-shadow var(--motion-reflow) var(--ease-in-quad);
+  background: var(--mech-brand); color: #FFFFFF;
+  /* 无滤镜（P6）：hover/press 走纯色，不用 filter、不改尺寸 */
+  transition: background-color var(--motion-micro) var(--ease-micro);
 }
-.btn:hover {
-  background: var(--mech-brand-hover, var(--mech-brand));
-  box-shadow: inset 0 0 0 1px var(--mech-brand-hover-border, var(--mech-border));
-}
-.btn--ghost { background: transparent; color: var(--mech-brand); box-shadow: inset 0 0 0 1px var(--mech-border); }
+.btn:hover   { background: var(--mech-brand-hover); }
+.btn:active  { background: var(--mech-brand-pressed); transition-duration: var(--motion-press); }
+.btn--ghost { background: transparent; color: var(--mech-brand); box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl); }
+.btn--ghost:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
 
 :focus-visible { outline: 2px solid var(--mech-brand); outline-offset: 2px; }
+
+/* L2：卡高密度三档（紧凑 70 / 标准 82 / 展开 98），默认标准 */
+:root[data-density="compact"] { --card-h: var(--card-h-compact); }
+:root[data-density="expanded"] { --card-h: var(--card-h-expanded); }
+
+/* ── 红色警戒参照交互（v2.1 追加评论）：单位选中角标框 + 雷达扫掠 ──
+   RA 三个最有辨识度的交互映射进档位 B+，红线不破：
+   - 选中括号 = 静态 8 段渐变（零动画成本，出场即到位，与 RA 同为瞬时）；
+   - 雷达扫掠只旋转一根 1.5px 合成层（transform 路径，不整屏重绘）；
+     循环扫掠是「运行中」状态指示，不是警示闪烁——警示灯仍不循环（4.4）。 */
+.card { cursor: pointer; }
+.card--selected {
+  background:
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px top 5px / 10px 2px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px top 5px / 2px 10px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px top 5px / 10px 2px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px top 5px / 2px 10px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px bottom 5px / 10px 2px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px bottom 5px / 2px 10px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px bottom 5px / 10px 2px no-repeat,
+    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px bottom 5px / 2px 10px no-repeat,
+    var(--mech-plate);
+}
+/* 雷达：外圈 + 内环 + 扫掠线（RA 小地图语感，绿色扫线呼应 --mech-ok） */
+.radar {
+  position: relative; display: inline-block; width: 22px; height: 22px;
+  border-radius: 50%; border: 1px solid var(--mech-ctl);
+  vertical-align: -5px; margin-left: 8px;
+  background: radial-gradient(circle, var(--mech-groove) 0 32%, transparent 33%);
+}
+.radar::before {
+  content: ""; position: absolute; inset: 28%;
+  border-radius: 50%; border: 1px solid var(--mech-ctl); opacity: 0.5;
+}
+.radar::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 45%; height: 1.5px;
+  background: linear-gradient(90deg, var(--mech-ok), transparent);
+  transform-origin: 0 0;
+  animation: radar-sweep 2.4s linear infinite;
+}
+@keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .radar::after { animation: none; } }

@@ -196,6 +196,50 @@ pub fn notification_text(brief: &MorningBrief, decision: &BriefDecision) -> (Str
     (title, lines.join("\n"))
 }
 
+/// 语音播报要点（F10 上线）。与晨报四段结构一一对应：计数 → 三条要点 →
+/// 周聚合 → 补发说明，**读要点不逐字念全部**——播报是伴随行为，超过 30 秒
+/// 就变成打扰。与 `notification_text` 共享同一批事实，只换措辞密度。
+pub fn speech_text(brief: &MorningBrief, decision: &BriefDecision) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if decision.verdict == BriefVerdict::DueLate {
+        parts.push("早上好。现在是补发晨报。".to_string());
+    } else {
+        parts.push("早上好。今日晨报。".to_string());
+    }
+    parts.push(format!(
+        "今日到期 {} 项，临期 {} 项，逾期 {} 项。",
+        brief.due_today.len(),
+        brief.due_soon.len(),
+        brief.overdue.len()
+    ));
+    let mut picks: Vec<String> = Vec::new();
+    for a in brief.due_today.iter() {
+        picks.push(format!("今日到期：{}。", a.title));
+        if picks.len() >= 3 {
+            break;
+        }
+    }
+    if picks.len() < 3 {
+        for a in brief.overdue.iter() {
+            picks.push(format!("逾期：{}。", a.title));
+            if picks.len() >= 3 {
+                break;
+            }
+        }
+    }
+    if !picks.is_empty() {
+        parts.push(picks.join(""));
+    }
+    if let Some(w) = brief.weekly.as_ref() {
+        parts.push(format!(
+            "本周应闭环 {} 项，应启动 {} 项。",
+            w.should_close.len(),
+            w.should_start.len()
+        ));
+    }
+    parts.join("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +346,40 @@ mod tests {
         let (title, body) = notification_text(&brief, &dec);
         assert!(title.contains("补发"), "补发必须在标题里说清楚：{}", title);
         assert!(body.contains("补发"));
+    }
+
+    #[test]
+    fn speech_text_covers_four_sections_without_full_readout() {
+        // F10：播报要点与晨报四段对齐——计数、要点、周聚合、补发说明
+        let monday = CivilDate::new(2026, 10, 26);
+        let items = vec![
+            item("今日必须动的关键事项", "2026-10-26", "2026-11-10", 0, ItemStatus::Pending),
+            item("已经逾期的遗留事项", "2026-09-01", "2026-10-01", 30, ItemStatus::Active),
+        ];
+        let brief = morning_brief(monday, &items, &Ruleset::default());
+        let dec = decide(monday, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        assert!(s.contains("今日晨报"));
+        // 计数措辞必须与晨报结构同源（不硬猜规则口径，防止测试脆弱）
+        let counts = format!(
+            "今日到期 {} 项，临期 {} 项，逾期 {} 项。",
+            brief.due_today.len(),
+            brief.due_soon.len(),
+            brief.overdue.len()
+        );
+        assert!(s.contains(&counts), "播报必须带计数段：{} / {}", s, counts);
+        assert!(s.contains("本周应闭环"), "周一必须播报周聚合：{}", s);
+        // 要点最多 3 条：绝不逐字念全部
+        let due = s.matches("今日到期：").count() + s.matches("逾期：").count();
+        assert!(due <= 3, "播报要点必须截断在 3 条：{}", s);
+    }
+
+    #[test]
+    fn speech_text_marks_late_catch_up() {
+        let d = CivilDate::new(2026, 10, 27);
+        let brief = morning_brief(d, &[], &Ruleset::default());
+        let dec = decide(d, 14 * 60 + 30, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        assert!(s.starts_with("早上好。现在是补发晨报。"), "补发播报开头必须说明：{}", s);
     }
 }

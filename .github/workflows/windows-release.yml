@@ -8,6 +8,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# v2.1（2026-10-27）：tag 发布步要创建 GitHub Release（挂 latest.json / 安装包 / .sig），
+# 需要 contents: write。默认 GITHUB_TOKEN 在部分仓库设置下是只读，显式声明避免发布步 403。
+permissions:
+  contents: write
+
 jobs:
   # 核心逻辑与合并语义的单测：不需要 Windows，ubuntu 上跑得最快，
   # 作为门禁前置——测不过就不必浪费一次 Windows 构建。
@@ -58,6 +63,28 @@ jobs:
           cargo install tauri-cli --version "^2"
           cd apps/desktop/src-tauri
           cargo tauri build
+      # ── v2.1：updater 签名产物与发布地址（2026-10-27）──
+      # tauri.conf.json 已开 createUpdaterArtifacts，`cargo tauri build` 会在
+      # nsis/*.exe 旁生成同名 .sig（minisign 签名）。把它读进 WB_SIGNATURE 供
+      # make-manifest 注入清单；WB_UPDATE_BASE 指向本仓库 Release 的 tag 资产位
+      # （公共仓库的 Release 资产零鉴权可下载，满足「latest.json 指向可公开零鉴权
+      # 下载的托管位」；若仓库为私有则该地址不可公开访问，发布环节必须如实核验，
+      # 不可当作已达标）。.sig 若含多行（untrusted comment + 签名），取第一个
+      # 非空行——清单 signature 字段必须是签名内容本身，不能带注释行。
+      - name: 读取 updater 签名产物并设置发布地址
+        shell: pwsh
+        run: |
+          $cfg = Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $base = "https://github.com/qianminxiang/workbench-v2/releases/download/v$($cfg.version)"
+          $sigFile = Get-ChildItem "target/release/bundle/nsis/*.exe.sig" -ErrorAction SilentlyContinue |
+            Sort-Object Name | Select-Object -First 1
+          if (-not $sigFile) { throw "未找到 NSIS 签名产物（target/release/bundle/nsis/*.exe.sig）——createUpdaterArtifacts 未生效？" }
+          $sig = (Get-Content $sigFile.FullName | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+          "WB_UPDATE_BASE=$base" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WB_SIGNATURE=$sig"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "发布地址：$base"
+          Write-Host "签名产物：$($sigFile.Name)（已注入 WB_SIGNATURE）"
+
       # ── 体积门禁（2026-10-27 复核后重写）──
       # 路径口径：`apps/desktop/src-tauri` 是 workspace 成员（这是 `cargo fetch` 能跑通的前提），
       # 因此 cargo metadata 的 target_directory 解析为**仓库根/target**，
@@ -171,5 +198,35 @@ jobs:
           name: workbench-windows
           path: |
             target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe.sig
             target/release/bundle/msi/*.msi
             latest.json
+
+      # ── v2.1：发布 GitHub Release（latest.json 的零鉴权下载宿主）──
+      # tauri.conf.json 里 updater endpoint 是
+      # releases/latest/download/latest.json，依赖「最新 Release 挂了 latest.json 资产」。
+      # tag 推送时把安装包、.sig 签名、latest.json 一起挂上；手动触发（无 tag）
+      # 跳过发布、只留 artifact。用 gh CLI（runner 预装）+ 内置 GITHUB_TOKEN，
+      # 不引第三方 action。仓库为公共时 Release 资产零鉴权可下载；若为私有，
+      # latest.json 地址不可公开访问——这是发布环节的已知阻塞形态，按任务红线
+      # 如实上报，不得当作更新链路已达标。
+      - name: 发布 GitHub Release（tag 触发时）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = @("latest.json")
+          foreach ($g in @("target/release/bundle/nsis/*.exe",
+                           "target/release/bundle/nsis/*.exe.sig",
+                           "target/release/bundle/msi/*.msi")) {
+            $files += @(Get-ChildItem $g -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          }
+          if ($files.Count -le 1) { throw "没有可发布的产物文件" }
+          Write-Host "发布资产："
+          $files | ForEach-Object { Write-Host "  $_" }
+          gh release create "$env:GITHUB_REF_NAME" --title "$env:GITHUB_REF_NAME" `
+            --notes "个人工作台 v2.1.0：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正、免打扰可编辑。" `
+            @files
+          if ($LASTEXITCODE -ne 0) { throw "gh release create 失败（exit $LASTEXITCODE）" }
+          Write-Host "Release 已发布：$env:GITHUB_REF_NAME（公共仓库下资产零鉴权可下载）"

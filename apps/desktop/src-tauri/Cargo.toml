@@ -1,8 +1,8 @@
 [package]
 name = "wb-desktop"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
-description = "个人工作台 v2.0 桌面壳（Tauri 2）"
+description = "个人工作台 v2.1 桌面壳（Tauri 2，单机版）"
 
 [lib]
 name = "wb_desktop"
@@ -16,10 +16,15 @@ wb-core = { path = "../../../crates/wb-core" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
+# v2.1 目标①：桌面自动更新（检查 → 下载 → 验签 → 重启安装）
+tauri-plugin-updater = "2"
+# v2.1 防多开：单实例锁，二次启动置前已有主窗口（任务栏最小化态/托盘态/快速双击竞态）
+tauri-plugin-single-instance = "2"
+# v2.1 B7①：today()/now_minutes() 取本机时区偏移（换算本身在 wb-core::local_time）
+chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
-# 同步客户端传输层：默认特性已含 rustls TLS + gzip，加 json 是为 send_json/into_json。
-ureq = { version = "2.12", features = ["json"] }
+# v2.1 单机化：移除 ureq 同步传输层（wb-core sync 纯函数保留，server/ 保留可跑）

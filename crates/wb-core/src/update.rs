@@ -145,20 +145,51 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, ManifestError> {
 }
 
 /// 轻量 RFC 3339 检查（够用即可，不引第三方依赖）。
+///
+/// 2026-10-27 v2.1 修复：`is_rfc3339` 此前在秒位后只认 `Z/z/+/-`，
+/// 而 `scripts/make-manifest.cjs` 用 `new Date().toISOString()` 生成 pub_date，
+/// 形如 `2026-10-27T08:39:56.169Z`——秒位后是毫秒小数点 `.`，被误判 InvalidPubDate，
+/// 整份清单拒收（v2.0 因 CI 从未设置 WB_UPDATE_BASE 而未触雷，属潜伏缺陷）。
+/// RFC 3339 本身允许 `time-secfrac`（小数秒）与 `±HH:MM` 时区偏移，此处补齐。
 fn is_rfc3339(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() < 20 {
         return false;
     }
     let digits = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
-    // YYYY-MM-DDTHH:MM:SS
-    digits(0) && digits(1) && digits(2) && digits(3) && b[4] == b'-'
+    // YYYY-MM-DDTHH:MM:SS 前段
+    if !(digits(0) && digits(1) && digits(2) && digits(3) && b[4] == b'-'
         && digits(5) && digits(6) && b[7] == b'-' && digits(8) && digits(9)
         && (b[10] == b'T' || b[10] == b't' || b[10] == b' ')
         && digits(11) && digits(12) && b[13] == b':'
         && digits(14) && digits(15) && b[16] == b':'
-        && digits(17) && digits(18)
-        && matches!(b[19], b'Z' | b'z' | b'+' | b'-')
+        && digits(17) && digits(18))
+    {
+        return false;
+    }
+    // 秒位后：可选小数秒（'.' + 至少一位数字）
+    let mut i = 19;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let frac_start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == frac_start {
+            return false; // '.' 后必须至少一位数字（"56.Z" 非法）
+        }
+    }
+    match b.get(i) {
+        Some(b'Z') | Some(b'z') => true,
+        // 时区偏移：±HH:MM
+        Some(b'+') | Some(b'-') => {
+            b.len() >= i + 6
+                && digits(i + 1) && digits(i + 2)
+                && b[i + 3] == b':'
+                && digits(i + 4) && digits(i + 5)
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -591,5 +622,69 @@ mod tests {
     fn pubkey_as_path_is_not_a_valid_key() {
         // 公钥必须是内容本身，不能是文件路径——路径解不出 32/42 字节
         assert!(load_pubkey("/etc/keys/workbench.pub").is_err());
+    }
+
+    #[test]
+    fn rfc3339_fractional_seconds_and_offsets_accepted() {
+        // v2.1 修复前的缺陷形态：toISOString 的毫秒小数点被误判非法
+        assert!(is_rfc3339("2026-10-27T08:39:56.169Z"));
+        assert!(is_rfc3339("2026-10-27T08:39:56Z"));
+        assert!(is_rfc3339("2026-10-27t08:39:56.9+08:00"));
+        assert!(is_rfc3339("2026-10-27 08:39:56-05:00"));
+        assert!(!is_rfc3339("2026-10-27T08:39:56.Z"), "'.' 后必须有数字");
+        assert!(!is_rfc3339("2026-10-27T08:39:56+0800"), "偏移必须是 ±HH:MM 带冒号");
+        assert!(!is_rfc3339("2026-10-27T08:39:56+08:0"), "偏移分钟数不完整");
+        assert!(!is_rfc3339("2026-10-27T08:39:5"), "长度不足");
+    }
+
+    /// v2.1：`scripts/make-manifest.cjs` 实际输出形态的端到端回归——
+    /// 脚本用 toISOString() 出毫秒 pub_date，非 Windows 平台用 base64 占位签名，
+    /// 清单四平台键齐全。此测试保证「CI 生成的 latest.json」与「客户端校验」两侧
+    /// 永远同构：脚本改形态而忘了这条测试，客户端就会拒收自己产线出的清单。
+    #[test]
+    fn make_manifest_script_output_form_parses() {
+        let script_output = r#"{
+  "version": "2.1.0",
+  "notes": "个人工作台 v2.1：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正与免打扰可编辑。",
+  "pub_date": "2026-10-27T08:39:56.169Z",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/qianminxiang/workbench-v2/releases/download/v2.1.0/Workbench_2.1.0_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZTogRkFLRS1GT1ItU01PS0UtVEVTVAo="
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/qianminxiang/workbench-v2/releases/download/v2.1.0/placeholder-no-build-darwin-x86_64",
+      "signature": "bm8tYXJ0aWZhY3Q6ZGFyd2luLXg4Nl82NDp3aW5kb3dzLW9ubHktYnVpbGQ="
+    },
+    "darwin-aarch64": {
+      "url": "https://github.com/qianminxiang/workbench-v2/releases/download/v2.1.0/placeholder-no-build-darwin-aarch64",
+      "signature": "bm8tYXJ0aWZhY3Q6ZGFyd2luLWFhcmNoNjQ6d2luZG93cy1vbmx5LWJ1aWxk"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/qianminxiang/workbench-v2/releases/download/v2.1.0/placeholder-no-build-linux-x86_64",
+      "signature": "bm8tYXJ0aWZhY3Q6bGludXgteDg2XzY0OndpbmRvd3Mtb25seS1idWlsZA=="
+    }
+  }
+}"#;
+        let m = parse_manifest(script_output).unwrap();
+        assert_eq!(m.version.to_string(), "2.1.0");
+        assert_eq!(m.platforms.len(), 4);
+        for req in REQUIRED_PLATFORMS {
+            assert!(m.platforms.contains_key(req), "缺平台键 {req}");
+        }
+        // windows 是真实签名；占位平台签名不得与真实签名混淆
+        let win = &m.platforms["windows-x86_64"];
+        assert!(win.url.ends_with(".exe") && win.url.contains("x64-setup.exe"));
+        assert!(!win.url.contains("placeholder"));
+        for plat in ["darwin-x86_64", "darwin-aarch64", "linux-x86_64"] {
+            let p = &m.platforms[plat];
+            assert!(p.url.contains("placeholder-no-build"), "{plat} 应为占位 URL");
+            assert_ne!(p.signature, win.signature, "{plat} 占位签名不得等于真实签名");
+        }
+        // 旧版客户端视角：2.0.0 → 应判定有可用更新
+        assert!(matches!(
+            decide("2.0.0", &m, "windows-x86_64"),
+            UpdateDecision::Available { .. }
+        ));
     }
 }

@@ -40,6 +40,11 @@ pub mod keys {
     pub const CURSOR: &str = "cursor";
     pub const LAST_OK_AT: &str = "last_ok_at";
     pub const LAST_ERROR: &str = "last_error";
+    // ── 单机化后的本机偏好（v2.1）：免打扰窗口与语音播报开关 ──
+    // 多端模式已放弃，但 sync_state 键值表仍是官方持久化通道（可逆决策）。
+    pub const QUIET_START: &str = "quiet_start"; // "HH:MM"
+    pub const QUIET_END: &str = "quiet_end"; // "HH:MM"
+    pub const VOICE_ENABLED: &str = "voice_enabled"; // "1" / "0"
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────

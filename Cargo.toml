@@ -6,7 +6,7 @@ members = ["crates/wb-core", "crates/wbd", "apps/desktop/src-tauri"]
 # 直接让 CI 的 cargo fetch / cargo tauri build 失败（质检抓到的构建阻断点）。
 
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 license = "Proprietary"
 

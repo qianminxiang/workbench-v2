@@ -6,7 +6,9 @@
 
 pub mod brief;
 pub mod date;
+pub mod entry;
 pub mod import;
+pub mod local_time;
 pub mod model;
 pub mod repo;
 pub mod rules;
@@ -14,7 +16,6 @@ pub mod store;
 pub mod sync;
 pub mod sync_client;
 pub mod update;
-pub mod entry;
 
 pub use date::{normalize, normalize_with_base, normalize_pair, CivilDate, NormalizedDate, Precision, RelativeBase, Role};
 pub use entry::{quick_add, QuickAdd, QuickAddResult};

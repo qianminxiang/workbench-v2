@@ -16,6 +16,7 @@ const state = {
   alertsData: null,
   kpis: [],
   units: [],
+  prefs: null, // 单机偏好（免打扰窗口 + 语音开关），boot 时读、改时写
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -53,13 +54,29 @@ function updateFilterCount() {
 }
 
 // ── 呈现辅助 ──
+const pulsedCards = new Set(); // 4.4：警示脉冲每卡每会话 1 次
+function alertOf(item) {
+  return (state.alertsData?.alerts || []).find((x) => x.item_id === item.id) || null;
+}
 function lampFor(item) {
-  const a = (state.alertsData?.alerts || []).find((x) => x.item_id === item.id);
+  const a = alertOf(item);
   if (!a) return "";
-  if (a.kind === "overdue") return `<span class="lamp lamp--red">逾期</span>`;
-  if (a.kind === "due_soon") return `<span class="lamp lamp--amber">临期</span>`;
+  if (a.kind !== "overdue" && a.kind !== "due_soon") return "";
+  const kind = a.kind === "overdue" ? "red" : "amber";
+  // 4.4 警报疲劳控制：脉冲每卡每会话只播 1 次，不循环
+  let pulse = "";
+  if (!pulsedCards.has(item.id)) { pulsedCards.add(item.id); pulse = " lamp--pulse"; sfxAlert(); }
+  return `<span class="lamp lamp--${kind}${pulse}">${kind === "red" ? "逾期" : "临期"}</span>`;
+}
+/** 警示卡（4.4 第四通道——位置即异常）：临期/逾期卡右上切角 + 左侧警示条。 */
+function cardAlertCls(item) {
+  const a = alertOf(item);
+  if (!a) return "";
+  if (a.kind === "overdue") return " card--alert card--red";
+  if (a.kind === "due_soon") return " card--alert card--amber";
   return "";
 }
+function alertStripOf(item) { return cardAlertCls(item) ? `<span class="alert-strip"></span>` : ""; }
 function gauge(pct) {
   const on = Math.round(pct / 20);
   let cells = "";
@@ -83,28 +100,48 @@ function dateCell(item) {
 function viewBrief() {
   const b = state.alertsData?.brief;
   if (!b) return `<div class="empty">暂无晨报数据</div>`;
-  const list = (arr, lamp) => (arr || []).map((a) =>
-    `<div class="card"><div class="rowline">
+  const list = (arr, kind) => (arr || []).map((a) =>
+    `<div class="card${kind ? ` card--alert card--${kind}` : ""}" tabindex="0">${kind ? `<span class="alert-strip"></span>` : ""}<div class="rowline">
       <span class="board-strip" style="background:${boardVar(a.board)}"></span>
       <div style="flex:1"><b>${esc(a.title)}</b>
         <div class="mini">${esc(a.detail)}</div></div>
-      ${lamp}
+      ${kind ? `<span class="lamp lamp--${kind}">${kind === "red" ? "逾期" : "临期"}</span>` : ""}
     </div></div>`).join("");
   return `
     <div class="panel panel--chamfer" style="--panel-strip: var(--mech-ok); padding:16px">
-      <b>晨报 · ${esc(b.date)}</b>
+      <b>晨报 · <span class="mono">${esc(b.date)}</span><span class="radar" title="规则引擎扫描中" aria-hidden="true"></span></b>
       <div class="mini text-2" style="margin:2px 0 12px">规则引擎纯函数求值 · 各端本地 9:00 触发（架构 §6.2-D）</div>
-      <div><span class="text-2">① 当日到期 / 应启动</span>${list(b.due_today, "") || '<div class="mini">无</div>'}</div>
+      <div><span class="text-2">① 当日到期 / 应启动</span>${list(b.due_today) || '<div class="mini">无</div>'}</div>
       <hr class="divider">
-      <div><span class="text-2">② 临期</span>${list(b.due_soon, '<span class="lamp lamp--amber">临期</span>') || '<div class="mini">无</div>'}</div>
+      <div><span class="text-2">② 临期</span>${list(b.due_soon, "amber") || '<div class="mini">无</div>'}</div>
       <hr class="divider">
-      <div><span class="text-2">② 逾期</span>${list(b.overdue, '<span class="lamp lamp--red">逾期</span>') || '<div class="mini">无</div>'}</div>
+      <div><span class="text-2">② 逾期</span>${list(b.overdue, "red") || '<div class="mini">无</div>'}</div>
     </div>`;
 }
 
-// ── 视图：看板 ──
+// ── 视图：看板（L1：选中板块时该板块 2 列聚焦，未筛选时 3×2 全景，不做 6 列并置） ──
 function viewKanban() {
   const boards = ["policy", "gov", "industry", "media", "event", "customer"];
+  const cardOf = (i, zh) => `<div class="card${cardAlertCls(i)}" tabindex="0">${alertStripOf(i)}
+    <span class="board-strip" style="background:${boardVar(zh)}"></span>
+    <div class="body"><b>${esc(i.title)}</b>
+      <div class="rowline" style="margin-top:4px">${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span>${lampFor(i)}</div>
+    </div>
+  </div>`;
+  const focus = state.filterBoard ? CODE_OF[state.filterBoard] : "";
+  if (focus) {
+    const zh = BOARD_ZH[focus];
+    const items = filtered().filter((i) => i.board === focus);
+    const open = items.filter((i) => i.status !== "done");
+    const done = items.filter((i) => i.status === "done");
+    const col = (title, arr) => `<section class="panel" style="--panel-strip:${boardVar(zh)}; padding:12px">
+      <div class="rowline" style="margin-bottom:8px">
+        <b>${esc(zh)} · ${title}</b><span class="mini" style="margin-left:auto">${arr.length} 项</span>
+      </div>
+      ${arr.map((i) => cardOf(i, zh)).join("") || '<div class="mini">（空）</div>'}
+    </section>`;
+    return `<div class="kanban kanban--focus">${col("未启 / 进行", open)}${col("已闭环", done)}</div>`;
+  }
   return `<div class="kanban">` + boards.map((code) => {
     const zh = BOARD_ZH[code];
     const items = filtered().filter((i) => i.board === code);
@@ -114,33 +151,26 @@ function viewKanban() {
         <b>${zh}</b><span class="mini" style="margin-left:auto">${items.length} 项</span>
       </div>
       <div class="mini text-2" style="margin-bottom:8px">未启 ${status("pending", "unprepared")} · 进行 ${status("active")} · 闭环 ${status("done")}</div>
-      ${items.map((i) => `<div class="card">
-        <span class="board-strip" style="background:${boardVar(zh)}"></span>
-        <div class="body"><b>${esc(i.title)}</b>
-          <div class="rowline" style="margin-top:4px">${gauge(i.progress_pct)}<span class="mini">${i.progress_pct}%</span>${lampFor(i)}</div>
-        </div>
-      </div>`).join("") || '<div class="mini">（空）</div>'}
+      ${items.map((i) => cardOf(i, zh)).join("") || '<div class="mini">（空）</div>'}
     </section>`;
   }).join("") + `</div>`;
 }
 
-// ── 视图：明细 ──
+// ── 视图：明细（L4：9 列砍 7 列——类型+优先级合并双行，下一步移出明细表；区间/进度 mono） ──
 function viewDetail() {
   const rows = filtered().map((i) => `<tr>
     <td>${esc(BOARD_ZH[i.board] ?? i.board)}</td>
     <td><b>${esc(i.title)}</b></td>
-    <td>${esc(i.category ?? "—")}</td>
-    <td>${esc(i.priority ?? "—")}</td>
-    <td>${dateCell(i)}</td>
-    <td>${gauge(i.progress_pct)}<span class="mini">${i.progress_pct}%</span></td>
+    <td>${esc(i.category ?? "—")}<div class="mini text-3">${esc(i.priority ?? "—")}</div></td>
+    <td class="mono">${dateCell(i)}</td>
+    <td>${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span></td>
     <td>${esc(i.status ?? "—")}</td>
     <td>${lampFor(i)}</td>
-    <td class="mini">${esc(i.next_action ?? "—")}</td>
   </tr>`).join("");
   return `<div class="panel panel--chamfer" style="padding:0; overflow:auto; max-height:70vh">
     <table><thead><tr>
-      <th>板块</th><th>事项</th><th>类型</th><th>优先级</th><th>计划区间</th><th>进度</th><th>状态</th><th>警示</th><th>下一步</th>
-    </tr></thead><tbody>${rows || '<tr><td colspan="9" class="empty">无匹配项</td></tr>'}</tbody></table>
+      <th>板块</th><th style="min-width:580px">事项</th><th>类型 / 优先级</th><th>计划区间</th><th>进度</th><th>状态</th><th>警示</th>
+    </tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">无匹配项</td></tr>'}</tbody></table>
   </div>`;
 }
 
@@ -245,12 +275,14 @@ function viewAdd() {
 }
 
 // ── 视图：设置 ──
+// v2.1：多端同步入口已移除（用户放弃多端模式，本地功能离线完整可用）。
+// 免打扰 time input 接真实读写（get_prefs/set_prefs → sync_state 键值表）。
 function viewSettings() {
   return `<div class="panel panel--chamfer" style="padding:16px; max-width:720px">
     <b>数据</b>
     <div class="settings-row">
       <span>导入存量 Excel（写前自动备份，失败即阻断写入）</span>
-      <span><input type="text" id="imp-path" placeholder="…\work_progress.xlsx" style="width:280px">
+      <span><input type="text" id="imp-path" placeholder="…\\work_progress.xlsx" style="width:280px">
       <button class="btn" id="imp-go">导入</button></span>
     </div>
     <div class="settings-row">
@@ -266,72 +298,109 @@ function viewSettings() {
       </select>
     </div>
     <hr class="divider">
-    <b>提醒送达（B7 首版：系统通知 + 应用内；托盘常驻）</b>
+    <b>提醒送达（B7：系统通知 + 应用内；托盘常驻）</b>
     <div class="settings-row">
-      <span>免打扰时段（默认 22:00–8:00，期间不弹系统通知）</span>
-      <span><input type="time" value="22:00"> – <input type="time" value="08:00"></span>
+      <span>免打扰时段（期间只通知不播报，晨报照常生成不丢）</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <input type="time" id="quiet-start">
+        –
+        <input type="time" id="quiet-end">
+      </span>
+    </div>
+    <div class="settings-row">
+      <span class="mini">免打扰窗口按本地时钟生效（v2.1 修复 UTC 偏移：晨报本地 9:00 准点）</span>
+      <span class="mini" id="quiet-saved"></span>
     </div>
     <hr class="divider">
-    <b>团队同步（F5：自建薄服务端）</b>
+    <b>语音播报（F10 · v2.1 上线）</b>
     <div class="settings-row">
-      <span>服务端地址（留空 = 纯本地模式，断网不影响本地功能）</span>
-      <span style="display:flex;gap:8px;align-items:center">
-        <input type="text" id="sync-url" placeholder="https://sync.example.com:8443" style="width:260px">
-        <button class="btn btn--ghost" id="sync-save">保存地址</button>
-      </span>
+      <span>总开关在主界面右上角，默认开启；关闭后只弹通知不出声。</span>
     </div>
     <div class="settings-row">
-      <span>登录（每台设备一个令牌，最多 5 台并存）</span>
-      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input type="text" id="sync-user" placeholder="用户名" style="width:130px">
-        <input type="password" id="sync-pass" placeholder="口令" style="width:150px">
-        <button class="btn" id="sync-login">登录</button>
-      </span>
-    </div>
-    <div class="settings-row">
-      <span>同步状态</span>
-      <span style="display:flex;gap:8px;align-items:center">
-        <span class="chip" id="sync-chip" data-state="unconfigured">未启用同步</span>
-        <span class="mini" id="sync-detail">—</span>
-      </span>
-    </div>
-    <div class="settings-row">
-      <span>立即同步（断网时改动留队列，恢复后自动补推）</span>
-      <span style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn--ghost" id="sync-now">立即同步</button>
-        <button class="btn btn--ghost" id="sync-logout">退出登录</button>
-      </span>
-    </div>
-    <div class="settings-row">
-      <span class="text-2 mini">令牌只存在本机数据库，界面永不显示完整令牌；换设备/丢设备请在服务端按设备撤销。</span>
+      <span class="mini">播报走系统中文语音（Windows 自带），读晨报要点不逐字念全部；不做真人声纹克隆。</span>
     </div>
     <hr class="divider">
-    <b>更新（静态 JSON 清单 + Ed25519 签名，零鉴权）</b>
+    <b>更新（自动检查 + 确认后安装，Ed25519 验签）</b>
     <div class="settings-row">
-      <span>检查更新</span>
-      <button class="btn btn--ghost" id="upd-go">检查更新</button>
-    </div>
-    <hr class="divider">
-    <b>语音播报（F10 · P2 二期）</b>
-    <div class="settings-row">
-      <span class="text-2">首版仅预留接口，总开关在主界面显眼位置且默认关闭；不做真人声纹克隆。</span>
+      <span>检查更新（启动时已静默检查过一次，这里手动复查）</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn--ghost" id="upd-go">检查更新</button>
+        <span class="mini" id="upd-status"></span>
+      </span>
     </div>
   </div>`;
 }
 
-// ── 渲染主循环 ──
-function render() {
+// ── 渲染主循环（第三章：四阶段 240ms = 拆解72 + 传递84 + 重组60 + 锁定24）──
+// ① 拆解（accelerate）→ ② 传递（旧形态淡出）→ ③ 重组（decelerate，逐卡变形只标 ≤6 张）
+// → ④ 锁定（brand 描边闪 24ms）。容器只动 transform/opacity，逐卡才允许 clip-path。
+const MORPH_SWAP_MS = 132;  // 出场 156ms 的后 24ms 与进场重叠 → 132ms 处换帧
+const MORPH_IN_MS = 84;
+const MORPH_LOCK_MS = 24;
+let morphTimer = 0;
+let prevView = "brief";
+
+/** 变形轴向（3.3）：看板↔时间线=横向 h；看板↔明细=纵向 v；其余视图容器淡入、不逐卡变形。 */
+function morphAxis(a, b) {
+  const pair = (x, y) => (a === x && b === y) || (a === y && b === x);
+  if (pair("kanban", "timeline")) return "h";
+  if (pair("kanban", "detail")) return "v";
+  return "";
+}
+
+const VIEWS = {
+  brief: viewBrief, kanban: viewKanban, detail: viewDetail,
+  timeline: viewTimeline, kpi: viewKpi, units: viewUnits,
+  add: viewAdd, settings: viewSettings,
+};
+
+function render(mode) {
   const main = $("#main");
-  const views = {
-    brief: viewBrief, kanban: viewKanban, detail: viewDetail,
-    timeline: viewTimeline, kpi: viewKpi, units: viewUnits,
-    add: viewAdd, settings: viewSettings,
+  if (morphTimer) { clearTimeout(morphTimer); morphTimer = 0; }
+  main.classList.remove("morph-out", "morph-in", "morph-lock", "reflow-fade");
+  delete main.dataset.morph;
+
+  if (mode === "reflow") {
+    // 筛选重排（3.4）：同视图 ≤120ms 只淡入，不套变形、不逐卡动画
+    main.innerHTML = (VIEWS[state.view] || viewBrief)();
+    bindView();
+    void main.offsetWidth;
+    main.classList.add("reflow-fade");
+    prevView = state.view;
+    return;
+  }
+
+  const axis = morphAxis(prevView, state.view);
+  const busy = main.innerHTML.trim() !== "";
+
+  const assemble = () => {
+    main.classList.remove("morph-out");
+    main.innerHTML = (VIEWS[state.view] || viewBrief)();
+    bindView();
+    if (axis) {
+      // 3.5 并发上限：逐卡变形只标 ≤6 张（超出直接跳终态），其余卡随容器淡入
+      main.dataset.morph = axis;
+      main.querySelectorAll(".card").forEach((c, k) => { if (k < 6) c.classList.add("morph-card"); });
+    }
+    void main.offsetWidth;
+    main.classList.add("morph-in");
+    morphTimer = setTimeout(() => {
+      main.classList.add("morph-lock"); // ④ 锁定 24ms
+      morphTimer = setTimeout(() => {
+        main.classList.remove("morph-lock", "morph-in");
+        delete main.dataset.morph;
+        morphTimer = 0;
+      }, MORPH_LOCK_MS);
+    }, MORPH_IN_MS);
   };
-  main.classList.remove("view");
-  void main.offsetWidth; // 重启动画（≤240ms 轴向变换）
-  main.classList.add("view");
-  main.innerHTML = (views[state.view] || viewBrief)();
-  bindView();
+
+  if (busy) {
+    main.classList.add("morph-out"); // ①② 拆解 + 传递（156ms 出场）
+    morphTimer = setTimeout(assemble, MORPH_SWAP_MS);
+  } else {
+    assemble(); // 首屏无旧形态，直接进重组
+  }
+  prevView = state.view;
 }
 
 function bindView() {
@@ -357,7 +426,7 @@ function bindView() {
         }
         if (r.plan_end_date) bits.push(`结束 ${r.plan_end_date}（${precisionZh(r.plan_end_precision)}）`);
         if (r.needs_confirm) bits.push("时间待确认，已进待确认队列");
-        if (r.queued) bits.push("已进同步队列，联网后自动补推");
+        if (r.queued) bits.push("已留存本地待同步记录（单机版仅本地保存）");
         out.textContent = bits.join(" · ");
         reload();
       } catch (e) {
@@ -383,80 +452,52 @@ function bindView() {
         alert(`备份完成：${r.bytes} 字节 · integrity ${r.integrity} · ${r.json_tables} 张表 JSON。`);
       } catch (e) { alert("备份失败：" + e); }
     });
+    // ── 更新：手动检查（真实下载安装链路，替换旧只读校验）──
     $("#upd-go")?.addEventListener("click", async () => {
+      const status = $("#upd-status");
+      status.textContent = "检查中…";
       try {
-        const manifestText = await (await fetch(UPDATE_URL)).text();
-        const r = await invoke("verify_update", {
-          manifestText, currentVersion: "2.0.0", platform: "windows-x86_64",
-        });
-        // 拒绝（验签失败/清单损坏）必须把原因亮给用户——拒绝绝不等于「已是最新」。
-        const msg = r.decision === "available"
-          ? `发现新版本 ${r.latest}`
-          : r.decision === "refused"
-            ? `更新被拒绝（保持当前版本）：${r.notes ?? "原因未提供"}`
-            : "已是最新版本。";
-        alert(msg);
-      } catch (e) { alert("更新检查失败（离线时保留当前版本）：" + e); }
+        const r = await invoke("check_update");
+        if (!r.available) { status.textContent = "已是最新版本。"; return; }
+        status.textContent = `发现新版本 ${r.version}`;
+        if (confirm(`发现新版本 ${r.version}，现在下载并安装？\n\n下载完成后应用会重启进入新版。`)) {
+          status.textContent = "下载中…（安装完成后自动重启）";
+          await invoke("install_update");
+        }
+      } catch (e) {
+        // 检查失败（离线/端点未就绪）如实展示，绝不静默当「已是最新」
+        status.textContent = "检查失败（离线时保留当前版本）：" + e;
+      }
     });
+
+    // ── 免打扰窗口：打开设置页即回填，修改即保存 ──
+    (async () => {
+      try {
+        state.prefs = await invoke("get_prefs");
+        $("#quiet-start").value = state.prefs.quiet_start;
+        $("#quiet-end").value = state.prefs.quiet_end;
+      } catch (_) { /* 回填失败不阻断设置页 */ }
+    })();
+    const saveQuiet = async () => {
+      const qs = $("#quiet-start").value || "22:00";
+      const qe = $("#quiet-end").value || "08:00";
+      try {
+        state.prefs = await invoke("set_prefs", {
+          quietStart: qs, quietEnd: qe,
+          voiceEnabled: $("#f10-master").checked,
+        });
+        $("#quiet-saved").textContent = `已保存：${state.prefs.quiet_start}–${state.prefs.quiet_end}`;
+      } catch (e) {
+        $("#quiet-saved").textContent = "保存失败：" + e;
+      }
+    };
+    $("#quiet-start")?.addEventListener("change", saveQuiet);
+    $("#quiet-end")?.addEventListener("change", saveQuiet);
+
     $("#theme")?.addEventListener("change", (e) => {
       document.documentElement.dataset.theme = e.target.value;
     });
 
-    // ── 同步：地址保存 / 登录 / 状态 / 立即同步 / 退出登录 ──
-    $("#sync-save")?.addEventListener("click", async () => {
-      const raw = $("#sync-url").value.trim();
-      try {
-        const saved = await invoke("set_sync_url", { baseUrl: raw });
-        $("#sync-url").value = saved;
-        await refreshSyncStatus();
-        if (raw && saved !== raw) $("#sync-detail").textContent = `地址已规范化为 ${saved}`;
-      } catch (e) { alert("地址不合法：" + e); }
-    });
-
-    $("#sync-login")?.addEventListener("click", async () => {
-      const baseUrl = $("#sync-url").value.trim();
-      const username = $("#sync-user").value.trim();
-      const password = $("#sync-pass").value;
-      if (!baseUrl) { alert("请先填写服务端地址并保存。"); return; }
-      if (!username || !password) { alert("用户名和口令都要填。"); return; }
-      $("#sync-chip").textContent = "登录中…";
-      try {
-        const st = await invoke("sync_login", { baseUrl, username, password });
-        $("#sync-pass").value = "";
-        applySyncStatus(st);
-        // 登录成功后立刻同步一次，把本地存量改动推上去
-        try {
-          const rep = await invoke("sync_now");
-          applySyncReport(rep);
-          reload();
-        } catch (_) { /* 首同步失败不阻断登录成功这一事实 */ }
-      } catch (e) {
-        $("#sync-chip").textContent = "登录失败";
-        $("#sync-detail").textContent = String(e);
-      }
-    });
-
-    $("#sync-now")?.addEventListener("click", async () => {
-      $("#sync-chip").textContent = "同步中…";
-      try {
-        const rep = await invoke("sync_now");
-        applySyncReport(rep);
-        reload();
-      } catch (e) {
-        $("#sync-chip").textContent = "同步异常";
-        $("#sync-detail").textContent = String(e);
-      }
-    });
-
-    $("#sync-logout")?.addEventListener("click", async () => {
-      if (!confirm("退出登录会撤销本机令牌，本地数据保留。继续？")) return;
-      try {
-        const st = await invoke("sync_logout");
-        applySyncStatus(st);
-      } catch (e) { alert("退出登录失败：" + e); }
-    });
-
-    refreshSyncStatus();
   }
 }
 
@@ -465,64 +506,63 @@ function precisionZh(p) {
   return ({ day: "日精度", month: "月精度", quarter: "季精度", ongoing: "长期", unknown: "待确认" })[p] ?? (p || "—");
 }
 
-/** 服务端返回的是 SyncState 枚举（snake_case），映射到 chip 的样式与文案。 */
-function applySyncStatus(st) {
-  const chip = $("#sync-chip");
-  const detail = $("#sync-detail");
-  if (!chip) return;
-  const map = {
-    disabled: ["未启用同步", "未启用同步"],
-    connected: ["已连接", "已连接"],
-    pending: ["待补推", "待补推"],
-    error: ["同步异常", "同步异常"],
-    auth_required: ["需重新登录", "需重新登录"],
-  };
-  const [stateKey, label] = map[st.state] ?? ["未启用同步", st.state ?? "未知"];
-  chip.textContent = label;
-  chip.dataset.state = stateKey;
-  const bits = [];
-  if (st.member_name) bits.push(`成员 ${st.member_name}`);
-  if (st.device_id) bits.push(`设备 ${st.device_id}`);
-  if (st.pending > 0) bits.push(`待推 ${st.pending} 条`);
-  if (st.last_ok_at) bits.push(`上次成功 ${st.last_ok_at}`);
-  if (st.last_error) bits.push(`最近错误 ${st.last_error}`);
-  detail.textContent = bits.length ? bits.join(" · ") : "—";
-  if ($("#sync-url") && st.base_url) $("#sync-url").value = st.base_url;
-}
-
-function applySyncReport(rep) {
-  const chip = $("#sync-chip");
-  const detail = $("#sync-detail");
-  if (!chip) return;
-  const map = {
-    disabled: "未启用同步", connected: "已连接", pending: "待补推",
-    error: "同步异常", auth_required: "需重新登录",
-  };
-  chip.textContent = map[rep.state] ?? rep.state;
-  chip.dataset.state = rep.state ?? "";
-  const bits = [`推出 ${rep.pushed}`, `拉入 ${rep.pulled}`];
-  if (rep.conflicts) bits.push(`冲突 ${rep.conflicts}`);
-  if (rep.pending) bits.push(`待推 ${rep.pending}`);
-  if (rep.error) bits.push(`错误 ${rep.error}`);
-  detail.textContent = bits.join(" · ");
-}
-
-/** 拉一次真实状态回填表单；失败不弹窗（设置页打开时无登录也应安静）。 */
-async function refreshSyncStatus() {
+/* ── 红色警戒参照交互音效（v2.1 追加评论）：WebAudio 现场合成 ──
+   零素材、零版权、零新增依赖——不复用任何游戏原声，全部程序合成。
+   ① uiTick：导航/选中/筛选的机械咔哒（RA 风格 UI 反馈音）
+   ② sfxAlert：新警示卡入场的 EVA 式短双音——受 4.4 疲劳控制（每卡每会话 1 次，警示灯仍不循环）
+   闸门：与语音播报共用 voice_enabled 总开关（数据库唯一事实源）；
+   免打扰只约束晨报主动送达，用户主动点击产生的反馈音不受其限。失败静默，绝不阻断交互。 */
+let sfxCtx = null;
+function sfxOn() { return !!(state.prefs && state.prefs.voice_enabled); }
+function beep(freq, ms, vol) {
   try {
-    const st = await invoke("sync_status");
-    applySyncStatus(st);
-  } catch (_) { /* 读状态失败不打断设置页 */ }
+    if (!sfxOn()) return;
+    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (sfxCtx.state === "suspended") sfxCtx.resume();
+    const o = sfxCtx.createOscillator(), g = sfxCtx.createGain();
+    o.type = "square";
+    o.frequency.value = freq;
+    const t = sfxCtx.currentTime;
+    g.gain.setValueAtTime(vol || 0.035, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+    o.connect(g);
+    g.connect(sfxCtx.destination);
+    o.start(t);
+    o.stop(t + ms / 1000);
+  } catch (_) { /* 无手势/无音频设备/被策略拦截：静默跳过 */ }
 }
+function uiTick() { beep(1150, 35); }
+function sfxAlert() { beep(620, 70); setTimeout(() => beep(620, 70), 110); }
 
-// 更新清单地址：静态 JSON，零鉴权（架构 §8；绕开历史 21001 问题）
-const UPDATE_URL = "https://updates.example.com/workbench/latest.json";
+/* RA 单位选中：点击/回车卡片 → 四角括号选中 + 咔哒音，再点取消；一次一张主选。
+   #main 是常驻节点，事件委托一次即可，重渲染后自动作用于新卡片。 */
+let selectedCard = null;
+$("#main").addEventListener("click", (e) => {
+  if (e.target.closest("button, a, input, select, textarea")) return;
+  const card = e.target.closest(".card");
+  if (!card) return;
+  if (selectedCard === card) {
+    card.classList.remove("card--selected");
+    selectedCard = null;
+  } else {
+    if (selectedCard) selectedCard.classList.remove("card--selected");
+    card.classList.add("card--selected");
+    selectedCard = card;
+  }
+  uiTick();
+});
+$("#main").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const card = e.target && e.target.closest ? e.target.closest(".card") : null;
+  if (card) { e.preventDefault(); card.click(); }
+});
 
 // ── 导航与筛选绑定 ──
 $("#nav").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-view]");
   if (!btn) return;
   state.view = btn.dataset.view;
+  uiTick();
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b === btn)));
   render();
@@ -531,29 +571,48 @@ document.querySelectorAll(".chip").forEach((chip) => {
   chip.addEventListener("click", () => {
     if (chip.dataset.filter === "board") {
       state.filterBoard = chip.value;
+      uiTick();
       document.querySelectorAll('.chip[data-filter="board"]').forEach((c) =>
         c.setAttribute("data-active", String(c === chip)));
       updateFilterCount();
-      render();
+      render("reflow");
     }
   });
 });
 $("#filter-clear").addEventListener("click", () => {
   state.filterBoard = "";
+  uiTick();
   document.querySelectorAll('.chip[data-filter="board"]').forEach((c) =>
     c.setAttribute("data-active", String(!c.value)));
   updateFilterCount();
-  render();
+  render("reflow");
 });
 
 // B7 补推：启动时检查上次未送达的晨报
 (async function boot() {
   try {
     const pending = await invoke("get_pending_brief");
-    if (pending && pending.date) {
+    // v2.1 修复：后端返回字段是 pending 布尔（此前误读 .date，横幅永远不弹）
+    if (pending && pending.pending) {
       $("#undelivered").hidden = false;
     }
   } catch (_) { /* 无记录即正常 */ }
+  // F10 总开关初始化：从偏好库读真实状态（默认开启），不再写死 disabled
+  try {
+    state.prefs = await invoke("get_prefs");
+    const sw = $("#f10-master");
+    sw.disabled = false;
+    sw.checked = !!state.prefs.voice_enabled;
+    sw.addEventListener("change", async () => {
+      try {
+        const cur = state.prefs || await invoke("get_prefs");
+        state.prefs = await invoke("set_prefs", {
+          quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
+          voiceEnabled: sw.checked,
+        });
+      } catch (_) { /* 写失败时开关状态可能不同步，下次启动回读纠偏 */ }
+    });
+  } catch (_) { /* 偏好读取失败：开关保持 disabled，不误播报 */ }
   $("#undelivered-ok").addEventListener("click", async () => {
     $("#undelivered").hidden = true;
     try { await invoke("mark_brief_delivered"); } catch (_) {}
@@ -563,7 +622,7 @@ $("#filter-clear").addEventListener("click", () => {
 })();
 
 /**
- * 壳 → 前端的事件绑定（B7 与同步）。
+ * 壳 → 前端的事件绑定（B7 晨报 / F10 播报 / 自动更新）。
  * 这些事件是桌面壳在 setup / 调度线程里 emit 出来的，前端不订阅就等于
  * 晨报送达了界面也不知道、托盘点了「查看晨报」也不跳转。
  */
@@ -577,11 +636,17 @@ async function bindShellEvents() {
     if (el) el.hidden = false;
   });
 
-  // 晨报已送达（系统通知已弹）→ 刷新晨报页并收起补推横幅
-  await listen("brief-delivered", () => {
+  // 晨报已送达（系统通知已弹）→ 刷新晨报页、收起补推横幅、按偏好语音播报要点。
+  // F10（v2.1 上线）：播报=系统中文 TTS 读要点；免打扰时段只通知不播报；
+  // 开关实时跟随主界面右上角总开关（数据库是唯一事实源）。
+  await listen("brief-delivered", (e) => {
     const el = $("#undelivered");
     if (el) el.hidden = true;
     if (state.view === "brief") reload();
+    const d = e.payload || {};
+    if (d.voice_enabled && !d.notification_suppressed && $("#f10-master").checked && d.speech) {
+      speakBrief(d.speech);
+    }
   });
 
   // 送达失败：横幅留痕，不静默
@@ -602,12 +667,38 @@ async function bindShellEvents() {
     render();
   });
 
-  // 托盘菜单「立即同步」→ 直接触发一次同步
-  await listen("sync-requested", async () => {
-    try {
-      const rep = await invoke("sync_now");
-      if (state.view === "settings") applySyncReport(rep);
-      if (rep.pulled) reload();
-    } catch (_) { /* 未配置同步时静默 */ }
+  // 启动静默检查发现新版 → 横幅提示，用户确认后才下载安装（v2.1 默认策略）
+  await listen("update-available", (e) => {
+    const d = e.payload || {};
+    const bar = $("#update-bar");
+    if (!bar) return;
+    bar.hidden = false;
+    const span = bar.querySelector("span");
+    if (span) span.textContent = `◆ 发现新版本 v${d.version}，可以更新。`;
+    $("#update-go")?.addEventListener("click", async () => {
+      if (!confirm(`下载并安装 v${d.version}？下载完成后应用会重启进入新版。`)) return;
+      try {
+        bar.hidden = true;
+        await invoke("install_update");
+      } catch (err) { alert("更新安装失败：" + err); }
+    });
   });
+}
+
+/** F10 语音播报：WebView2 speechSynthesis，选系统 zh 语音读要点。
+ * 选型理由（v2.1）：Windows 上 WebView2 的 TTS 直接映射系统已装的中文语音
+ * （Huihui/Kangkang 等，即 SAPI 语音体系），零新增依赖、窗口隐藏到托盘仍可出声；
+ * 红线：只用系统 TTS，不做真人声纹克隆。 */
+function speakBrief(text) {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "zh-CN";
+    const zh = (synth.getVoices() || []).find((v) => (v.lang || "").toLowerCase().startsWith("zh"));
+    if (zh) u.voice = zh;
+    u.rate = 1.0;
+    synth.speak(u);
+  } catch (_) { /* 语音失败绝不阻断晨报主流程 */ }
 }
