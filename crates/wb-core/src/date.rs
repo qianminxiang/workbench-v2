@@ -225,9 +225,17 @@ fn build_date(year: i32, month: u32, day: u32) -> Option<CivilDate> {
     Some(CivilDate::new(year, month, day))
 }
 
-/// 解析「2月-5月」这类区间：返回左右两端子串
-fn split_range(raw: &str) -> Option<(&str, &str)> {
-    for sep in ["-", "—", "–", "~", "至", "到"] {
+/// 区间切分。
+///
+/// 分两类处理，顺序不能颠倒：
+/// 1. 中文/波浪/破折号这类**无歧义**分隔符（`至`/`到`/`~`/`—`/`–`）直接切；
+/// 2. 连字符 `-` 有歧义：它同时是 ISO 日期的分隔符（`2026-04-10`）。
+///    因此连字符只在**左右两段各自都能解析成完整日期**时才当区间符——
+///    否则 `2026-04-10` 会被切成「2026」和「04-10」，误判成无法解析进待确认队列。
+///    两段合法性用真实 fiscal_year 预检（与后续正式解析同口径），
+///    避免闰日等年份敏感输入在预检与正式解析间出现判定漂移。
+fn split_range(raw: &str, fiscal_year: i32) -> Option<(&str, &str)> {
+    for sep in ["至", "到", "~", "—", "–"] {
         if let Some(idx) = raw.find(sep) {
             let (a, b) = raw.split_at(idx);
             let b = &b[sep.len()..];
@@ -236,7 +244,22 @@ fn split_range(raw: &str) -> Option<(&str, &str)> {
             }
         }
     }
-    None
+    // 连字符：取第一个能让左右两段都成为完整日期的位置
+    let mut best: Option<(&str, &str)> = None;
+    for (idx, _) in raw.match_indices('-') {
+        let (a, rest) = raw.split_at(idx);
+        let b = &rest[1..];
+        if a.trim().is_empty() || b.trim().is_empty() {
+            continue;
+        }
+        let left_ok = parse_single(a, fiscal_year, Role::Start).is_some();
+        let right_ok = parse_single(b, fiscal_year, Role::End).is_some();
+        if left_ok && right_ok {
+            best = Some((a, b));
+            break;
+        }
+    }
+    best
 }
 
 /// 单个日期文本规范化（不含区间拆分）。
@@ -366,7 +389,7 @@ pub fn normalize(raw: &str, fiscal_year: i32, role: Role) -> NormalizedDate {
         return NormalizedDate::unknown(raw, "空值或待定标记，进入待确认队列");
     }
 
-    if let Some((a, b)) = split_range(s) {
+    if let Some((a, b)) = split_range(s, fiscal_year) {
         let side = match role {
             Role::Start => a,
             Role::End => b,
@@ -676,4 +699,27 @@ mod tests {
         assert_eq!(r.precision, Precision::Unknown);
         assert!(r.date.is_none());
     }
+
+    #[test]
+    fn single_iso_date_is_not_split_as_range() {
+        // 回归：`2026-04-10` 曾被抓进区间切分，「2026」+「04-10」两段都不合法 → 误进待确认
+        let n = normalize("2026-04-10", 2026, Role::Start);
+        assert_eq!(n.date.as_deref(), Some("2026-04-10"));
+        assert_eq!(n.precision, Precision::Day);
+
+        let n2 = normalize("2026-4-1", 2026, Role::Start);
+        assert_eq!(n2.date.as_deref(), Some("2026-04-01"));
+    }
+
+    #[test]
+    fn real_ranges_still_split() {
+        // 修 ISO 不能把真正的区间弄坏
+        let (a, b) = normalize_pair("2026-04-10 至 2026-05-01", "2026-05-01", 2026);
+        assert_eq!(a.date.as_deref(), Some("2026-04-10"), "区间左端要解析出来");
+        assert_eq!(b.date.as_deref(), Some("2026-05-01"));
+
+        let (c, d) = normalize_pair("3月-5月", "5月", 2026);
+        assert!(c.date.is_some() && d.date.is_some(), "中文区间仍应正常切分");
+    }
 }
+

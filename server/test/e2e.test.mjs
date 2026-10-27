@@ -19,6 +19,7 @@ const ROOT = new URL('..', import.meta.url).pathname;
 let child;
 let dataDir;
 let base;
+let adminBase;
 
 /** 取一个空闲端口（避免与开发中实例冲突） */
 function freePort() {
@@ -45,11 +46,11 @@ async function waitHealthy(url, tries = 80) {
   throw new Error('server did not become healthy');
 }
 
-async function req(method, path, { body, token } = {}) {
+async function req(method, path, { body, token, admin } = {}) {
   const headers = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token) headers.authorization = `Bearer ${token}`;
-  const r = await fetch(`${base}${path}`, {
+  const r = await fetch(`${admin ? adminBase : base}${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -69,6 +70,7 @@ before(async () => {
   const port = await freePort();
   const adminPort = await freePort();
   base = `http://127.0.0.1:${port}`;
+  adminBase = `http://127.0.0.1:${adminPort}`;
 
   child = spawn(process.execPath, [join(ROOT, 'src', 'server.js')], {
     cwd: ROOT,
@@ -273,12 +275,13 @@ test('13 /tokens/revoke 缺参数时返回 400，不静默成功', async () => {
 test('14 唯一 admin 不可被 /members/remove 禁用（防锁死护栏）', async () => {
   const r = await req('POST', '/members/remove', {
     token: adminToken,
+    admin: true,
     body: { member_id: 'm_not_me_but_does_not_exist' },
   });
   assert.equal(r.status, 404);
 
   // 自己对号实现的是更早的 400，但核心是：唯一 admin 任何路径都不能被禁
-  const members = await req('GET', '/members', { token: adminToken });
+  const members = await req('GET', '/members', { token: adminToken, admin: true });
   assert.equal(members.status, 200);
   const me = members.body.members.find((m) => m.member_id === adminMember);
   assert.equal(me.role, 'admin');
@@ -387,7 +390,7 @@ test('20 无令牌访问受保护接口返回 401', async () => {
 });
 
 test('21 邀请 + 入伙：新成员不是 admin，且拿到自己的令牌', async () => {
-  const inv = await req('POST', '/invite', { token: adminToken });
+  const inv = await req('POST', '/invite', { token: adminToken, admin: true });
   assert.equal(inv.status, 200);
   assert.ok(inv.body.code);
 
@@ -398,8 +401,9 @@ test('21 邀请 + 入伙：新成员不是 admin，且拿到自己的令牌', as
   assert.equal(join.body.role, 'member');
   assert.equal(join.body.active_tokens, 1);
 
-  // 成员无权看成员列表
-  const members = await req('GET', '/members', { token: join.body.token });
+  // 成员无权看成员列表（走管理端口验证 requireAdmin 的 403 拦截语义未变；
+  // 公网端口现在对这些端点直接 404，见 test 25）
+  const members = await req('GET', '/members', { token: join.body.token, admin: true });
   assert.equal(members.status, 403);
 
   // 同一邀请码不能重复使用
@@ -410,7 +414,7 @@ test('21 邀请 + 入伙：新成员不是 admin，且拿到自己的令牌', as
 });
 
 test('22 成员可撤销自己的令牌，但撤不了别人的', async () => {
-  const inv = await req('POST', '/invite', { token: adminToken });
+  const inv = await req('POST', '/invite', { token: adminToken, admin: true });
   const join = await req('POST', '/join', {
     body: { code: inv.body.code, username: '小张', password: 'theirs-not-mine-9', device_id: 'd_zhang' },
   });
@@ -429,7 +433,7 @@ test('22 成员可撤销自己的令牌，但撤不了别人的', async () => {
 });
 
 test('23 admin 手动备份产出真实文件', async () => {
-  const r = await req('POST', '/admin/backup', { token: adminToken });
+  const r = await req('POST', '/admin/backup', { token: adminToken, admin: true });
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
   assert.ok(r.body.bytes > 0);
@@ -440,4 +444,37 @@ test('24 未知路径返回 404，不泄露内部信息', async () => {
   const r = await req('GET', '/definitely-not-a-route', { token: adminToken });
   assert.equal(r.status, 404);
   assert.equal(r.body.error, 'not found');
+});
+
+test('25 端口隔离：admin token 从公网端口调管理端点一律 404', async () => {
+  // 公网端口连路由存在性都不暴露——401/403 会泄露端点存在
+  const members = await req('GET', '/members', { token: adminToken });
+  assert.equal(members.status, 404);
+  assert.equal(members.body.error, 'not found');
+
+  const invite = await req('POST', '/invite', { token: adminToken, body: {} });
+  assert.equal(invite.status, 404);
+
+  const backup = await req('POST', '/admin/backup', { token: adminToken });
+  assert.equal(backup.status, 404);
+
+  const remove = await req('POST', '/members/remove', { token: adminToken, body: {} });
+  assert.equal(remove.status, 404);
+});
+
+test('26 管理端口语义保持：requireAdmin 对非管理员仍 403，未带 token 仍 401', async () => {
+  // 端口隔离改的是「路由注册在哪」，不是「鉴权语义」——403/401 拦截原样保留
+  const inv = await req('POST', '/invite', { token: adminToken, admin: true });
+  assert.equal(inv.status, 200);
+  const join = await req('POST', '/join', {
+    body: { code: inv.body.code, username: '小赵', password: 'member-not-admin-1', device_id: 'd_zhao' },
+  });
+  assert.equal(join.status, 200);
+
+  const forbidden = await req('GET', '/members', { token: join.body.token, admin: true });
+  assert.equal(forbidden.status, 403);
+  assert.equal(forbidden.body.error, 'admin only');
+
+  const anon = await req('GET', '/members', { admin: true });
+  assert.equal(anon.status, 401);
 });

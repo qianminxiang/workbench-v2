@@ -277,8 +277,12 @@ function noteLoginFail(key) {
 
 // ───────────────────────────── HTTP ─────────────────────────────
 
+// 两套路由表：管理接口（/members、/invite、/members/remove、/admin/backup）只注册在
+// admin 端口一侧；公网端口对这些端点一律 404——连路由存在性都不泄露（401/403 会暴露）。
 const routes = new Map();
-const route = (method, p, fn) => routes.set(`${method} ${p}`, fn);
+const adminRoutes = new Map();
+const route = (method, p, fn, scope) =>
+  (scope === 'admin' ? adminRoutes : routes).set(`${method} ${p}`, fn);
 
 function send(res, code, body) {
   const text = JSON.stringify(body);
@@ -469,7 +473,7 @@ route('POST', '/invite', requireAdmin(async (req, res, _p, member) => {
   db.prepare('INSERT INTO invite (code, created_by, expires_at) VALUES (?, ?, ?)').run(code, member.member_id, expires);
   db.prepare('INSERT INTO audit (at, actor, action, detail) VALUES (?, ?, ?, ?)').run(nowMs(), member.member_id, 'invite.create', code);
   send(res, 200, { ok: true, code, expires_at: expires, ttl_hours: CONFIG.inviteTtlHours });
-}));
+}), 'admin');
 
 // ── 凭邀请码注册 ──
 route('POST', '/join', async (req, res) => {
@@ -499,7 +503,7 @@ route('POST', '/join', async (req, res) => {
 route('GET', '/members', requireAdmin(async (req, res) => {
   const rows = db.prepare('SELECT member_id, display_name, role, created_at, status FROM member ORDER BY created_at').all();
   send(res, 200, { ok: true, members: rows });
-}));
+}), 'admin');
 route('POST', '/members/remove', requireAdmin(async (req, res, _p, member) => {
   const body = await readBody(req);
   if (body.member_id === member.member_id) return send(res, 400, { ok: false, error: 'cannot remove yourself' });
@@ -524,7 +528,7 @@ route('POST', '/members/remove', requireAdmin(async (req, res, _p, member) => {
   db.prepare('UPDATE token SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL').run(nowMs(), String(body.member_id));
   db.prepare('INSERT INTO audit (at, actor, action, detail) VALUES (?, ?, ?, ?)').run(nowMs(), member.member_id, 'member.remove', String(body.member_id));
   send(res, 200, { ok: true });
-}));
+}), 'admin');
 
 // ── push：接收变更行并合并 ──
 route('POST', '/sync/push', requireAuth(async (req, res, _p, member) => {
@@ -668,14 +672,19 @@ route('POST', '/admin/backup', requireAdmin(async (req, res, _p, member) => {
   const r = backupNow();
   db.prepare('INSERT INTO audit (at, actor, action, detail) VALUES (?, ?, ?, ?)').run(nowMs(), member.member_id, 'backup', r.file);
   send(res, 200, { ok: true, ...r });
-}));
+}), 'admin');
 
 // ── 请求分发 ──
-function makeHandler() {
+// 端口隔离：publicServer 只查公网路由表；adminServer（仅绑 127.0.0.1）先查管理表
+// 再兜底公网表——管理端点永远只从 admin 端口进来，公网端口对它们一律 404。
+function makeHandler(isAdminPort = false) {
   return async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      const fn = routes.get(`${req.method} ${url.pathname}`);
+      const key = `${req.method} ${url.pathname}`;
+      const fn = isAdminPort
+        ? (adminRoutes.get(key) ?? routes.get(key))
+        : routes.get(key);
       if (!fn) return send(res, 404, { ok: false, error: 'not found' });
       await fn(req, res, {}, null, {}, url);
     } catch (e) {
@@ -728,7 +737,7 @@ setInterval(() => {
 // ───────────────────────────── 启动 ─────────────────────────────
 
 if (require.main === module) {
-  const publicServer = http.createServer(makeHandler());
+  const publicServer = http.createServer(makeHandler(false));
   publicServer.listen(CONFIG.port, CONFIG.bind, () => {
     console.log(`[wb-sync] 同步端口 ${CONFIG.bind}:${CONFIG.port}`);
     console.log(`[wb-sync] 数据目录 ${DATA_DIR}`);
@@ -736,7 +745,7 @@ if (require.main === module) {
   });
 
   // 管理接口只绑回环（架构 §4.12），不与业务端口混跑公网
-  const adminServer = http.createServer(makeHandler());
+  const adminServer = http.createServer(makeHandler(true));
   adminServer.listen(CONFIG.adminPort, CONFIG.adminBind, () => {
     console.log(`[wb-sync] 管理端口 ${CONFIG.adminBind}:${CONFIG.adminPort}（仅回环）`);
   });
