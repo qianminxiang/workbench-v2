@@ -1,0 +1,15 @@
+{
+  "name": "wb-sync",
+  "version": "2.0.0",
+  "private": true,
+  "description": "个人工作台 v2.0 自建同步服务端（Node 22 内置模块，零 npm 依赖）",
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/e2e.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

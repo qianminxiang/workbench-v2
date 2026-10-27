@@ -1,0 +1,209 @@
+/* 个人工作台 v2.0 · Design Token（档位 B「中度变形金刚」，UI 提案第四章定稿值）
+   两套模式独立校准而非反色（提案 4.1）：亮色=办公态，暗色=机甲态。
+   对比度均按 WCAG 相对亮度公式实算（见提案表 4.1），不要凭感觉改值。
+   硬规则：三文字只允许出现在面板/画布底；凹陷底（表头、轨道、筛选 chip）用次文字。
+   琥珀警示底上必须用深字（白字仅 2.16:1）；红警示底上必须用白字（深字仅 3.46:1）。
+   板块色仅作 4px 色条与时间线行程块，不作正文文字色。 */
+
+/* 亮色（办公态，默认跟随系统） */
+:root {
+  --mech-canvas: #F2F4F6;
+  --mech-panel: #FFFFFF;
+  --mech-inset: #EAEDF1;
+  --mech-text-1: #151A20;
+  --mech-text-2: #48525C;
+  --mech-text-3: #646E79;
+  --mech-brand: #1B5BD6;
+  /* 悬停纯色（不用 filter）：亮色下压深一档 */
+  --mech-brand-hover: #1749AE;
+  --mech-warn-amber: #9A5B00;
+  --mech-warn-red: #B22C24;
+  --mech-ok: #0D6F63;
+  --mech-border: #DCE1E6;
+  --mech-amber-bg: #E8A33D;
+  --mech-amber-fg: #12161A;
+  --mech-red-bg: #C7362E;
+  --mech-red-fg: #FFFFFF;
+  --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
+  --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
+  --radius-panel: 4px;
+  --radius-card: 6px;
+  --radius-badge: 2px;
+  --chamfer: 8px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --motion-switch: 200ms;
+  --motion-reflow: 120ms;
+  --ease-in-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-out-quad: cubic-bezier(0.55, 0.06, 0.68, 0.19);
+}
+
+/* 暗色（机甲态） */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --mech-canvas: #12161A;
+    --mech-panel: #1B2127;
+    --mech-inset: #232A31;
+    --mech-text-1: #E8ECEF;
+    --mech-text-2: #A9B3BC;
+    --mech-text-3: #87929C;
+    --mech-brand: #7CA9F5;
+  /* 悬停纯色（不用 filter）：暗色下提亮一档 */
+  --mech-brand-hover: #A6C6FF;
+    --mech-warn-amber: #E0A13A;
+    --mech-warn-red: #F27A72;
+    --mech-ok: #4FC3AE;
+    --mech-border: #2B333B;
+    --mech-amber-bg: #E0A13A;
+    --mech-amber-fg: #12161A;
+    --mech-red-bg: #F27A72;
+    --mech-red-fg: #12161A;
+    --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
+    --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
+  }
+}
+
+/* 手动锁定（设置页） */
+:root[data-theme="light"] {
+  --mech-canvas: #F2F4F6; --mech-panel: #FFFFFF; --mech-inset: #EAEDF1;
+  --mech-text-1: #151A20; --mech-text-2: #48525C; --mech-text-3: #646E79;
+  --mech-brand: #1B5BD6; --mech-warn-amber: #9A5B00; --mech-warn-red: #B22C24;
+  --mech-ok: #0D6F63; --mech-border: #DCE1E6;
+  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;
+  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;
+  --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
+  --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
+}
+:root[data-theme="dark"] {
+  --mech-canvas: #12161A; --mech-panel: #1B2127; --mech-inset: #232A31;
+  --mech-text-1: #E8ECEF; --mech-text-2: #A9B3BC; --mech-text-3: #87929C;
+  --mech-brand: #7CA9F5; --mech-warn-amber: #E0A13A; --mech-warn-red: #F27A72;
+  --mech-ok: #4FC3AE; --mech-border: #2B333B;
+  --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
+  --mech-red-bg: #F27A72; --mech-red-fg: #12161A;
+  --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
+  --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
+}
+
+/* 减少动效：降级 80ms 交叉淡入，不位移（提案 P7） */
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-switch: 80ms; --motion-reflow: 80ms; }
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--mech-canvas);
+  color: var(--mech-text-1);
+  font: 13px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* 层级只用 3 级：画布 → 面板 → 卡片。靠明度差与 1px 描边，不用投影堆叠。 */
+.panel {
+  background: var(--mech-panel);
+  border: 1px solid var(--mech-border);
+  border-radius: var(--radius-panel);
+  position: relative;
+  margin-bottom: var(--sp-4);
+}
+/* 档位 B 机甲符号：主面板右上 8px 切角（每屏不超过 6 处） */
+.panel--chamfer {
+  clip-path: polygon(0 0, calc(100% - var(--chamfer)) 0, 100% var(--chamfer), 100% 100%, 0 100%);
+}
+/* 顶部 2px 状态灯带：用板块色，仅作识别、不表现异常（提案 P6） */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--panel-strip, var(--mech-brand));
+  opacity: 0.9;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+}
+
+.card {
+  background: var(--mech-panel);
+  border: 1px solid var(--mech-border);
+  border-radius: var(--radius-card);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.divider { border: 0; border-top: 1px solid var(--mech-border); margin: var(--sp-4) 0; }
+.text-2 { color: var(--mech-text-2); }
+.text-3 { color: var(--mech-text-3); }
+
+.board-strip { display: inline-block; width: 4px; align-self: stretch; border-radius: 2px; margin-right: var(--sp-2); }
+
+/* 警示灯（P6 形状冗余：颜色 + 形状 + 文字三通道，色弱不丢信息） */
+.lamp {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 2px 8px; border-radius: var(--radius-badge);
+}
+.lamp--amber { background: var(--mech-amber-bg); color: var(--mech-amber-fg); }
+.lamp--red   { background: var(--mech-red-bg); color: var(--mech-red-fg); }
+.lamp--amber::before { content: "▮"; }
+.lamp--red::before   { content: "◆"; }
+
+/* 分段式进度槽（每段 20%，能量槽语义） */
+.gauge { display: flex; gap: 2px; height: 8px; }
+.gauge i { flex: 1; background: var(--mech-inset); border-radius: 1px; }
+.gauge i.on { background: var(--mech-ok); }
+
+/* 时间线区间带（F6：月粒度画整月带，不编日精度） */
+.tl-band { height: 14px; border-radius: 2px; opacity: 0.85; }
+.tl-band--month {
+  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0,0,0,0.18) 4px 6px);
+}
+
+/* 导航与形态切换（≤240ms 轴向变换） */
+.nav { display: flex; gap: var(--sp-1); padding: var(--sp-2); background: var(--mech-inset); border-radius: var(--radius-panel); }
+.nav button {
+  all: unset; cursor: pointer; padding: 6px 14px; border-radius: var(--radius-badge);
+  color: var(--mech-text-2);
+  transition: background var(--motion-reflow) var(--ease-in-quad), color var(--motion-reflow) var(--ease-in-quad);
+}
+.nav button[aria-current="true"] {
+  background: var(--mech-panel);
+  color: var(--mech-text-1);
+  box-shadow: inset 0 0 0 1px var(--mech-border);
+}
+.view { animation: view-in var(--motion-switch) var(--ease-in-quad); }
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view { animation: view-fade 80ms linear; }
+  @keyframes view-fade { from { opacity: 0; } to { opacity: 1; } }
+}
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--mech-border); }
+th { background: var(--mech-inset); color: var(--mech-text-2); font-weight: 600; position: sticky; top: 0; }
+
+.chip {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--mech-inset); color: var(--mech-text-2);
+  padding: 4px 12px; border-radius: var(--radius-badge);
+  box-shadow: inset 0 0 0 1px var(--mech-border);
+}
+.chip[data-active="true"] {
+  box-shadow: inset 0 0 0 1px var(--mech-border), inset 2px 0 0 var(--mech-brand);
+}
+
+.btn {
+  all: unset; cursor: pointer;
+  padding: 6px 16px; border-radius: var(--radius-badge);
+  background: var(--mech-brand); color: var(--mech-panel);
+  /* 档位 B「无滤镜」：悬停不用 filter（会触发合成层、暗色下色偏），
+     改为纯色底 + 1px 内描边，动效时长仍是 120ms，肉眼观感等价而不引入滤镜。 */
+  transition: background-color var(--motion-reflow) var(--ease-in-quad),
+              box-shadow var(--motion-reflow) var(--ease-in-quad);
+}
+.btn:hover {
+  background: var(--mech-brand-hover, var(--mech-brand));
+  box-shadow: inset 0 0 0 1px var(--mech-brand-hover-border, var(--mech-border));
+}
+.btn--ghost { background: transparent; color: var(--mech-brand); box-shadow: inset 0 0 0 1px var(--mech-border); }
+
+:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: 2px; }

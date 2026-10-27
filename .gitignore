@@ -1,0 +1,41 @@
+# ─────────── 运行时数据：绝不进仓库 ───────────
+# P0-3 事故根因：server/data/team.db 曾被连同 Bearer token 与 admin 密码哈希一起打进发布包。
+# 这条规则就是防线本身——库文件、备份、WAL 一律忽略。
+server/data/
+server/data/**/*.db
+server/data/**/*.db-shm
+server/data/**/*.db-wal
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite
+**/*.sqlite3
+
+# 本地密钥与签名（更新通道私钥永不入仓库，架构 §8）
+*.key
+*.pem
+secrets/
+keys/
+
+# 构建产物
+target/
+apps/desktop/src-tauri/target/
+node_modules/
+dist/
+build/
+*.msi
+*.exe
+*.dmg
+*.AppImage
+
+# 本地备份与导出
+backups/
+snapshots/
+exports/
+*.log
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

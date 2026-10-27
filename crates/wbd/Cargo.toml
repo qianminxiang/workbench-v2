@@ -1,0 +1,17 @@
+[package]
+name = "wbd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "个人工作台 v2.0 系统层驱动：导入、备份、规则求值、同步、更新校验与自检"
+
+[[bin]]
+name = "wbd"
+path = "src/main.rs"
+
+[dependencies]
+wb-core = { path = "../wb-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }

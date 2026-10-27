@@ -1,0 +1,21 @@
+[package]
+name = "wb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "个人工作台 v2.0 可移植核心：日期规范化、导入、规则引擎、存储与备份、同步合并、更新校验"
+
+[dependencies]
+# SQLite 走 bundled：目标机器无需预装，且自带在线备份接口（架构 §4.9 禁止直接拷 .db 文件）
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Ed25519 验签（Tauri updater 的 Minisign 同为 Ed25519），密钥不入仓库
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+semver = "1"
+# xlsx 读取：calamine 0.31（zip ^4.2，与 bundled 构建链兼容的较新版本）
+calamine = "0.31"
+
+[dev-dependencies]
+tempfile = "3"

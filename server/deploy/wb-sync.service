@@ -1,0 +1,27 @@
+[Unit]
+Description=个人工作台 v2.0 团队同步服务端（薄服务，Node 22 内置模块，零 npm 依赖）
+After=network.target
+
+[Service]
+Type=simple
+# 部署时把路径换成实际安装目录与专用低权限用户
+User=workbench
+Group=workbench
+WorkingDirectory=/opt/wb-sync
+ExecStart=/usr/bin/node /opt/wb-sync/src/server.js
+Restart=always
+RestartSec=5
+# 数据目录（SQLite、每日备份、邀请码等）落在独立分区或定期快照的盘上
+Environment=WB_SYNC_DATA=/opt/wb-sync/data
+# 端口建议保持默认 8443（对外）+ 8444（仅回环的管理端口）；
+# 公网暴露必须经反向代理加 TLS（见 nginx.conf.example），不要直接裸露明文端口。
+# MemoryMax 守住「薄服务」定位：单实例 3–10 人团队远用不满
+MemoryMax=256M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wb-sync/data
+
+[Install]
+WantedBy=multi-user.target

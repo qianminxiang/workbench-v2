@@ -1,0 +1,25 @@
+[package]
+name = "wb-desktop"
+version = "2.0.0"
+edition = "2021"
+description = "个人工作台 v2.0 桌面壳（Tauri 2）"
+
+[lib]
+name = "wb_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+wb-core = { path = "../../../crates/wb-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
+# 同步客户端传输层：默认特性已含 rustls TLS + gzip，加 json 是为 send_json/into_json。
+ureq = { version = "2.12", features = ["json"] }

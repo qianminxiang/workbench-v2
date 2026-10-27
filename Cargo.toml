@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/wb-core", "crates/wbd", "apps/desktop/src-tauri"]
+# `apps/desktop/src-tauri` 必须列入 members：它既不是成员也不在 exclude 里时，
+# cargo 会报 "current package believes it's in a workspace when it's not"，
+# 直接让 CI 的 cargo fetch / cargo tauri build 失败（质检抓到的构建阻断点）。
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+license = "Proprietary"
+
+# 体积红线：安装包 ≤500MB（用户 2026-10-27 确认的口径；原 15MB 已作废）。
+# 下面的瘦身配置保留，但只作为优化方向，不构成门禁。
+#
+# 注意：`[profile.release]` 必须写在 **workspace 根**。此前它写在
+# `apps/desktop/src-tauri/Cargo.toml` 里，cargo 直接告警「profiles for the non root
+# package will be ignored」——等于 lto / strip / panic=abort 全部没生效，
+# 出包会明显偏大。这是 2026-10-27 复核时由 cargo 警告暴露的真实缺陷。
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

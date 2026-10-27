@@ -1,0 +1,173 @@
+name: windows-release
+
+# 触发条件说明（2026-10-27 修订）：除 tag 推送外增加手动触发。
+# 原因：交付包若尚未接上远端仓库，`push tags` 不会发生，CI 永远跑不起来，
+# 「体积红线实测」就无法产出。手动触发让有仓库的环境可以随时按需出包。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  # 核心逻辑与合并语义的单测：不需要 Windows，ubuntu 上跑得最快，
+  # 作为门禁前置——测不过就不必浪费一次 Windows 构建。
+  test-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 这里不再装 libwebkit2gtk-4.1-dev / libgtk-3-dev：实测 `cargo test -p wb-core -p wbd`
+      # 在没有 gtk+-3.0 的容器里同样 75/75 通过，说明这两个 crate 编译期不碰 GTK。
+      # 该步骤不干活，却是一个额外的失败面（apt 源抖动就会让整条流水线红），删除。
+      - name: 核心单测（wb-core + wbd）
+        run: cargo test -p wb-core -p wbd --locked
+      - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
+        # 硬门：测试失败即构建失败。此前写成 `npm test || echo ...` 会把失败吞掉，
+        # 门禁形同虚设——复核方指出的「说全绿但无法复验」有一半源于此。
+        run: |
+          node -v
+          npm --prefix server test
+
+  build-windows:
+    needs: test-core
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 安装前端依赖（无——前端为零依赖静态文件，此步仅确认）
+        run: echo "前端无构建步骤（纯 HTML/CSS/JS）"
+      # 前置校验：Windows 目标下 tauri-build 必须找到 .ico，否则在编译期直接 exit(1)
+      # （tauri-build 2.7.4 src/lib.rs:859-869）。把这条提前到一个便宜的步骤，
+      # 让失败原因一眼可见，而不是埋在编译日志里。
+      # MSI 打包器同样硬要 .ico（tauri-bundler 的 windows/msi 找不到就失败），
+      # 而 bundle.targets 含 msi —— 所以这个文件同时是两条产线的必需品。
+      - name: 校验 Windows 图标存在（缺则编译期必失败）
+        shell: pwsh
+        run: |
+          $cfg = Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $ico = $cfg.bundle.icon | Where-Object { $_ -like "*.ico" }
+          if (-not $ico) { throw "bundle.icon 里没有 .ico 条目：Windows 构建会在 tauri-build 阶段失败" }
+          $p = Join-Path "apps/desktop/src-tauri" $ico
+          if (-not (Test-Path $p)) { throw "配置文件声明的图标不存在：$p" }
+          Write-Host "图标就绪：$p"
+      - name: 构建 NSIS 安装包（签名私钥走环境变量，绝不进仓库）
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cargo install tauri-cli --version "^2"
+          cd apps/desktop/src-tauri
+          cargo tauri build
+      # ── 体积门禁（2026-10-27 复核后重写）──
+      # 路径口径：`apps/desktop/src-tauri` 是 workspace 成员（这是 `cargo fetch` 能跑通的前提），
+      # 因此 cargo metadata 的 target_directory 解析为**仓库根/target**，
+      # 产物落在 <repo>/target/release/bundle/…，不是 apps/desktop/src-tauri/target/…。
+      # 此前六处路径都写成后者，会让三个门禁全部打空（质检 2026-10-27 指出）。
+      # 旧写法两个缺陷：
+      #   ① 只看 nsis 目录，而 tauri.conf.json 的 targets 是 ["msi","nsis"]，msi 完全没被量到；
+      #   ② `Select-Object -First 1` 未排序，取到哪个由文件系统返回顺序决定，两次构建的数不可比。
+      # 现在改为：把所有安装包逐个列出、按名字排序、逐个报数、以最大者为门禁判据。
+      - name: 实测安装包体积（红线 ≤500MB，超出即失败）
+        shell: pwsh
+        run: |
+          $paths = @(
+            "target/release/bundle/nsis/*.exe",
+            "target/release/bundle/msi/*.msi"
+          )
+          $files = @()
+          foreach ($g in $paths) { $files += @(Get-ChildItem $g -ErrorAction SilentlyContinue) }
+          # 无匹配时 Get-ChildItem 返回 $null，@($null) 会留下一个 $null 元素，
+          # 不清掉就会让 Count 变成 1、然后在 $f.Name 处报错——先过滤。
+          $files = @($files | Where-Object { $null -ne $_ })
+          if ($files.Count -eq 0) { throw "未找到任何安装包产物（nsis/*.exe 与 msi/*.msi 都为空）" }
+
+          # 逐个列清、排序，避免"取第一个"的不确定性
+          $files = $files | Sort-Object Name
+          $rows = foreach ($f in $files) {
+            [pscustomobject]@{
+              Name = $f.Name
+              Kind = $f.Extension.TrimStart('.').ToUpper()
+              MB   = [math]::Round($f.Length / 1MB, 2)
+            }
+          }
+          $rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          foreach ($r in $rows) { Write-Host "安装包 $($r.Name)（$($r.Kind)）：$($r.MB) MB" }
+
+          $worst = $rows | Sort-Object MB -Descending | Select-Object -First 1
+          Write-Host "以最大者为门禁判据：$($worst.Name) = $($worst.MB) MB"
+          "installer_mb=$($worst.MB)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "installer_name=$($worst.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # 口径说明：500MB 是用户 2026-10-27 确认的硬上限；
+          # 设计目标仍是 Tauri 轻量（5–15MB 级），实测多少都算达标，但不许超 500MB。
+          if ($worst.MB -gt 500) { throw "超出 500MB 红线：$($worst.Name) = $($worst.MB) MB" }
+
+      # ── 空闲内存门禁（2026-10-27 复核后重写，这条是修「测错对象」）──
+      # 旧写法只取主进程 WorkingSet64。Tauri v2 在 Windows 上把 WebView2 渲染引擎放在
+      # 独立子进程（msedgewebview2.exe）里，主进程工作集并不包含它；而 ≤60MB 这条红线的
+      # 原始痛点（曾实测到 310MB 级空闲占用）绝大部分正是那部分。只测主进程 = 不管真实
+      # 占用多大都会显示几十 MB 然后通过，比没有门禁更危险。所以这里必须按「进程树」求和。
+      # 同时旧写法的 Stop-Process 杀不掉子进程，会残留并污染后续测量，改为 taskkill /T。
+      - name: 实测空闲内存占用（红线 ≤60MB，按进程树求和，超出即失败）
+        shell: pwsh
+        run: |
+          $exe = "target/release/wb-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "未找到可执行文件：$exe" }
+          $main = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 20   # 等启动稳定：窗口就绪 + WebView2 子进程起齐，避开首屏峰值
+
+          # 递归展开进程树。每轮重新快照，因为 WebView2 的子进程是启动后再拉起来的。
+          $tree = @($main.Id)
+          for ($round = 0; $round -lt 10; $round++) {
+            $snap  = Get-CimInstance Win32_Process
+            $added = $false
+            foreach ($proc in $snap) {
+              if (($tree -contains [int]$proc.ParentProcessId) -and -not ($tree -contains [int]$proc.ProcessId)) {
+                $tree += [int]$proc.ProcessId
+                $added = $true
+              }
+            }
+            if (-not $added) { break }
+          }
+
+          $rows = foreach ($procId in $tree) {
+            $wp = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($wp) {
+              [pscustomobject]@{
+                PID = $procId
+                Name = $wp.ProcessName
+                WS_MB = [math]::Round($wp.WorkingSet64 / 1MB, 2)
+              }
+            }
+          }
+          $rows = @($rows)
+          if ($rows.Count -eq 0) { throw "进程树为空：主进程已退出或 Get-Process 取不到，本次测量无效" }
+          $rows | Sort-Object WS_MB -Descending | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+
+          # .NET Process 的属性是缓存值，Start-Process 拿到的对象不 Refresh
+          # 会把「启动瞬间」的数当空闲占用——那样 idle_mb_main 与旧口径的对照就不成立。
+          $main.Refresh()
+          $mainMb  = [math]::Round($main.WorkingSet64 / 1MB, 2)
+          $totalMb = [math]::Round((($rows | Measure-Object -Property WS_MB -Sum).Sum), 2)
+          Write-Host "主进程工作集：$mainMb MB（仅供参考，不含 WebView2）"
+          Write-Host "进程树合计（$($rows.Count) 个进程）：$totalMb MB"
+          # 两个数都落进构建日志：主进程那个用来对照旧口径，合计那个才是红线判据
+          "idle_mb_main=$mainMb"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "idle_mb=$totalMb"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          # 杀整棵树：只 Stop-Process 主进程会让 msedgewebview2.exe 残留，
+          # 既影响 runner 后续步骤，也会污染同一 job 里的第二次测量。
+          & taskkill /T /F /PID $main.Id 2>$null | Out-Null
+          # taskkill 在进程已自然退出时返回非零；GitHub 的 pwsh 包装会在脚本末尾用
+          # $LASTEXITCODE 决定步骤成败，不清零会把「杀进程失败」误判成「红线不达标」。
+          $global:LASTEXITCODE = 0
+          if ($totalMb -gt 60) { throw "超出 60MB 空闲内存红线（进程树合计）：$totalMb MB" }
+      - name: 生成 latest.json（静态版本清单，零鉴权）
+        shell: pwsh
+        run: node scripts/make-manifest.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-windows
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+            latest.json

@@ -1,0 +1,255 @@
+{
+  "backup": {
+    "backup_dir_visible": true,
+    "l1_all_integrity_ok": true,
+    "l1_attempts": 24,
+    "l1_failed": 0,
+    "l1_first_bytes": 262144,
+    "l1_keep_limit": 20,
+    "l1_kept": 20,
+    "l2_bytes": 262144,
+    "l2_daily_limit": 14,
+    "l2_integrity": "ok",
+    "l2_json_tables": 21,
+    "l2_kept": 1,
+    "l2_kind": "daily"
+  },
+  "date_normalization": {
+    "all_feb_first_of_month": true,
+    "feb_start_count": 20,
+    "feb_start_samples": [
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 1
+      },
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 2
+      },
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 4
+      },
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 6
+      },
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 7
+      },
+      {
+        "date": "2026-02-01",
+        "precision": "month",
+        "raw": "2月",
+        "seq_no": 8
+      }
+    ],
+    "rule": "2月 → 当年 02-01，precision=month（闭环取区间末端）",
+    "unknown_precision_items": 0
+  },
+  "environment": {
+    "host_arch": "x86_64",
+    "host_os": "linux",
+    "idle_memory_measured": false,
+    "idle_memory_note": "Tauri 壳需 GUI 运行时，本机无 WebKitGTK，无法启动窗口进程实测常驻内存；该指标须在 Windows 目标机实测",
+    "installer_size_measured": false,
+    "installer_size_note": "构建机无 Windows 目标工具链（无 x86_64-pc-windows-msvc / mingw，无 webkit2gtk-4.1 与 gtk+-3.0，无 sudo），无法在此产出 .exe/.msi，故体积未实测，不给估算值"
+  },
+  "import": {
+    "declared_total": 64,
+    "end_precision": {
+      "day": 10,
+      "month": 54,
+      "ongoing": 0,
+      "quarter": 0,
+      "unknown": 0
+    },
+    "issue_count": 15,
+    "issues_by_kind": {
+      "date_out_of_range": 0,
+      "date_unparsed": 0,
+      "needs_review": 14,
+      "placeholder_skipped": 1
+    },
+    "items_imported": 64,
+    "items_skipped": 1,
+    "items_total": 64,
+    "kpi_total": 10,
+    "per_board": [
+      {
+        "board": "政府关系",
+        "count": 12
+      },
+      {
+        "board": "行业资源",
+        "count": 11
+      },
+      {
+        "board": "媒体传播",
+        "count": 14
+      },
+      {
+        "board": "活动执行",
+        "count": 10
+      },
+      {
+        "board": "客户转化",
+        "count": 9
+      },
+      {
+        "board": "政策申报",
+        "count": 8
+      }
+    ],
+    "reconciled": true,
+    "source_file": "source.xlsx",
+    "start_precision": {
+      "day": 10,
+      "month": 51,
+      "ongoing": 3,
+      "quarter": 0,
+      "unknown": 0
+    }
+  },
+  "offline": {
+    "items_after": 64,
+    "items_before": 64,
+    "local_write_succeeded": true,
+    "note": "同步失败不弹窗、不报错；本地读写完整可用，恢复后按 sync_cursor 增量补推",
+    "pending_rows_for_later_push": 64,
+    "readable_while_offline": true,
+    "sync_failed_silently": true,
+    "sync_reachable": false
+  },
+  "persist": {
+    "items_readback": 64,
+    "items_written": 64,
+    "kpi_derived": [
+      {
+        "current": 0.0,
+        "name": "已对接政府对象数",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 10.0
+      },
+      {
+        "current": 12.0,
+        "name": "政府关系对象总数",
+        "resolved": true,
+        "rule": "board_total",
+        "target": 12.0
+      },
+      {
+        "current": 0.0,
+        "name": "已合作行业/科研对象",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 5.0
+      },
+      {
+        "current": 0.0,
+        "name": "已发布报道篇数",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 15.0
+      },
+      {
+        "current": 0.0,
+        "name": "已完成活动场次",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 8.0
+      },
+      {
+        "current": 10.0,
+        "name": "活动总场次",
+        "resolved": true,
+        "rule": "board_total",
+        "target": 10.0
+      },
+      {
+        "current": 0.0,
+        "name": "已成交客户数",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 5.0
+      },
+      {
+        "current": 9.0,
+        "name": "客户线索总数",
+        "resolved": true,
+        "rule": "board_total",
+        "target": 9.0
+      },
+      {
+        "current": 0.0,
+        "name": "已立项项目数",
+        "resolved": true,
+        "rule": "board_done",
+        "target": 2.0
+      },
+      {
+        "current": 8.0,
+        "name": "政策项目总数",
+        "resolved": true,
+        "rule": "board_total",
+        "target": 6.0
+      }
+    ],
+    "kpis_readback": 10,
+    "kpis_written": 10,
+    "per_board_readback": [
+      {
+        "board": "customer",
+        "count": 9
+      },
+      {
+        "board": "event",
+        "count": 10
+      },
+      {
+        "board": "gov",
+        "count": 12
+      },
+      {
+        "board": "industry",
+        "count": 11
+      },
+      {
+        "board": "media",
+        "count": 14
+      },
+      {
+        "board": "policy",
+        "count": 8
+      }
+    ],
+    "schema_version": 1
+  },
+  "rules": {
+    "alerts_all_on": 56,
+    "alerts_default": 56,
+    "behind_excludes_not_started": true,
+    "behind_when_enabled": 0,
+    "brief_daily_quota": 5,
+    "brief_date": "2026-10-26",
+    "brief_due_soon": 7,
+    "brief_due_today": 0,
+    "brief_overdue": 49,
+    "due_soon": 7,
+    "evaluated_items": 64,
+    "overdue": 49,
+    "today": "2026-10-26"
+  }
+}

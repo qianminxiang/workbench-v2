@@ -1,0 +1,33 @@
+# 个人工作台同步服务端反向代理示例（nginx + TLS）
+# 管理端口 8444 只绑回环，绝不经 nginx 对外；对外只暴露 8443 的同步与登录路由。
+
+server {
+    listen 443 ssl;
+    server_name sync.example.com;
+
+    # TLS 证书（正式部署用 ACME 签发；示例写法）
+    ssl_certificate     /etc/letsencrypt/live/sync.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sync.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # 请求体上限：一次 push 批量的工作项行足够用
+    client_max_body_size 4m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 30s;
+    }
+
+    # 登录接口限速：防爆破（配合服务端内置的 10 次失败锁定）
+    location = /login {
+        limit_req zone=login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8443;
+        proxy_set_header Host $host;
+    }
+}
+
+# 在 http 块里定义：
+# limit_req_zone $binary_remote_addr zone=login:10m rate=10r/m;
