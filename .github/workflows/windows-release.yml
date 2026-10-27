@@ -335,6 +335,33 @@ jobs:
             $global:LASTEXITCODE = 0
             Start-Sleep -Seconds 3
           }
+          function Wait-Settled {
+            # 固定 sleep 会把「启动慢」误判成「单实例锁失效」——run 40576683509 场景2 就是这样红的：
+            # 同一份 lib.rs（375ee689…）在 run 40508417582 却是 success。三处定额本身还不一致
+            # （场景1/2 给 8s、场景3 给 18s）。这里改成「等到条件成立或超时」：
+            # **判据一个字没改**（仍是「恰好 1 个存活 + 启动方已退出」），超时照样 throw，
+            # 只是把「等到什么时候看」从定额换成有上限的轮询，并把实测等待秒数打进日志。
+            param([object[]]$procs, [int]$TimeoutSec = 25)
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+              $n = (Get-Procs).Count
+              $ex = 0
+              foreach ($q in $procs) {
+                try { if ($q.HasExited) { $ex++ } } catch { $ex++ }
+              }
+              if ($n -eq 1 -and $ex -ge 1) {
+                return [pscustomobject]@{ Ok = $true; Alive = $n; Exited = $ex; Wait = [math]::Round($sw.Elapsed.TotalSeconds, 1) }
+              }
+              Start-Sleep -Milliseconds 500
+            }
+            $n = (Get-Procs).Count
+            $ex = 0
+            foreach ($q in $procs) {
+              try { if ($q.HasExited) { $ex++ } } catch { $ex++ }
+            }
+            return [pscustomobject]@{ Ok = $false; Alive = $n; Exited = $ex; Wait = [math]::Round($sw.Elapsed.TotalSeconds, 1) }
+          }
+
           function Wait-Main {
             for ($i = 0; $i -lt 40; $i++) {
               $p = Get-Procs | Select-Object -First 1
@@ -361,10 +388,11 @@ jobs:
             Write-Host "::warning::场景1：取不到 MainWindowHandle（CI 会话可能无交互桌面），无法施加最小化态；硬断言（单进程）照常执行"
           }
           $s1 = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 8
-          $n1 = (Get-Procs).Count
+          $w1 = Wait-Settled -procs @($s1) -TimeoutSec 25
+          $n1 = $w1.Alive
+          Write-Host "场景1 等待：$($w1.Wait)s（上限 25s）后 存活进程=$n1，启动方已退出=$($w1.Exited)"
           if ($n1 -ne 1) { throw "场景1 失守：二次启动后存活 $n1 个进程（应为 1，单实例锁未生效）" }
-          if (-not $s1.HasExited) { throw "场景1 失守：二次启动进程未退出（pid=$($s1.Id)）" }
+          if ($w1.Exited -lt 1) { throw "场景1 失守：二次启动进程等待 $($w1.Wait)s 仍未退出（pid=$($s1.Id)）" }
           $restored = "未取到可见证据"
           if ($h1 -ne 0) {
             $p1.Refresh()
@@ -384,10 +412,11 @@ jobs:
             Write-Host "::warning::场景2：无窗口句柄可发 WM_CLOSE，跳过托盘态施加；硬断言照常执行"
           }
           $s2 = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 8
-          $n2 = (Get-Procs).Count
+          $w2 = Wait-Settled -procs @($s2) -TimeoutSec 25
+          $n2 = $w2.Alive
+          Write-Host "场景2 等待：$($w2.Wait)s（上限 25s）后 存活进程=$n2，启动方已退出=$($w2.Exited)"
           if ($n2 -ne 1) { throw "场景2 失守：二次启动后存活 $n2 个进程（应为 1）" }
-          if (-not $s2.HasExited) { throw "场景2 失守：二次启动进程未退出（pid=$($s2.Id)）" }
+          if ($w2.Exited -lt 1) { throw "场景2 失守：二次启动进程等待 $($w2.Wait)s 仍未退出（pid=$($s2.Id)）" }
           $vis = "未取到可见证据"
           $pp2 = Get-Procs | Select-Object -First 1; $pp2.Refresh()
           if ($pp2.MainWindowHandle -ne 0) {
@@ -399,9 +428,10 @@ jobs:
           Kill-All
           $a = Start-Process -FilePath $exe -PassThru
           $b = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 18
-          $n3 = (Get-Procs).Count
-          $exited = @($a, $b | Where-Object { $_.HasExited }).Count
+          $w3 = Wait-Settled -procs @($a, $b) -TimeoutSec 40
+          $n3 = $w3.Alive
+          $exited = $w3.Exited
+          Write-Host "场景3 等待：$($w3.Wait)s（上限 40s）后 存活进程=$n3，已退出的启动方=$exited"
           if ($n3 -ne 1) { throw "场景3 失守：并发双击后存活 $n3 个进程（快速双击竞态未被锁住）" }
           if ($exited -lt 1) { throw "场景3 失守：并发双击后两个启动进程都还活着（无单实例仲裁）" }
           Write-Host "场景3 结果：并发双击 → 存活 $n3 个，已退出的启动方 $exited 个"
