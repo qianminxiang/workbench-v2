@@ -48,10 +48,27 @@ if (missing.length) {
 const version = JSON.parse(fs.readFileSync(
   path.join("apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8")).version;
 // 路径口径：src-tauri 是 workspace 成员，cargo 的 target_directory 是**仓库根/target**。
+//
+// 2026-10-27 修复（v2.1.0 实测缺陷 D1）：清单里的下载 URL 必须使用**Release 上
+// 真实存在**的资产名，不能用本地文件名推断。实测：GitHub 保存 Release 资产时会
+// 剥离资产名里的非 ASCII 字符（上传 `probe-中文.txt` 实存 `probe-.txt`），
+// 而本包 productName 是中文，bundler 产物 `个人工作台_2.1.0_x64-setup.exe`
+// 在 Release 上变成 `_2.1.0_x64-setup.exe`。此前按本地名 encodeURIComponent
+// 拼 URL，声明的地址实测 404，自动更新在下载步必然失败、而 CI 全绿。
+// 现在必须由 WB_RELEASE_ASSET（发布步从 `gh release view --json assets`
+// 回读到的真实资产名）显式提供；缺了就直接失败，绝不静默猜一个名字。
 const nsisDir = "target/release/bundle/nsis";
-// 按名字排序取定，不用 readdir 顺序——否则两次构建可能选中不同文件。
-const file = fs.readdirSync(nsisDir).filter((f) => f.endsWith(".exe")).sort()[0];
-if (!file) { console.error("未找到安装包"); process.exit(1); }
+const asset = (process.env.WB_RELEASE_ASSET || "").trim();
+if (!asset) {
+  console.error("[make-manifest] 缺少 WB_RELEASE_ASSET：必须显式给出 Release 上真实的安装包资产名。");
+  console.error("[make-manifest] 禁止用本地文件名代替——平台会改写资产名，猜名会让清单地址 404。");
+  process.exit(1);
+}
+if (/[^\x20-\x7E]/.test(asset)) {
+  console.error(`[make-manifest] WB_RELEASE_ASSET 含非 ASCII 字符（${asset}）：GitHub 会剥离它们，该名字不可能在 Release 上存在。`);
+  process.exit(1);
+}
+const file = asset;
 
 // 四平台键：windows 真实，其余占位（理由见文件头注释）。
 const platforms = {
@@ -79,6 +96,13 @@ const manifest = {
   pub_date: new Date().toISOString(),
   platforms,
 };
+// 自检：清单里 windows 的 URL 末段解码后必须就是真实资产名本身。
+const declared = decodeURIComponent(manifest.platforms["windows-x86_64"].url.split("/").pop());
+if (declared !== asset) {
+  console.error(`[make-manifest] 自检失败：清单声明 ${declared}，但真实资产是 ${asset}`);
+  process.exit(1);
+}
+
 fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
 console.log("latest.json 已生成：version", version);
-console.log("windows-x86_64 = 真实签名；darwin-x86_64 / darwin-aarch64 / linux-x86_64 = 占位键（本仓库只出 Windows 包）");
+console.log(`windows-x86_64 = ${asset}（真实签名）；darwin-x86_64 / darwin-aarch64 / linux-x86_64 = 占位键（本仓库只出 Windows 包）`);

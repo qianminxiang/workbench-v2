@@ -63,6 +63,41 @@ jobs:
           cargo install tauri-cli --version "^2"
           cd apps/desktop/src-tauri
           cargo tauri build
+      # ── 2026-10-27 修复：Release 资产名必须是纯 ASCII ──
+      # 实测（API 探针，2026-10-27 20:14）：GitHub 保存 Release 资产时会**剥离
+      # 资产名里的非 ASCII 字符**——上传 `probe-中文.txt` 实际存成 `probe-.txt`。
+      # 本包 productName 是中文「个人工作台」，bundler 产物
+      # `个人工作台_2.1.0_x64-setup.exe` 因此被存成 `_2.1.0_x64-setup.exe`；
+      # 而 make-manifest 按中文原名拼下载地址 → latest.json 声明的 URL 404
+      # （v2.1.0 Release 实测：声明地址 404、实际资产 200，等于自动更新必然失效，
+      #  且 CI 全绿——这道口子必须在本步结构性堵死，而不是靠发布后肉眼发现）。
+      # 修法：上传前把产物统一改成纯 ASCII 名，让「清单里的名字」与
+      # 「Release 上的名字」由同一份文件名派生，结构上不再可能对不上。
+      - name: 规范化安装包文件名为纯 ASCII（Release 资产名会剥离非 ASCII）
+        shell: pwsh
+        run: |
+          $ver = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $nsisDir = "target/release/bundle/nsis"
+          $msiDir  = "target/release/bundle/msi"
+          Get-ChildItem "$nsisDir/*.exe" -File | Where-Object { $_.Name -notlike "workbench_*" } | ForEach-Object {
+            $src  = $_.FullName
+            $dst  = Join-Path $nsisDir "workbench_$($ver)_x64-setup.exe"
+            $oldSig = "$src.sig"
+            Move-Item -Force $src $dst
+            if (Test-Path $oldSig) { Move-Item -Force $oldSig "$dst.sig"; Write-Host "签名：→ $(Split-Path -Leaf "$dst.sig")" }
+            Write-Host "NSIS：$($_.Name) → $(Split-Path -Leaf $dst)"
+          }
+          Get-ChildItem "$msiDir/*.msi" -File | Where-Object { $_.Name -notlike "workbench_*" } | ForEach-Object {
+            $src = $_.FullName
+            $dst = Join-Path $msiDir "workbench_$($ver)_x64_zh-CN.msi"
+            Move-Item -Force $src $dst
+            Write-Host "MSI：$($_.Name) → $(Split-Path -Leaf $dst)"
+          }
+          # 复核：改名后目录内不允许再残留非 ASCII 文件名，否则清单仍会指向 404
+          $bad = @(Get-ChildItem $nsisDir, $msiDir -File | Where-Object { $_.Name -match '[^\x20-\x7E]' })
+          if ($bad.Count -gt 0) { throw "仍存在非 ASCII 文件名，Release 资产会被再剥离：$($bad.Name -join ', ')" }
+          Get-ChildItem $nsisDir, $msiDir -File | ForEach-Object { Write-Host "  产物 $($_.Name) = $($_.Length) 字节" }
+
       # ── v2.1：updater 签名产物与发布地址（2026-10-27）──
       # tauri.conf.json 已开 createUpdaterArtifacts，`cargo tauri build` 会在
       # nsis/*.exe 旁生成同名 .sig（minisign 签名）。把它读进 WB_SIGNATURE 供
@@ -84,6 +119,45 @@ jobs:
           "WB_SIGNATURE=$sig"      | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "发布地址：$base"
           Write-Host "签名产物：$($sigFile.Name)（已注入 WB_SIGNATURE）"
+
+      # ── 2026-10-27：更新地址改为「配置项留活口」，不再定死 GitHub ──
+      # 私有仓库的 Release 资产无法零鉴权下载（匿名 GET 实测 404），
+      # updater 直接指向 GitHub 地址在该形态下必然不可达。三种候选方案
+      # （A 仓库转公开 / B 清单与安装包放公开静态托管 / C 仅提示+手动下载）
+      # 由用户拍板，因此这里不能把地址焊死：用仓库变量覆盖，改托管位不必改代码。
+      #   vars.WB_UPDATE_ENDPOINT  完整清单 URL（方案 B 常用，如对象存储上的 latest.json）
+      #   vars.WB_UPDATE_BASE      仅换下载基址（方案 A 时留空即用 GitHub 默认）
+      # 未设变量时保持 GitHub 默认，v2.0/v2.1 行为不变。
+      # 采用「就地改写 tauri.conf.json」而不是 `cargo tauri build --config`：
+      # 后者把正确性押在 CLI flag 语义上，前者是纯 JSON 编辑，行为确定可复核。
+      - name: 应用更新地址覆盖（仓库变量 WB_UPDATE_ENDPOINT / WB_UPDATE_BASE）
+        shell: pwsh
+        run: |
+          $path = "apps/desktop/src-tauri/tauri.conf.json"
+          $cfg  = Get-Content $path -Raw | ConvertFrom-Json
+          $ep   = $env:WB_UPDATE_ENDPOINT
+          $base = $env:WB_UPDATE_BASE
+          if ([string]::IsNullOrWhiteSpace($ep) -and [string]::IsNullOrWhiteSpace($base)) {
+            Write-Host "未设置 WB_UPDATE_ENDPOINT / WB_UPDATE_BASE，沿用 tauri.conf.json 里的默认端点：$($cfg.plugins.updater.endpoints -join ', ')"
+            exit 0
+          }
+          if ([string]::IsNullOrWhiteSpace($ep)) {
+            $ep = "$($base.TrimEnd('/'))/latest.json"
+            Write-Host "按 WB_UPDATE_BASE 推导端点：$ep"
+          }
+          if ($ep -notmatch '^https?://') { throw "WB_UPDATE_ENDPOINT 必须是 http(s) 绝对地址：$ep" }
+          # 反向同步：只给了完整端点时，下载基址要跟它同源（去掉末尾 /latest.json），
+          # 否则清单会去 GitHub 拼下载地址，与端点指向的托管位不同源。
+          if ([string]::IsNullOrWhiteSpace($base)) {
+            $base = ($ep -replace '/latest\.json$', '')
+            Write-Host "按 WB_UPDATE_ENDPOINT 推导下载基址：$base"
+          }
+          $cfg.plugins.updater.endpoints = @($ep)
+          $cfg | ConvertTo-Json -Depth 32 | Set-Content -Path $path -Encoding utf8
+          $chk = (Get-Content $path -Raw | ConvertFrom-Json).plugins.updater.endpoints
+          if ($chk -notcontains $ep) { throw "端点覆盖未生效" }
+          Write-Host "更新端点已覆盖：$($chk -join ', ')"
+          "WB_UPDATE_BASE=$($base)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # ── 体积门禁（2026-10-27 复核后重写）──
       # 路径口径：`apps/desktop/src-tauri` 是 workspace 成员（这是 `cargo fetch` 能跑通的前提），
@@ -190,17 +264,136 @@ jobs:
           $global:LASTEXITCODE = 0
           if ($mainMb -gt 60) { throw "超出 60MB 空闲内存红线（主进程工作集）：$mainMb MB" }
           Write-Host "WARNING-REFERENCE: 进程树合计 $totalMb MB 超过 60MB，属 WebView2 系统子进程占用；本门禁按主进程口径判定，该参考值一并上报待复核裁决"
-      - name: 生成 latest.json（静态版本清单，零鉴权）
+
+      # ── v2.1 目标②：单实例防多开的真机验证（windows-latest 即真实 Windows）──
+      # 代码层已注册 tauri-plugin-single-instance（插件链第一位）。但「注册了」
+      # 不等于「三场景真的成立」：任务要求覆盖 任务栏最小化态 / 托盘态（B7 × 号
+      # 只 hide 不退出）/ 快速双击竞态。本步在真实 Windows 上逐场景实测：
+      #   ① 最小化 → 二次启动 → 必须恢复（IsIconic=false），且进程数仍为 1；
+      #   ② WM_CLOSE 收起窗口（走托盘态）→ 二次启动 → 必须可见，进程数仍为 1；
+      #   ③ 并发双击 → 两次启动只能存活 1 个主进程，落败方必须自行退出。
+      # 二次启动进程「是否退出」用 HasExited 判定，不靠时间猜。
+      - name: 单实例防多开真机验证（最小化态 / 托盘态 / 双击竞态）
         shell: pwsh
-        run: node scripts/make-manifest.cjs
+        run: |
+          # 判据分层（避免把「CI 会话没有交互桌面」误判成「防多开失效」）：
+          #  · **硬断言**：任何二次启动 / 并发启动之后，wb-desktop.exe 存活进程数
+          #    必须恰好为 1，且落败的启动进程必须自行退出（HasExited=true）。
+          #    这是单实例锁的契约本体，与窗口能否取到句柄无关，取不到也应成立。
+          #  · **观察项**：窗口是否被 unminimize / show 并置前。需要真实交互桌面，
+          #    CI 会话下若取不到可见态，如实记为「未取到可见证据」，不伪造通过。
+          $exe = (Resolve-Path "target/release/wb-desktop.exe").Path
+          Add-Type -Namespace WB -Name U -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);
+          [DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr h);
+          [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
+          [DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);
+          '@
+          function Get-Procs { @(Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue) }
+          function Kill-All {
+            & taskkill /T /F /IM wb-desktop.exe 2>$null | Out-Null
+            $global:LASTEXITCODE = 0
+            Start-Sleep -Seconds 3
+          }
+          function Wait-Main {
+            for ($i = 0; $i -lt 40; $i++) {
+              $p = Get-Procs | Select-Object -First 1
+              if ($p) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { return $p } }
+              Start-Sleep -Milliseconds 500
+            }
+            return (Get-Procs | Select-Object -First 1)
+          }
+
+          Kill-All
+          $p1 = Start-Process -FilePath $exe -PassThru
+          $p1 = Wait-Main
+          $h1 = $p1.MainWindowHandle
+          Write-Host "首次启动：pid=$($p1.Id) hwnd=$h1"
+
+          # ── 场景 1：任务栏最小化态 ──
+          $minimizedObserved = $false
+          if ($h1 -ne 0) {
+            [void][WB.U]::ShowWindow($h1, 6)   # SW_MINIMIZE
+            Start-Sleep -Seconds 2
+            $minimizedObserved = [WB.U]::IsIconic($h1)
+            Write-Host "场景1：窗口最小化已生效=$minimizedObserved"
+          } else {
+            Write-Host "::warning::场景1：取不到 MainWindowHandle（CI 会话可能无交互桌面），无法施加最小化态；硬断言（单进程）照常执行"
+          }
+          $s1 = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          $n1 = (Get-Procs).Count
+          if ($n1 -ne 1) { throw "场景1 失守：二次启动后存活 $n1 个进程（应为 1，单实例锁未生效）" }
+          if (-not $s1.HasExited) { throw "场景1 失守：二次启动进程未退出（pid=$($s1.Id)）" }
+          $restored = "未取到可见证据"
+          if ($h1 -ne 0) {
+            $p1.Refresh()
+            $restored = if ([WB.U]::IsIconic($p1.MainWindowHandle)) { "仍最小化（未恢复）" } else { "已恢复（IsIconic=false）" }
+          }
+          Write-Host "场景1 结果：存活进程=$n1，落败进程已退出(exit=$($s1.ExitCode))，窗口恢复=$restored"
+
+          # ── 场景 2：托盘态（B7：点 × 只 hide 不退出）──
+          if ($h1 -ne 0) {
+            [void][WB.U]::PostMessage($h1, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            Start-Sleep -Seconds 3
+            $alive = (Get-Procs).Count
+            if ($alive -ne 1) { throw "场景2 前置不成立：点 × 后进程应常驻托盘，实际存活 $alive 个" }
+            $pp = Get-Procs | Select-Object -First 1; $pp.Refresh()
+            Write-Host "场景2 前置：点 × 后进程常驻 $alive 个（hide 不退出），窗口可见=$([WB.U]::IsWindowVisible($pp.MainWindowHandle))"
+          } else {
+            Write-Host "::warning::场景2：无窗口句柄可发 WM_CLOSE，跳过托盘态施加；硬断言照常执行"
+          }
+          $s2 = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          $n2 = (Get-Procs).Count
+          if ($n2 -ne 1) { throw "场景2 失守：二次启动后存活 $n2 个进程（应为 1）" }
+          if (-not $s2.HasExited) { throw "场景2 失守：二次启动进程未退出（pid=$($s2.Id)）" }
+          $vis = "未取到可见证据"
+          $pp2 = Get-Procs | Select-Object -First 1; $pp2.Refresh()
+          if ($pp2.MainWindowHandle -ne 0) {
+            $vis = if ([WB.U]::IsWindowVisible($pp2.MainWindowHandle)) { "可见（已置前）" } else { "不可见" }
+          }
+          Write-Host "场景2 结果：存活进程=$n2，落败进程已退出，窗口=$vis"
+
+          # ── 场景 3：快速双击竞态 ──
+          Kill-All
+          $a = Start-Process -FilePath $exe -PassThru
+          $b = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 18
+          $n3 = (Get-Procs).Count
+          $exited = @($a, $b | Where-Object { $_.HasExited }).Count
+          if ($n3 -ne 1) { throw "场景3 失守：并发双击后存活 $n3 个进程（快速双击竞态未被锁住）" }
+          if ($exited -lt 1) { throw "场景3 失守：并发双击后两个启动进程都还活着（无单实例仲裁）" }
+          Write-Host "场景3 结果：并发双击 → 存活 $n3 个，已退出的启动方 $exited 个"
+
+          Kill-All
+          $global:LASTEXITCODE = 0
+          Write-Host "单实例三场景：硬断言全部通过（每次二次启动后存活进程数均为 1）"
+
+      # 清单现在**必须在发布步**生成：它要用 Release 上真实的资产名（见发布步说明），
+      # 而那要等二进制上传完才拿得到。这里只做「可否生成」的说明性尝试——
+      # tag 推送时留给发布步，手动触发（无 Release）本就没有真实资产名，跳过不算失败。
+      - name: 生成 latest.json（仅当真实资产名已可用时；否则留给发布步）
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WB_RELEASE_ASSET)) {
+            Write-Host "WB_RELEASE_ASSET 未提供（非发布流程），跳过预生成；清单将由发布步按真实资产名生成。"
+            exit 0
+          }
+          node scripts/make-manifest.cjs
+          if (-not (Test-Path "latest.json")) { throw "latest.json 未生成" }
+          Write-Host "已预生成 latest.json（发布步会按 Release 真实资产名再生成一次）"
+      # 注意：latest.json **不在这里**——它必须在发布步按 Release 真实资产名生成
+      # （见发布步说明）。此前把清单列进 artifact 会让「产物里有清单」成为假象：
+      # 那份清单是按本地中文名拼的，地址实测 404。宁可不承诺，也不放一份错清单。
       - uses: actions/upload-artifact@v4
         with:
           name: workbench-windows
+          if-no-files-found: error
           path: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/nsis/*.exe.sig
-            target/release/bundle/msi/*.msi
-            latest.json
+            target/release/bundle/nsis/workbench_*-setup.exe
+            target/release/bundle/nsis/workbench_*-setup.exe.sig
+            target/release/bundle/msi/workbench_*-*.msi
 
       # ── v2.1：发布 GitHub Release（latest.json 的零鉴权下载宿主）──
       # tauri.conf.json 里 updater endpoint 是
@@ -216,17 +409,114 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $files = @("latest.json")
-          foreach ($g in @("target/release/bundle/nsis/*.exe",
-                           "target/release/bundle/nsis/*.exe.sig",
-                           "target/release/bundle/msi/*.msi")) {
-            $files += @(Get-ChildItem $g -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          # ── 2026-10-27 结构性修复：先传二进制、回读真实资产名、再据实生成清单 ──
+          # v2.1.0 实测缺陷：make-manifest 按**本地中文文件名**拼 URL，而 Release
+          # 实际保存的资产名被剥掉了中文前缀（个人工作台_… → _…），清单里的地址
+          # 变成 404 ——自动更新在下载步必然失败，而 CI 全绿、无人发现。
+          # 单靠「改名成 ASCII」只是堵住这一次；本步把顺序改成：
+          #   ① 只上传二进制与 .sig（清单最后传）
+          #   ② 用 gh release view 回读 Release 上**真实存在的**资产名
+          #   ③ 把真实名字喂给 make-manifest，据实拼 URL
+          #   ④ 校验清单 URL 的资产名确实在资产表里，再上传 latest.json
+          # 这样「清单说什么」与「Release 存了什么」由同一份事实派生，
+          # 结构上不再可能对不上，也不再依赖「平台会不会剥离字符」这个假设。
+          $tag = "$env:GITHUB_REF_NAME"
+          $bins = @()
+          foreach ($g in @("target/release/bundle/nsis/workbench_*-setup.exe",
+                           "target/release/bundle/nsis/workbench_*-setup.exe.sig",
+                           "target/release/bundle/msi/workbench_*-*.msi")) {
+            $bins += @(Get-ChildItem $g -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
           }
-          if ($files.Count -le 1) { throw "没有可发布的产物文件" }
-          Write-Host "发布资产："
-          $files | ForEach-Object { Write-Host "  $_" }
-          gh release create "$env:GITHUB_REF_NAME" --title "$env:GITHUB_REF_NAME" `
+          if ($bins.Count -eq 0) { throw "没有可发布的二进制产物（ASCII 规范化步骤未生效？）" }
+
+          Write-Host "① 发布二进制资产："
+          $bins | ForEach-Object { Write-Host "   $_" }
+          # 重跑同一 tag 时 gh release create 会因 Release 已存在而失败（exit 1）。
+          # 先删旧 Release（保留 tag），保证「清单与资产」每次都从同一次构建重新派生；
+          # 旧 Release 的资产是上一次构建的产物，留着只会让资产表出现同名多份。
+          $existing = gh release view $tag --json assets 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing) {
+            Write-Host "   已存在 Release $tag，先删除以重建（tag 保留）"
+            gh release delete $tag --yes --cleanup-tag=false
+            if ($LASTEXITCODE -ne 0) { throw "gh release delete 失败（exit $LASTEXITCODE）" }
+          }
+          $global:LASTEXITCODE = 0
+          gh release create $tag --title $tag `
             --notes "个人工作台 v2.1.0：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正、免打扰可编辑。" `
-            @files
+            @bins
           if ($LASTEXITCODE -ne 0) { throw "gh release create 失败（exit $LASTEXITCODE）" }
-          Write-Host "Release 已发布：$env:GITHUB_REF_NAME（公共仓库下资产零鉴权可下载）"
+
+          Write-Host "② 回读 Release 上的真实资产名"
+          $view = gh release view $tag --json assets | ConvertFrom-Json
+          $names = @($view.assets | ForEach-Object { $_.name })
+          $names | ForEach-Object { Write-Host "   实际资产：$_" }
+          $exe = @($names | Where-Object { $_ -like "*-setup.exe" })
+          $sig = @($names | Where-Object { $_ -like "*-setup.exe.sig" })
+          if ($exe.Count -ne 1) { throw "Release 上应有且仅有 1 个 setup.exe，实际 $($exe.Count)：$($names -join ', ')" }
+          if ($sig.Count -ne 1) { throw "Release 上应有且仅有 1 个 .sig，实际 $($sig.Count)" }
+
+          # 签名内容仍取本地 .sig 产物（与上传的二进制一一对应）
+          $sigFile = Get-ChildItem "target/release/bundle/nsis/workbench_*-setup.exe.sig" -File | Select-Object -First 1
+          $sigBody = (Get-Content $sigFile.FullName | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+          "WB_SIGNATURE=$sigBody"           | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WB_RELEASE_ASSET=$($exe[0])"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "③ 按真实资产名重新生成清单"
+          node scripts/make-manifest.cjs
+          if (-not (Test-Path "latest.json")) { throw "latest.json 未生成（WB_UPDATE_BASE / WB_SIGNATURE / WB_RELEASE_ASSET 是否齐全？）" }
+          $m = Get-Content "latest.json" -Raw | ConvertFrom-Json
+          $w = $m.platforms.'windows-x86_64'
+          $uName = [System.Uri]::UnescapeDataString(($w.url -split '/')[-1])
+          if ($names -notcontains $uName) {
+            throw "清单 URL 指向 [$uName]，但 Release 上只有 [$($names -join ', ')] ——上传清单会让自动更新再次 404"
+          }
+          $need = @("windows-x86_64","darwin-x86_64","darwin-aarch64","linux-x86_64")
+          $lost = @($need | Where-Object { $names -notcontains $_ -and -not ($m.platforms.PSObject.Properties.Name -contains $_) })
+          if ($lost.Count -gt 0) { throw "清单平台键缺失：$($lost -join ', ')" }
+          Write-Host "   清单 URL 与真实资产一致：$uName"
+
+          Write-Host "④ 上传清单"
+          gh release upload $tag "latest.json" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload latest.json 失败（exit $LASTEXITCODE）" }
+          Write-Host "Release 已发布：$tag（资产：$($names -join ', ') + latest.json）"
+
+      # ── 2026-10-27 修复：发布后核验清单下载地址真实可达 ──
+      # 上面那条 404 之所以能一路绿灯到「Release 已发布」，是因为全流程没有一个
+      # 环节真正去取一次清单里的 URL。本步补上：清单声明的资产名必须在 Release
+      # 资产表里真实存在、大小与本地构建产物一致；否则直接失败。
+      # 匿名可达性是**私有仓库口径**下的已知阻塞，只告警不失败（不伪装成达标），
+      # 由交付报告如实上报，等用户在三方案里拍板后再补端到端验证。
+      - name: 发布后核验下载地址（清单资产名必须真实存在且大小一致）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $m = Get-Content "latest.json" -Raw | ConvertFrom-Json
+          $url = $m.platforms.'windows-x86_64'.url
+          if ([string]::IsNullOrWhiteSpace($url)) { throw "清单 windows-x86_64.url 为空" }
+          $name = [System.Uri]::UnescapeDataString(($url -split '/')[-1])
+          $local = Get-ChildItem "target/release/bundle/nsis/workbench_*-setup.exe" -File | Select-Object -First 1
+          if (-not $local) { throw "本地未找到 ASCII 命名的 NSIS 产物，规范化步骤未生效" }
+
+          $view = gh release view "$env:GITHUB_REF_NAME" --json assets | ConvertFrom-Json
+          $hit = @($view.assets | Where-Object { $_.name -eq $name })
+          if ($hit.Count -eq 0) {
+            $have = (@($view.assets | ForEach-Object { $_.name }) -join ', ')
+            throw "清单声明的资产名 [$name] 不在 Release 资产表里（实际：$have）——自动更新下载必然 404"
+          }
+          if ([int64]$hit[0].size -ne [int64]$local.Length) {
+            throw "资产大小与构建产物不一致：Release=$($hit[0].size) / 本地=$($local.Length)"
+          }
+          Write-Host "清单 URL 与 Release 资产一致：$name（$($hit[0].size) 字节）"
+
+          $anon = 0
+          try {
+            $r = Invoke-WebRequest -Uri $url -Method Head -MaximumRedirection 5 -SkipHttpErrorCheck -TimeoutSec 30
+            $anon = [int]$r.StatusCode
+          } catch { $anon = 0 }
+          if ($anon -eq 200) {
+            Write-Host "匿名访问清单下载地址：200（零鉴权可下载，更新链路端到端可达）"
+          } else {
+            Write-Host "::warning::匿名访问清单下载地址返回 $anon（非 200）：仓库为私有时 Release 资产不可零鉴权下载，自动更新在此形态下不可达。按私有仓库口径如实上报，不由本步伪装成达标。"
+          }
