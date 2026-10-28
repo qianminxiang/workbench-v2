@@ -392,7 +392,14 @@ fn write_delivery(paths: &AppPaths, state: &DeliveryState) {
 /// 生成晨报并投递系统通知；成功返回通知正文，失败返回 Err 说明。
 /// v2.1：免打扰窗口从 sync_state 读真实偏好（不再写死 default）；
 /// 输出附带播报文本与语音开关，前端据此决定是否朗读（免打扰只通知不播报）。
-fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json::Value, String> {
+/// v2.2 FR-6：`version_event` 非空时按「新版本」来源标注（标题+正文末行）；
+/// 无论哪种来源，成功送达都把当前包版本写入 last_delivered_version
+/// （AC-6-7：正常 9:00 送达也要更新版本记录，次日才不会误判版本事件）。
+fn deliver_brief(
+    app: &tauri::AppHandle,
+    paths: &AppPaths,
+    version_event: Option<brief::VersionBootEvent>,
+) -> Result<serde_json::Value, String> {
     let store = open_store(paths)?;
     let year = today().year;
     let items = wb_core::repo::load_items(store.conn(), year).map_err(err_string)?;
@@ -400,7 +407,10 @@ fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json:
     let t = today();
     let decision = brief::decide(t, now_minutes(), &read_delivery(paths));
     let b = rules::morning_brief(t, &items, &rs);
-    let (title, body) = brief::notification_text(&b, &decision);
+    let (title, body) = match version_event.as_ref() {
+        Some(ev) => brief::version_boot_notification(&b, ev),
+        None => brief::notification_text(&b, &decision),
+    };
     let (quiet, voice_enabled) = load_prefs(store.conn());
     let speech = brief::speech_text(&b, &decision);
 
@@ -416,8 +426,10 @@ fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json:
 
     // 落盘：无论通知是否被免打扰抑制，晨报本身都已生成并送达（应用内可看），
     // 因此这里写「已送达」。抑制的只是弹窗，不是晨报内容——不静默吞掉。
+    // AC-6-5：免打扰下版本事件同样要更新版本记录（不静默丢失）。
     let mut st = read_delivery(paths);
     st.last_delivered_date = Some(decision.brief_date.clone());
+    st.last_delivered_version = Some(app.package_info().version.to_string());
     st.last_attempt_at = Some(wb_core::store::now_iso_pub());
     write_delivery(paths, &st);
 
@@ -430,6 +442,9 @@ fn deliver_brief(app: &tauri::AppHandle, paths: &AppPaths) -> Result<serde_json:
         "speech": speech,
         "title": title,
         "body": body,
+        "new_version": version_event.is_some(),
+        "version_from": version_event.as_ref().map(|e| e.previous_version.clone()),
+        "version_to": version_event.as_ref().map(|e| e.current_version.clone()),
         "counts": {
             "due_today": b.due_today.len(),
             "due_soon": b.due_soon.len(),
@@ -448,6 +463,7 @@ fn get_pending_brief(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value,
         && now_minutes() >= brief::BRIEF_HOUR * 60 + brief::BRIEF_MINUTE;
     Ok(serde_json::json!({
         "last_delivered_date": st.last_delivered_date,
+        "last_delivered_version": st.last_delivered_version,
         "last_attempt_at": st.last_attempt_at,
         "pending": pending,
         "today": today_iso,
@@ -458,7 +474,8 @@ fn get_pending_brief(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value,
 #[tauri::command]
 fn trigger_brief(app: tauri::AppHandle, paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
     let paths = paths.lock().unwrap();
-    deliver_brief(&app, &paths)
+    // 手动触发不标「新版本」：来源标注只属于版本事件（FR-6）
+    deliver_brief(&app, &paths, None)
 }
 
 /// 兼容旧前端：清除待送达标记（清空已送达日期，下次判为待补发）。
@@ -487,7 +504,7 @@ fn spawn_brief_scheduler(app: tauri::AppHandle) {
         // 到期才开库、生成、通知；失败不 panic，只把原因发给前端提示
         let result = {
             let p = paths.lock().unwrap();
-            deliver_brief(&app, &p)
+            deliver_brief(&app, &p, None)
         };
         if let Err(e) = &result {
             let _ = app.emit("brief-error", e.clone());
@@ -662,6 +679,31 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+
+            // FR-6 晨报随新版本即时启动：版本号变化 + 已过 9:00 + 本版本未送过
+            // → 立即送达一次并标注「新版本」。放在补推判定**之前**：送达成功后
+            // 下面的 pending 判定会看到 AlreadyDelivered，不再发 brief-pending，
+            // 保证版本事件与补发只送达一次（R6-2）。判定失败（如开库失败）
+            // 不阻塞启动，交给 30 秒调度线程按 DueLate 兜底。
+            {
+                let p = app.state::<Mutex<AppPaths>>();
+                let paths = p.lock().unwrap();
+                let st = read_delivery(&paths);
+                // R6-1：版本号只认 tauri.conf.json 构建期注入的包版本
+                let cur = handle.package_info().version.to_string();
+                if let brief::VersionBootDecision::Deliver(ev) =
+                    brief::decide_version_boot(now_minutes(), &cur, &st)
+                {
+                    match deliver_brief(&handle, &paths, Some(ev)) {
+                        Ok(v) => {
+                            let _ = handle.emit("brief-delivered", v);
+                        }
+                        Err(e) => {
+                            let _ = handle.emit("brief-error", e);
+                        }
+                    }
+                }
+            }
 
             // 启动即补推：应用可能昨天没开，今天一开机就该看到晨报（B7 验收②）
             {

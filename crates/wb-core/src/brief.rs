@@ -51,8 +51,59 @@ impl QuietHours {
 pub struct DeliveryState {
     /// 最近一次**成功送达**的晨报日期（YYYY-MM-DD）。缺省表示从未送达。
     pub last_delivered_date: Option<String>,
+    /// 最近一次成功送达时的应用版本号（FR-6，R6-1：只认 tauri.conf.json
+    /// 注入的包版本，窗口标题字符串不参与判定）。**任何一次成功送达**（准点/
+    /// 补发/版本事件）都会更新它——语义是「上一次送达发生在哪个版本」。
+    /// 缺省表示从未送达过：首装不算版本事件，走现有 DueLate（AC-6-4）。
+    #[serde(default)]
+    pub last_delivered_version: Option<String>,
     /// 最近一次尝试送达的时刻（ISO），仅用于排查，不参与判定。
     pub last_attempt_at: Option<String>,
+}
+
+/// FR-6 版本即时启动的触发信息（升级或降级，AC-6-6 同规则）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionBootEvent {
+    pub previous_version: String,
+    pub current_version: String,
+}
+
+/// FR-6 版本即时启动判定结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionBootDecision {
+    /// 不触发：未到 9:00（AC-6-3）/ 从未有版本送达记录（首装，AC-6-4）/
+    /// 本版本已送达过（AC-6-2 每版本至多一次）
+    Skip,
+    /// 立即送达一次，标题/正文标注来源「新版本」（AC-6-1 / AC-6-6）
+    Deliver(VersionBootEvent),
+}
+
+/// FR-6：应用启动时的「晨报随新版本即时启动」判定。
+///
+/// 与 `decide` 相互独立：当日已在旧版本送达过（`decide` 返回
+/// AlreadyDelivered）正是本判定要解决的核心空窗（AC-6-1）；反过来首装没有
+/// 版本记录，本判定返回 Skip，交给现有 DueLate 补发，不叠加二次推送
+/// （AC-6-4，R6-2：版本事件与补发冲突时只送达一次）。
+pub fn decide_version_boot(
+    now_minutes: u32,
+    app_version: &str,
+    state: &DeliveryState,
+) -> VersionBootDecision {
+    // AC-6-3：未到 9:00 不即时启动，由现有 9:00 调度线程正常触发
+    if now_minutes < BRIEF_HOUR * 60 + BRIEF_MINUTE {
+        return VersionBootDecision::Skip;
+    }
+    match state.last_delivered_version.as_deref() {
+        // AC-6-4：首次安装（从未记录过送达版本）不算版本事件
+        None => VersionBootDecision::Skip,
+        // AC-6-2：同一版本重复启动不重复推
+        Some(prev) if prev == app_version => VersionBootDecision::Skip,
+        // AC-6-1 / AC-6-6：版本变化（升级、降级同规则）→ 立即送达一次
+        Some(prev) => VersionBootDecision::Deliver(VersionBootEvent {
+            previous_version: prev.to_string(),
+            current_version: app_version.to_string(),
+        }),
+    }
 }
 
 /// 此刻的送达判定。
@@ -142,7 +193,31 @@ pub fn notification_text(brief: &MorningBrief, decision: &BriefDecision) -> (Str
     } else {
         format!("个人工作台 · 晨报 · {}", brief.brief_date)
     };
+    let mut lines = brief_body_lines(brief);
+    if decision.verdict == BriefVerdict::DueLate {
+        lines.push(format!(
+            "应用当时未运行，已于 {} 分钟后补发",
+            decision.late_minutes
+        ));
+    }
+    (title, lines.join("\n"))
+}
 
+/// FR-6 版本事件晨报的通知：与常规晨报共享同一批事实（`brief_body_lines`），
+/// 差异只有两处——标题来源标记「新版本」，正文末行说明触发原因。
+pub fn version_boot_notification(brief: &MorningBrief, ev: &VersionBootEvent) -> (String, String) {
+    let title = format!("晨报（新版本）· {}", brief.brief_date);
+    let mut lines = brief_body_lines(brief);
+    lines.push(format!(
+        "检测到版本更新 {} → {}，已即时送达本次晨报",
+        ev.previous_version, ev.current_version
+    ));
+    (title, lines.join("\n"))
+}
+
+/// 通知正文的公共事实段：三计数 + 最多三条要点 + 其余条数 + 周一附周聚合。
+/// 准点/补发/版本事件三种来源共用，保证用户在任何入口看到的是同一批事实。
+fn brief_body_lines(brief: &MorningBrief) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
         "今日到期 {} · 临期 {} · 逾期 {}",
@@ -185,15 +260,7 @@ pub fn notification_text(brief: &MorningBrief, decision: &BriefDecision) -> (Str
             w.should_start.len()
         ));
     }
-
-    if decision.verdict == BriefVerdict::DueLate {
-        lines.push(format!(
-            "应用当时未运行，已于 {} 分钟后补发",
-            decision.late_minutes
-        ));
-    }
-
-    (title, lines.join("\n"))
+    lines
 }
 
 /// 语音播报要点（F10 上线）。与晨报四段结构一一对应：计数 → 三条要点 →
@@ -381,5 +448,128 @@ mod tests {
         let dec = decide(d, 14 * 60 + 30, &DeliveryState::default());
         let s = speech_text(&brief, &dec);
         assert!(s.starts_with("早上好。现在是补发晨报。"), "补发播报开头必须说明：{}", s);
+    }
+
+    // ── FR-6 晨报随新版本即时启动（AC-6-1 ~ AC-6-7 纯函数部分）──
+
+    fn vstate(date: Option<&str>, version: Option<&str>) -> DeliveryState {
+        DeliveryState {
+            last_delivered_date: date.map(String::from),
+            last_delivered_version: version.map(String::from),
+            last_attempt_at: None,
+        }
+    }
+
+    #[test]
+    fn version_boot_fires_after_same_day_delivery_on_old_version() {
+        // AC-6-1：当日 9:00 后、晨报已在旧版本送达、升级启动 → 立即送达一次。
+        // 这正是 decide() 返回 AlreadyDelivered 的空窗——两条判定要同时成立。
+        let today = CivilDate::new(2026, 10, 28);
+        let st = vstate(Some("2026-10-28"), Some("2.1.0"));
+        assert_eq!(decide(today, 14 * 60 + 30, &st).verdict, BriefVerdict::AlreadyDelivered);
+        assert_eq!(
+            decide_version_boot(14 * 60 + 30, "2.2.0", &st),
+            VersionBootDecision::Deliver(VersionBootEvent {
+                previous_version: "2.1.0".into(),
+                current_version: "2.2.0".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn version_boot_same_version_not_repeated() {
+        // AC-6-2：送达后重启同一版本 → 不重复触发。
+        let st = vstate(Some("2026-10-28"), Some("2.2.0"));
+        assert_eq!(decide_version_boot(15 * 60, "2.2.0", &st), VersionBootDecision::Skip);
+        // 次日同一版本也不算版本事件（AC-6-7：次日只走一次正常 9:00 送达）
+        let st_next_day = vstate(Some("2026-10-28"), Some("2.2.0"));
+        assert_eq!(decide_version_boot(9 * 60, "2.2.0", &st_next_day), VersionBootDecision::Skip);
+    }
+
+    #[test]
+    fn version_boot_before_nine_waits_for_timer() {
+        // AC-6-3：本地时间 8:59，版本已升级 → 不即时送达，交给现有调度线程。
+        let st = vstate(Some("2026-10-27"), Some("2.1.0"));
+        assert_eq!(decide_version_boot(8 * 60 + 59, "2.2.0", &st), VersionBootDecision::Skip);
+        // 9:00 整点起版本事件才可接管（与 BRIEF_HOUR 口径一致）
+        assert!(matches!(
+            decide_version_boot(9 * 60, "2.2.0", &st),
+            VersionBootDecision::Deliver(_)
+        ));
+    }
+
+    #[test]
+    fn version_boot_first_install_defers_to_due_late() {
+        // AC-6-4：首次安装（无 last_delivered_version）10:00 启动 → 不算版本事件，
+        // 由现有 DueLate 补发；两路判定此刻一虚一实，不叠加二次推送。
+        let today = CivilDate::new(2026, 10, 28);
+        let st = vstate(None, None);
+        assert_eq!(decide_version_boot(10 * 60, "2.2.0", &st), VersionBootDecision::Skip);
+        assert_eq!(decide(today, 10 * 60, &st).verdict, BriefVerdict::DueLate);
+    }
+
+    #[test]
+    fn version_boot_downgrade_counts_as_change() {
+        // AC-6-6：降级（v2.2.0 → v2.1.0，回滚演练）判定为版本变化，同规则送达。
+        let st = vstate(Some("2026-10-28"), Some("2.2.0"));
+        assert_eq!(
+            decide_version_boot(14 * 60 + 30, "2.1.0", &st),
+            VersionBootDecision::Deliver(VersionBootEvent {
+                previous_version: "2.2.0".into(),
+                current_version: "2.1.0".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn version_boot_fires_even_when_today_undelivered() {
+        // R6-2：昨天在旧版本送达、今天 10:00 升级启动（今天还没送）——
+        // 版本事件优先、只送达一次：版本判定 Deliver，常规判定 DueLate，
+        // 上层先走版本事件，送达后两路同时满足（不再重复送）。
+        let today = CivilDate::new(2026, 10, 28);
+        let st = vstate(Some("2026-10-27"), Some("2.1.0"));
+        assert_eq!(decide(today, 10 * 60, &st).verdict, BriefVerdict::DueLate);
+        assert!(matches!(
+            decide_version_boot(10 * 60, "2.2.0", &st),
+            VersionBootDecision::Deliver(_)
+        ));
+    }
+
+    #[test]
+    fn version_boot_notification_marks_source() {
+        // PRD 输出形态：标题「晨报（新版本）· 日期」，正文末行说明触发原因。
+        let d = CivilDate::new(2026, 10, 28);
+        let brief = morning_brief(d, &[], &Ruleset::default());
+        let ev = VersionBootEvent {
+            previous_version: "2.1.0".into(),
+            current_version: "2.2.0".into(),
+        };
+        let (title, body) = version_boot_notification(&brief, &ev);
+        assert_eq!(title, format!("晨报（新版本）· {}", brief.brief_date));
+        assert!(
+            body.contains("检测到版本更新 2.1.0 → 2.2.0，已即时送达本次晨报"),
+            "正文末行必须说明触发原因：{}",
+            body
+        );
+        // 共享事实段：与常规通知同一批计数
+        assert!(body.contains(&format!(
+            "今日到期 {} · 临期 {} · 逾期 {}",
+            brief.due_today.len(),
+            brief.due_soon.len(),
+            brief.overdue.len()
+        )));
+    }
+
+    #[test]
+    fn delivery_state_deserializes_legacy_json_without_version() {
+        // 旧 last_brief.json（v2.1 落盘，无 last_delivered_version 字段）必须能
+        // 无损读入：版本字段缺省为 None，首启等价于「无版本记录」走 DueLate。
+        let legacy = serde_json::json!({
+            "last_delivered_date": "2026-10-27",
+            "last_attempt_at": "2026-10-27T09:00:05+08:00"
+        });
+        let st: DeliveryState = serde_json::from_value(legacy).expect("旧版 JSON 必须可读");
+        assert_eq!(st.last_delivered_date.as_deref(), Some("2026-10-27"));
+        assert_eq!(st.last_delivered_version, None);
     }
 }
