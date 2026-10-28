@@ -36,11 +36,6 @@
   .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
     background: var(--mech-panel); transition: left var(--motion-reflow) var(--ease-in-quad); }
   .switch input:checked::after { left: 18px; }
-  .banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 16px;
-    background: var(--mech-amber-bg); color: var(--mech-amber-fg); border-radius: 4px; font-weight: 600; }
-  .banner button { all: unset; cursor: pointer; margin-left: auto; padding: 4px 12px; border-radius: 2px;
-    background: rgba(0,0,0,0.25); }
-  .banner--update { background: var(--mech-ok-bg, rgba(46, 204, 113, 0.12)); color: var(--mech-ok, #2ecc73); }
   #f10-lamp { display: inline-flex; }
   .empty { padding: 40px; text-align: center; color: var(--mech-text-3); }
 </style>
@@ -52,6 +47,15 @@
   <div class="top">
     <h1>个人工作台 <span class="mini">v2.1 · 安徽大区</span></h1>
     <div class="top-right">
+      <!-- v2.2 通知中心（UI 规范 7.5）：字幕队列溢出/历史通知入口 -->
+      <button id="nc-btn" aria-label="通知中心" aria-expanded="false" title="通知中心">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3l-1.5 2.5h12L12.5 9V6A4.5 4.5 0 0 0 8 1.5z"/>
+          <path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/>
+        </svg>
+        <span class="nc-badge" id="nc-badge" hidden>0</span>
+        <div class="nc-panel" id="nc-panel" hidden></div>
+      </button>
       <span class="mini">语音播报</span>
       <label class="switch" title="F10 语音播报：晨报送达时播报要点（免打扰时段只通知不播报）">
         <!-- boot() 启动时从偏好库回填真实状态（默认开启）；读取成功前 disabled 防误触 -->
@@ -60,17 +64,18 @@
     </div>
   </div>
 
-  <!-- v2.1 自动更新：启动静默检查发现新版时提示，用户确认后才下载安装 -->
-  <div id="update-bar" class="banner banner--update" hidden>
-    <span>◆ 发现新版本，可以更新。</span>
-    <button id="update-go">立即更新</button>
+  <!-- v2.2 FR-5 首行滚动字幕（装甲指挥舱 · UI 规范第六章）：替代 v2.1 两条 banner。
+       队列空时整条隐藏不留空白带；滚动容器对读屏 aria-hidden，播报走下方 aria-live 区。 -->
+  <div id="marquee-bar" hidden>
+    <span class="mq-channel" aria-hidden="true">COMM<span class="mq-alert-badge" id="mq-alert-badge" hidden>▲</span></span>
+    <div class="mq-viewport" id="mq-viewport" tabindex="0" role="button" aria-label="展开当前通知详情">
+      <div class="mq-track" id="mq-track" aria-hidden="true"></div>
+    </div>
+    <span class="mq-pos" id="mq-pos" aria-hidden="true"></span>
+    <div class="mq-detail" id="mq-detail" hidden></div>
   </div>
-
-  <!-- B7 验收②：完全退出后未送达的晨报，启动时明确补推，不静默失败 -->
-  <div id="undelivered" class="banner" hidden>
-    <span>◆ 昨日 9:00 的晨报未送达（应用未运行）。补推内容见「晨报」页。</span>
-    <button id="undelivered-ok">知道了</button>
-  </div>
+  <!-- 无障碍播报区（UI 规范 6.3 红线）：每条通知入队时写入一次，视觉隐藏 -->
+  <div class="sr-only" id="mq-live" aria-live="polite"></div>
 
   <!-- 筛选条（F4-1）：四维筛选，状态在三种形态间共享 -->
   <div class="panel" style="padding:8px 12px; --panel-strip: var(--mech-ok)">
@@ -99,6 +104,17 @@
   </nav>
 
   <main id="main"></main>
+</div>
+
+<!-- v2.2 底部指令条（装甲指挥舱 7.4）：破坏性/高影响操作的红警式确认。
+     升起 160ms / 收起 120ms / 8s 超时自动取消；Enter 确认 / Esc 取消。 -->
+<div id="cmd-bar" hidden role="alertdialog" aria-live="assertive" aria-label="操作确认">
+  <span class="cmd-lamp" aria-hidden="true"></span>
+  <span class="cmd-text" id="cmd-text"></span>
+  <div class="cmd-actions">
+    <button class="btn cmd-confirm" id="cmd-ok">确认执行</button>
+    <button class="btn--ghost btn" id="cmd-cancel">取消</button>
+  </div>
 </div>
 <script src="app.js"></script>
 </body>

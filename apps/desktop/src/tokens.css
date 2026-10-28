@@ -392,5 +392,279 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-s
   transform-origin: 0 0;
   animation: radar-sweep 2.4s linear infinite;
 }
+/* deprecated v2.2, keep for rollback —— 雷达扫掠与 8 段括号已被锁定框（角码+呼吸描边）替代，本版本不删 */
 @keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .radar::after { animation: none; } }
+
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   v2.2 armor bridge（装甲指挥舱 · UI 升级设计规范 2026-10-28 定稿）
+   纪律：本区块全部为**新增** Token / 关键帧 / 组件样式，v2.1 既有值零改值
+   （规范 8.2 红线）。旧 8 段括号与雷达扫掠 keyframe 保留在上方并标 deprecated，
+   作为回退路径，本版本不删。
+   ══════════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── 阶段2：气闸开合切换（规范第四章）── */
+  --motion-airlock: 360ms;        /* 容器切换硬上限：160+140+60 */
+  --motion-airlock-close: 160ms;  /* ① 合盖 */
+  --motion-airlock-open: 140ms;   /* ② 弹出 */
+  --motion-airlock-lock: 60ms;    /* ③ 锁定脉冲（v2.1 morph-lock 24ms 的升级值） */
+  --stagger-card: 12ms;           /* 全量逐卡交错步长（交错窗封顶 180ms，JS 控制） */
+  /* ── 阶段3：交互细节 ── */
+  --lock-corner: 12px;            /* 锁定框四角 L 形角码边长 */
+  --lock-corner-weight: 2px;      /* 角码线宽（沿用 v2.1 括号线宽基准） */
+  --motion-breathe: 2s;           /* 选中呼吸描边循环 */
+  --plate-bar-hover: 5px;         /* 悬停板块条高度（常态沿用 --w-board-strip: 4px） */
+  --bar-height: 44px;             /* 底部指令条高 */
+  --motion-bar-in: 160ms;         /* 指令条升起 */
+  --motion-bar-out: 120ms;        /* 指令条收起 */
+  --bar-timeout: 8s;              /* 指令条超时自动取消 */
+  /* ── 阶段7（终稿）：面板结构框 ── */
+  --frame-weight: 1.5px;          /* 面板外框描边（卡片层沿用旧 1px，不改值） */
+  /* ── 阶段4：首行滚动字幕 ── */
+  --marquee-height: 32px;
+  --marquee-speed: 40px;          /* px/s；实际时长由 JS 按条目宽度换算写入 --mq-dur */
+  --motion-marquee-blink: 200ms;  /* 灯带闪烁半周期（亮/灭各 200ms ×2 = 800ms） */
+  --motion-marquee-detail: 120ms; /* 详情条展开 */
+  --marquee-detail-height: 88px;
+  --marquee-queue-cap: 5;
+  /* ── 装甲板抬升阴影（5.1：外阴影 y+2/模糊+4 + inset 底缝线）── */
+  --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.09), inset 0 -1px 0 var(--mech-seam);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
+}
+:root[data-theme="dark"] { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
+
+/* ── 气闸开合关键帧（4.1）──
+   容器红线：只做 transform/opacity，严禁容器 clip-path（v2.1 3.3 延续）。
+   合盖 = scaleY 向中线收束；弹出 = 从中线展开带 2% 位移补偿。 */
+.airlock-close { animation: airlock-close var(--motion-airlock-close) var(--ease-morph-out) forwards; }
+@keyframes airlock-close {
+  from { transform: scaleY(1); opacity: 1; }
+  50%  { opacity: 0.4; }
+  to   { transform: scaleY(0.04); opacity: 0; }
+}
+.airlock-open { animation: airlock-open var(--motion-airlock-open) var(--ease-morph-in) forwards; }
+@keyframes airlock-open {
+  from { transform: scaleY(0.04) translateY(-2%); opacity: 0; }
+  to   { transform: scaleY(1) translateY(0); opacity: 1; }
+}
+.airlock-lock { animation: airlock-lock var(--motion-airlock-lock) var(--ease-standard); }
+@keyframes airlock-lock {
+  from { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
+  to   { outline: 2px solid transparent; outline-offset: -2px; }
+}
+/* 全量逐卡装甲翻入（4.2）：卡片自身 clip-path（小面积），交错延迟与 will-change
+   即用即还由 JS 控制；rAF 帧率兜底（连续 2 帧 >24ms → 剩余卡直接终态）也在 JS。 */
+.armor-flip { animation: armor-flip-in var(--motion-airlock-open) var(--ease-morph-in) both; will-change: transform; }
+main[data-morph="h"] .armor-flip { animation-name: armor-flip-in-h; }
+main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
+@keyframes armor-flip-in-h {
+  from { transform: scaleX(0.32) scaleY(0.28); opacity: 0; clip-path: inset(0 50% 0 50%); }
+  to   { transform: none; opacity: 1; clip-path: inset(0 0 0 0); }
+}
+@keyframes armor-flip-in-v {
+  from { transform: scaleY(0.42); opacity: 0; clip-path: inset(50% 0 50% 0); }
+  to   { transform: none; opacity: 1; clip-path: inset(0 0 0 0); }
+}
+@keyframes armor-flip-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── 5.1 装甲板抬升（pointer: fine 限定；按下是压入，与抬升方向相反）── */
+@media (hover: hover) and (pointer: fine) {
+  .card { transition: border-color var(--motion-micro) var(--ease-micro),
+                      box-shadow var(--motion-micro) var(--ease-micro),
+                      transform var(--motion-micro) var(--ease-micro); }
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-armor-lift);
+  }
+  .card:active { transform: scale(0.994); }  /* 按下移除抬升保持压入 */
+}
+/* 板块条悬停 4→5px 走新 Token（常态值不变） */
+.card:hover .board-strip { width: var(--plate-bar-hover); }
+
+/* ── 7.1 面板结构框：1.5px seam 描边 + 8 颗铆钉（JS decoratePanels 注入 span）── */
+.panel--frame { border-width: var(--frame-weight); }
+.rivet {
+  position: absolute; width: 6px; height: 6px;
+  background: var(--mech-seam); transform: rotate(45deg);
+  pointer-events: none;
+}
+.rivet[data-pos="tl"] { top: 3px; left: 3px; }
+.rivet[data-pos="tr"] { top: 3px; right: 3px; }
+.rivet[data-pos="bl"] { bottom: 3px; left: 3px; }
+.rivet[data-pos="br"] { bottom: 3px; right: 3px; }
+.rivet[data-pos="tc"] { top: 3px; left: 50%; margin-left: -3px; }
+.rivet[data-pos="bc"] { bottom: 3px; left: 50%; margin-left: -3px; }
+.rivet[data-pos="ml"] { top: 50%; left: 3px; margin-top: -3px; }
+.rivet[data-pos="mr"] { top: 50%; right: 3px; margin-top: -3px; }
+/* 指令脉冲（7.1）：确认执行后对应面板灯带闪 1 次 */
+.panel--pulse::before { animation: panel-pulse 160ms var(--ease-standard); }
+@keyframes panel-pulse { from { opacity: 1; filter: none; } 50% { opacity: 0.35; } to { opacity: 0.9; } }
+
+/* ── 5.2 / 7.3 锁定框：四角 L 形角码 + 呼吸描边 ──
+   角码用背景渐变实现（零 DOM、不占布局流）；描边色取 --mech-ok 系。
+   旧 8 段括号背景（.card--selected 原 text-1 色版本）已被本规则覆盖，
+   旧 radar keyframe 保留在文件尾部标 deprecated 作回退路径。 */
+:root {
+  --lock-color: var(--mech-ok);
+  --armor-lock-bg:
+    linear-gradient(var(--lock-color), var(--lock-color)) left 4px top 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) left 4px top 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) right 4px top 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) right 4px top 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) left 4px bottom 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) left 4px bottom 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) right 4px bottom 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
+    linear-gradient(var(--lock-color), var(--lock-color)) right 4px bottom 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
+    var(--mech-plate);
+}
+.card--selected {
+  background: var(--armor-lock-bg);
+  outline: 1px solid var(--lock-color);
+  animation: lock-breathe var(--motion-breathe) ease-in-out infinite;
+}
+/* 键盘可达（5.2）：focus-visible 与选中同形态，但不播呼吸 */
+.card:focus-visible {
+  outline: 2px solid var(--mech-brand); outline-offset: 2px;
+  background: var(--armor-lock-bg);
+}
+@keyframes lock-breathe {
+  0%, 100% { outline-color: color-mix(in srgb, var(--lock-color) 55%, transparent); }
+  50%      { outline-color: var(--lock-color); }
+}
+
+/* ── 7.4 底部指令条 ── */
+#cmd-bar {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  height: var(--bar-height); min-width: 380px; max-width: 720px;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--mech-plate);
+  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-lift); padding-right: 8px; z-index: 90;
+}
+#cmd-bar .cmd-lamp { width: 2px; align-self: stretch; background: var(--mech-amber-bg); margin: 6px 0 6px 10px; flex: none; }
+#cmd-bar .cmd-text { flex: 1; font-weight: 600; font-size: var(--fs-body); }
+#cmd-bar .cmd-actions { display: flex; gap: 8px; flex: none; }
+#cmd-bar.cmd-in { animation: cmd-in var(--motion-bar-in) var(--ease-morph-out); }
+#cmd-bar.cmd-out { animation: cmd-out var(--motion-bar-out) var(--ease-morph-in) forwards; }
+@keyframes cmd-in  { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes cmd-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 14px); } }
+
+/* ── 第六章：首行滚动字幕条 ── */
+#marquee-bar {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  height: var(--marquee-height);
+  background: var(--mech-plate);
+  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+  margin-bottom: var(--sp-4); padding: 0 10px 0 0;
+}
+/* 底部 2px 状态灯带：常态 ok 绿；有严重级在队/在播 → red 常亮（非颜色冗余靠 ▲ 徽标） */
+#marquee-bar::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--mech-ok); border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+}
+#marquee-bar.mq-severe::after { background: var(--mech-red-bg); }
+/* 新消息入队：灯带闪 2 次（200ms 亮 / 200ms 灭 ×2），随后回归常态色 */
+#marquee-bar.mq-blink-fx::after { animation: marquee-blink calc(var(--motion-marquee-blink) * 2) linear 2; }
+@keyframes marquee-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.1; } }
+
+.mq-channel {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  padding-left: 16px; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 1px; color: var(--mech-text-3);
+}
+.mq-alert-badge { color: var(--mech-red-bg); font-size: 12px; font-weight: 700; }
+.mq-viewport {
+  flex: 1; min-width: 0; height: 100%; position: relative; overflow: hidden;
+  cursor: pointer; border-radius: 2px;
+}
+.mq-viewport:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
+.mq-track {
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--mech-text-1);
+}
+.mq-track::after { content: " ▸"; color: var(--mech-text-3); font-weight: 400; }
+.mq-track.mq-run { animation: marquee-scroll var(--mq-dur, 12s) linear forwards; will-change: transform; }
+@keyframes marquee-scroll {
+  from { transform: translate(var(--mq-from, 100%), -50%); }
+  to   { transform: translate(var(--mq-to, -100%), -50%); }
+}
+/* 悬停即停（6.2，pointer: fine 限定）：animation-play-state 保存位移续播 */
+@media (hover: hover) and (pointer: fine) {
+  #marquee-bar:hover .mq-track.mq-run { animation-play-state: paused; }
+}
+/* 详情条展开期间无条件暂停（触屏同样生效） */
+#marquee-bar.mq-open .mq-track.mq-run { animation-play-state: paused; }
+.mq-pos {
+  flex: none; font-family: var(--font-mono); font-size: 11px;
+  color: var(--mech-text-3); min-width: 28px; text-align: right;
+}
+/* 详情条（6.2）：原位展开至 88px，inset 层，含完整内容 + 主操作 */
+.mq-detail {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  min-height: var(--marquee-detail-height);
+  background: var(--mech-inset);
+  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+  padding: 10px 14px; z-index: 40;
+  display: flex; flex-direction: column; gap: 8px; justify-content: center;
+  animation: marquee-detail-open var(--motion-marquee-detail) var(--ease-morph-in);
+}
+@keyframes marquee-detail-open {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+.mq-detail-body { font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto; }
+.mq-detail-actions { display: flex; gap: 8px; }
+
+/* ── 7.5 通知中心 ── */
+#nc-btn {
+  all: unset; cursor: pointer; position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--radius-badge); color: var(--mech-text-2);
+}
+#nc-btn:hover { background: var(--mech-inset); color: var(--mech-text-1); }
+.nc-badge {
+  position: absolute; top: -2px; right: -4px; min-width: 14px; height: 14px;
+  border-radius: 7px; background: var(--mech-red-bg); color: var(--mech-red-fg);
+  font-size: 10px; font-weight: 700; line-height: 14px; text-align: center; padding: 0 3px;
+}
+.nc-panel {
+  position: absolute; top: calc(100% + 10px); right: 0; width: 320px; max-height: 380px;
+  overflow: auto; background: var(--mech-plate);
+  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-lift); padding: 4px; z-index: 80;
+}
+.nc-item { padding: 8px 10px; border-bottom: var(--w-rule) solid var(--mech-seam); cursor: pointer; }
+.nc-item:last-child { border-bottom: 0; }
+.nc-item:hover { background: var(--mech-inset); }
+.nc-item .nc-time { font-family: var(--font-mono); font-size: 10px; color: var(--mech-text-3); margin-right: 6px; }
+.nc-item .nc-badge-lv { font-size: 10px; padding: 1px 5px; border-radius: 2px; margin-right: 6px; }
+.nc-item .nc-lv-severe { background: var(--mech-red-bg); color: var(--mech-red-fg); }
+.nc-item .nc-lv-high { background: var(--mech-amber-bg); color: var(--mech-amber-fg); }
+.nc-item .nc-lv-normal { background: var(--mech-inset); color: var(--mech-text-2); }
+.nc-item .nc-text { display: block; margin-top: 3px; font-size: 12px; }
+.nc-empty { padding: 20px; text-align: center; color: var(--mech-text-3); font-size: 12px; }
+
+/* 视觉隐藏（aria-live 播报区专用） */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ── v2.2 全线降级（prefers-reduced-motion）：80ms 淡入淡出 / 字幕停滚 /
+   呼吸停用 / 降级态静音（静音在 JS 判定）── */
+@media (prefers-reduced-motion: reduce) {
+  .airlock-close, .airlock-open { animation: reflow-fade var(--motion-degraded) linear forwards; }
+  .airlock-lock { animation: none; }
+  .armor-flip { animation: armor-flip-in var(--motion-degraded) linear both; animation-delay: 0ms !important; }
+  #marquee-bar .mq-track { animation: none !important; transform: translateY(-50%); }
+  #marquee-bar .mq-track.mq-run { left: 10px; right: 10px; overflow: hidden; text-overflow: ellipsis; }
+  #marquee-bar.mq-blink-fx::after { animation: none; }
+  .mq-detail { animation: none; }
+  .card--selected { animation: none; }
+  #cmd-bar.cmd-in, #cmd-bar.cmd-out { animation: none; }
+  .panel--pulse::before { animation: none; }
+}

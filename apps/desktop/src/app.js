@@ -331,14 +331,64 @@ function viewSettings() {
   </div>`;
 }
 
-// ── 渲染主循环（第三章：四阶段 240ms = 拆解72 + 传递84 + 重组60 + 锁定24）──
-// ① 拆解（accelerate）→ ② 传递（旧形态淡出）→ ③ 重组（decelerate，逐卡变形只标 ≤6 张）
-// → ④ 锁定（brand 描边闪 24ms）。容器只动 transform/opacity，逐卡才允许 clip-path。
-const MORPH_SWAP_MS = 132;  // 出场 156ms 的后 24ms 与进场重叠 → 132ms 处换帧
-const MORPH_IN_MS = 84;
-const MORPH_LOCK_MS = 24;
-let morphTimer = 0;
+/* ── 渲染主循环 · v2.2 气闸开合（UI 规范第四章，替代 v2.1 四阶段 240ms）──
+   ① 合盖 160ms（容器 scaleY 收束，内容先行淡出）→ ② 弹出 140ms（中线展开 + 2% 位移补偿）
+   → ③ 锁定 60ms（描边 1 次品牌色脉冲）。容器只动 transform/opacity（红线延续）。
+   全量逐卡装甲翻入：12ms 交错、交错窗封顶 180ms、rAF 帧率兜底（连续 2 帧 >24ms
+   剩余卡直接终态）；will-change 即用即还。打断：任一阶段点新页签立即取消当前
+   序列、新目标从头执行完整 360ms（红警「指令即时覆盖」）。旧 --motion-morph 240ms
+   与降级路径保留在 tokens.css 作回退。 */
+const AIRLOCK_CLOSE_MS = 160;   // --motion-airlock-close
+const AIRLOCK_OPEN_MS = 140;    // --motion-airlock-open
+const AIRLOCK_LOCK_MS = 60;     // --motion-airlock-lock
+const STAGGER_MS = 12;          // --stagger-card
+const STAGGER_CAP_MS = 180;     // 交错窗封顶（第 15 张起共享 180ms）
+let airlockTimer = 0;
+let airlockGen = 0;             // 打断凭据：自增后旧序列的 rAF/超时回调全部失效
 let prevView = "brief";
+
+function cancelAirlock(main) {
+  clearTimeout(airlockTimer);
+  airlockTimer = 0;
+  airlockGen++;
+  main.classList.remove("airlock-close", "airlock-open", "airlock-lock");
+  main.querySelectorAll(".armor-flip").forEach((c) => {
+    c.classList.remove("armor-flip");
+    c.style.animationDelay = "";
+    c.style.willChange = "";
+  });
+}
+
+/** 全量逐卡装甲翻入（4.2）+ rAF 帧率兜底。axis: 'h'|'v'|''（沿 v2.1 变形轴向参数）。 */
+function armorFlipCards(main) {
+  const cards = [...main.querySelectorAll(".card")];
+  if (!cards.length || reducedMotion()) return; // 降级态：CSS 已把 armor-flip 变 80ms 淡入且延迟清零
+  const gen = airlockGen;
+  cards.forEach((c, k) => {
+    c.style.animationDelay = `${Math.min(k * STAGGER_MS, STAGGER_CAP_MS)}ms`;
+    c.classList.add("armor-flip");
+    c.addEventListener("animationend", () => {
+      // will-change 即用即还：animationend 立即摘除，避免常驻合成层
+      c.classList.remove("armor-flip");
+      c.style.animationDelay = "";
+      c.style.willChange = "";
+    }, { once: true });
+  });
+  let last = performance.now(), slow = 0;
+  const deadline = last + AIRLOCK_CLOSE_MS + AIRLOCK_OPEN_MS + STAGGER_CAP_MS;
+  const tick = (t) => {
+    if (gen !== airlockGen) return; // 序列已被打断：兜底监控随之作废
+    const dt = t - last; last = t;
+    slow = dt > 24 ? slow + 1 : 0;
+    if (slow >= 2) {
+      // 帧率兜底：本次剩余未启动的卡片直接呈终态，下次切换重新尝试全量
+      cards.forEach((c) => { c.classList.remove("armor-flip"); c.style.animationDelay = ""; c.style.willChange = ""; });
+      return;
+    }
+    if (t < deadline) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
 
 /** 变形轴向（3.3）：看板↔时间线=横向 h；看板↔明细=纵向 v；其余视图容器淡入、不逐卡变形。 */
 function morphAxis(a, b) {
@@ -356,14 +406,14 @@ const VIEWS = {
 
 function render(mode) {
   const main = $("#main");
-  if (morphTimer) { clearTimeout(morphTimer); morphTimer = 0; }
-  main.classList.remove("morph-out", "morph-in", "morph-lock", "reflow-fade");
-  delete main.dataset.morph;
+  cancelAirlock(main); // 交互打断（4.4）：立即取消当前序列，新目标从头执行完整 360ms
+  main.classList.remove("reflow-fade");
 
   if (mode === "reflow") {
-    // 筛选重排（3.4）：同视图 ≤120ms 只淡入，不套变形、不逐卡动画
+    // 筛选重排（3.4 沿用）：同视图 ≤120ms 只淡入，不套气闸、不逐卡动画
     main.innerHTML = (VIEWS[state.view] || viewBrief)();
     bindView();
+    decoratePanels(main);
     void main.offsetWidth;
     main.classList.add("reflow-fade");
     prevView = state.view;
@@ -373,34 +423,42 @@ function render(mode) {
   const axis = morphAxis(prevView, state.view);
   const busy = main.innerHTML.trim() !== "";
 
-  const assemble = () => {
-    main.classList.remove("morph-out");
+  const swap = () => {
+    main.classList.remove("airlock-close");
     main.innerHTML = (VIEWS[state.view] || viewBrief)();
     bindView();
-    if (axis) {
-      // 3.5 并发上限：逐卡变形只标 ≤6 张（超出直接跳终态），其余卡随容器淡入
-      main.dataset.morph = axis;
-      main.querySelectorAll(".card").forEach((c, k) => { if (k < 6) c.classList.add("morph-card"); });
-    }
+    decoratePanels(main); // 7.1 面板结构框：1.5px 描边 + 8 颗铆钉
+    if (axis) main.dataset.morph = axis; // 逐卡翻入的轴向参数（CSS 选择器用）
     void main.offsetWidth;
-    main.classList.add("morph-in");
-    morphTimer = setTimeout(() => {
-      main.classList.add("morph-lock"); // ④ 锁定 24ms
-      morphTimer = setTimeout(() => {
-        main.classList.remove("morph-lock", "morph-in");
+    if (!reducedMotion()) sfxServo(true); // ② 弹出音（降级态静音，4.3）
+    main.classList.add("airlock-open");
+    armorFlipCards(main);
+    airlockTimer = setTimeout(() => {
+      main.classList.add("airlock-lock"); // ③ 锁定 60ms 品牌色脉冲
+      airlockTimer = setTimeout(() => {
+        main.classList.remove("airlock-lock", "airlock-open");
         delete main.dataset.morph;
-        morphTimer = 0;
-      }, MORPH_LOCK_MS);
-    }, MORPH_IN_MS);
+        airlockTimer = 0;
+      }, AIRLOCK_LOCK_MS);
+    }, AIRLOCK_OPEN_MS);
   };
 
   if (busy) {
-    main.classList.add("morph-out"); // ①② 拆解 + 传递（156ms 出场）
-    morphTimer = setTimeout(assemble, MORPH_SWAP_MS);
+    if (!reducedMotion()) sfxServo(false); // ① 合盖音（伺服下落）
+    main.classList.add("airlock-close");
+    airlockTimer = setTimeout(swap, AIRLOCK_CLOSE_MS);
   } else {
-    assemble(); // 首屏无旧形态，直接进重组
+    swap(); // 首屏无旧形态，直接弹出
   }
   prevView = state.view;
+}
+
+/** 跳转到指定视图（通知主操作 / 托盘菜单共用），保持 nav 高亮同步。 */
+function gotoView(view) {
+  state.view = view;
+  document.querySelectorAll("#nav button").forEach((b) =>
+    b.setAttribute("aria-current", String(b.dataset.view === view)));
+  render();
 }
 
 function bindView() {
@@ -534,6 +592,26 @@ function beep(freq, ms, vol) {
 function uiTick() { beep(1150, 35); }
 function sfxAlert() { beep(620, 70); setTimeout(() => beep(620, 70), 110); }
 
+/* v2.2 气闸切换音（4.3）：WebAudio 纯合成伺服声——合盖约 90ms 下落、弹出约 120ms
+   上扬；响度对齐既有档位；同一时刻只出一条；降级态（reduced-motion）视为静音态。 */
+function sfxServo(up) {
+  try {
+    if (!sfxOn() || reducedMotion()) return;
+    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (sfxCtx.state === "suspended") sfxCtx.resume();
+    const o = sfxCtx.createOscillator(), g = sfxCtx.createGain();
+    o.type = "sawtooth";
+    const t = sfxCtx.currentTime;
+    const dur = up ? 0.12 : 0.09;
+    o.frequency.setValueAtTime(up ? 300 : 620, t);
+    o.frequency.linearRampToValueAtTime(up ? 620 : 300, t + dur);
+    g.gain.setValueAtTime(0.03, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(sfxCtx.destination);
+    o.start(t); o.stop(t + dur + 0.01);
+  } catch (_) { /* 音频失败绝不阻断切换 */ }
+}
+
 /* RA 单位选中：点击/回车卡片 → 四角括号选中 + 咔哒音，再点取消；一次一张主选。
    #main 是常驻节点，事件委托一次即可，重渲染后自动作用于新卡片。 */
 let selectedCard = null;
@@ -561,8 +639,8 @@ $("#main").addEventListener("keydown", (e) => {
 $("#nav").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-view]");
   if (!btn) return;
+  // v2.2：导航反馈音升级为气闸合盖/弹出伺服音（4.3），不再叠加 uiTick
   state.view = btn.dataset.view;
-  uiTick();
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b === btn)));
   render();
@@ -592,9 +670,15 @@ $("#filter-clear").addEventListener("click", () => {
 (async function boot() {
   try {
     const pending = await invoke("get_pending_brief");
-    // v2.1 修复：后端返回字段是 pending 布尔（此前误读 .date，横幅永远不弹）
+    // v2.2 FR-5：补推不再用横幅，入字幕队列（AC-5-1 数据来源沿用）
     if (pending && pending.pending) {
-      $("#undelivered").hidden = false;
+      enqueueNotice({
+        key: `brief-pending-${pending.pending_date || "today"}`,
+        level: "high",
+        title: "晨报待补发",
+        text: `◆ 有未送达的晨报（${pending.pending_date || ""}），可点击查看`,
+        action: { label: "查看晨报", run: () => gotoView("brief") },
+      });
     }
   } catch (_) { /* 无记录即正常 */ }
   // F10 总开关初始化：从偏好库读真实状态（默认开启），不再写死 disabled
@@ -613,11 +697,9 @@ $("#filter-clear").addEventListener("click", () => {
       } catch (_) { /* 写失败时开关状态可能不同步，下次启动回读纠偏 */ }
     });
   } catch (_) { /* 偏好读取失败：开关保持 disabled，不误播报 */ }
-  $("#undelivered-ok").addEventListener("click", async () => {
-    $("#undelivered").hidden = true;
-    try { await invoke("mark_brief_delivered"); } catch (_) {}
-  });
   bindShellEvents();
+  bindMarquee();
+  bindCmdBar();
   reload();
 })();
 
@@ -630,67 +712,459 @@ async function bindShellEvents() {
   if (!window.__TAURI__?.event) return; // 浏览器里直接打开时安静降级
   const { listen } = window.__TAURI__.event;
 
-  // 调度线程在启动时发现昨天/今天有未送达的晨报
-  await listen("brief-pending", () => {
-    const el = $("#undelivered");
-    if (el) el.hidden = false;
-  });
-
-  // 晨报已送达（系统通知已弹）→ 刷新晨报页、收起补推横幅、按偏好语音播报要点。
-  // F10（v2.1 上线）：播报=系统中文 TTS 读要点；免打扰时段只通知不播报；
-  // 开关实时跟随主界面右上角总开关（数据库是唯一事实源）。
-  await listen("brief-delivered", (e) => {
-    const el = $("#undelivered");
-    if (el) el.hidden = true;
-    if (state.view === "brief") reload();
+  // 调度线程在启动时发现昨天/今天有未送达的晨报 → 入字幕队列（FR-5）
+  await listen("brief-pending", (e) => {
     const d = e.payload || {};
+    const dt = d.brief_date || "";
+    enqueueNotice({
+      key: `brief-pending-${dt || "today"}`,
+      level: "high",
+      title: "晨报待补发",
+      text: `◆ 有未送达的晨报（${dt}），可点击查看`,
+      action: { label: "查看晨报", run: () => gotoView("brief") },
+    });
+  });
+
+  // 晨报已送达 → 字幕播报 + 刷新晨报页 + 按偏好语音播报要点。
+  // FR-6：版本即时送达的晨报 payload 带 new_version=true，字幕文案标注「新版本」。
+  // F10：免打扰时段只通知不播报；开关实时跟随右上角总开关。
+  await listen("brief-delivered", (e) => {
+    const d = e.payload || {};
+    const vTag = d.new_version ? "（新版本）" : "";
+    enqueueNotice({
+      key: `brief-delivered-${d.date || "today"}`,
+      level: "high",
+      title: `晨报${vTag}已送达`,
+      text: d.new_version
+        ? `◆ 检测到版本更新 ${d.version_from || "?"} → ${d.version_to || "?"}，晨报已即时送达`
+        : `◆ 今日晨报已送达，可点击查看`,
+      action: { label: "查看晨报", run: () => gotoView("brief") },
+    });
+    if (state.view === "brief") reload();
     if (d.voice_enabled && !d.notification_suppressed && $("#f10-master").checked && d.speech) {
-      speakBrief(d.speech);
+      speakBrief(d.speech, d.new_version ? "version_boot" : undefined);
     }
   });
 
-  // 送达失败：横幅留痕，不静默
+  // 送达失败：严重级字幕 + 红灯带，不静默
   await listen("brief-error", (e) => {
-    const el = $("#undelivered");
-    if (el) {
-      el.hidden = false;
-      const span = el.querySelector("span");
-      if (span) span.textContent = `晨报送达失败：${e.payload ?? "未知原因"}`;
-    }
+    enqueueNotice({
+      key: `brief-error-${Date.now()}`,
+      level: "high",
+      severe: true,
+      title: "晨报送达失败",
+      text: `◆ 晨报送达失败：${e.payload ?? "未知原因"}`,
+    });
   });
 
   // 托盘菜单「查看晨报」→ 切到晨报页
-  await listen("brief-open", () => {
-    state.view = "brief";
-    document.querySelectorAll("#nav button").forEach((b) =>
-      b.setAttribute("aria-current", String(b.dataset.view === "brief")));
-    render();
-  });
+  await listen("brief-open", () => gotoView("brief"));
 
-  // 启动静默检查发现新版 → 横幅提示，用户确认后才下载安装（v2.1 默认策略）
+  // 启动静默检查发现新版 → 字幕通知 + 指令条确认（44px 底部指令条，UI 规范 7.5）
   await listen("update-available", (e) => {
     const d = e.payload || {};
-    const bar = $("#update-bar");
-    if (!bar) return;
-    bar.hidden = false;
-    const span = bar.querySelector("span");
-    if (span) span.textContent = `◆ 发现新版本 v${d.version}，可以更新。`;
-    $("#update-go")?.addEventListener("click", async () => {
-      if (!confirm(`下载并安装 v${d.version}？下载完成后应用会重启进入新版。`)) return;
-      try {
-        bar.hidden = true;
-        await invoke("install_update");
-      } catch (err) { alert("更新安装失败：" + err); }
+    enqueueNotice({
+      key: `update-${d.version}`,
+      level: "normal",
+      title: "发现新版本",
+      text: `◆ 发现新版本 v${d.version}，可以更新。`,
+      action: {
+        label: "下载并安装",
+        run: async () => {
+          const ok = await commandBar(
+            "更新确认",
+            `下载并安装 v${d.version}？下载完成后应用会重启进入新版。`,
+          );
+          if (!ok) return;
+          try {
+            await invoke("install_update");
+          } catch (err) {
+            enqueueNotice({
+              key: `update-fail-${d.version}`,
+              level: "high",
+              severe: true,
+              title: "更新失败",
+              text: `◆ 更新安装失败：${err}`,
+            });
+          }
+        },
+      },
     });
   });
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   v2.2 FR-5 首行滚动字幕 + 通知中心 + 底部指令条（装甲指挥舱 UI 规范六/7.4/7.5）
+   ──────────────────────────────────────────────────────────────────────
+   队列语义（PRD FR-5 + UI 规范 6.3，已确认口径）：
+   - 播放队列 ≤5（--marquee-queue-cap）；业务键去重（后到覆盖先到）；
+     严重级（业务失败）插队——当前条播完即接；普通级 FIFO。
+   - 溢出条目不丢：进通知中心（铃铛入口，未读角标），历史封顶 50 条防内存增长
+     （AC：长时间运行内存占用不随队列增长）。
+   - 免打扰（22:00–8:00，口径同后端 quiet 偏好）：非高优先级不滚动、队列保留
+     （AC-5-6）；高优先级照滚但不出声（语音抑制沿用 F10 既有口径）。
+   - 队列空整条隐藏（AC-5-5）；「无消息循环播系统状态摘要」属 UI 规范中
+     标注「需用户确认」的条目，未获确认，不实现。
+   - 交互（UI 规范 6.2 决策卡，用户已确认）：悬停即停（保存位移续播）/
+     点击开详情条（88px/120ms）/ Esc 与点空白收起 / 主操作执行后本条出队。
+   - 无障碍红线：滚动容器 aria-hidden，每条入队写一次 aria-live=polite；
+     灯带红/绿变化附 ▲ 徽标非颜色冗余；字幕条目键盘可达（Tab+Enter）。
+   ══════════════════════════════════════════════════════════════════════ */
+const MARQUEE_SPEED = 40;      // px/s（--marquee-speed）
+const MARQUEE_CAP = 5;         // --marquee-queue-cap
+const MARQUEE_DWELL_MS = 700;  // 单条播完停一小段再接下一条（PRD「滚完一轮停一小段」）
+const HISTORY_CAP = 50;
+
+const notice = {
+  queue: [],      // {key, level:'high'|'normal', severe, text, detail, action:{label,run}, ts}
+  history: [],    // 通知中心（含已播过/溢出的，≤50）
+  idx: 0,         // 当前播放下标
+  dwellTimer: 0,
+  blinkTimer: 0,
+};
+
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** 免打扰判定（口径与后端 brief::QuietHours 一致：闭开区间、可跨零点）。 */
+function inQuietHours() {
+  const p = state.prefs;
+  if (!p || !p.quiet_start || !p.quiet_end) return false;
+  const [sh, sm] = String(p.quiet_start).split(":").map(Number);
+  const [eh, em] = String(p.quiet_end).split(":").map(Number);
+  if ([sh, sm, eh, em].some(Number.isNaN)) return false;
+  const now = new Date();
+  const m = now.getHours() * 60 + now.getMinutes();
+  const start = sh * 60 + sm, end = eh * 60 + em;
+  return start < end ? (m >= start && m < end) : (m >= start || m < end);
+}
+
+/** 入队。n = {key, level, severe, text, detail, action}。
+ *  level: 'high'（晨报类，免打扰照滚）| 'normal'（更新/导入，免打扰不滚）。
+ *  severe: 业务失败（插队 + 红灯带 + ▲ 徽标）。 */
+function enqueueNotice(n) {
+  if (!n || !n.key) return;
+  const item = { level: "normal", severe: false, ...n, ts: Date.now() };
+  const qi = notice.queue.findIndex((q) => q.key === item.key);
+  if (qi >= 0) {
+    notice.queue[qi] = item; // 业务键去重：后到覆盖先到，保留原位
+  } else {
+    if (notice.queue.length >= MARQUEE_CAP) {
+      // 溢出：先丢一条最低优先级（最早的普通级；全高优时丢最早非严重）腾位
+      let dropIdx = notice.queue.findIndex((q) => !q.severe && q.level !== "high");
+      if (dropIdx < 0) dropIdx = notice.queue.findIndex((q) => !q.severe);
+      if (dropIdx < 0) dropIdx = 0;
+      notice.queue.splice(dropIdx, 1);
+      if (notice.idx > dropIdx) notice.idx--;
+    }
+    if (item.severe) {
+      // 严重级插队：当前条播完即接
+      notice.queue.splice(Math.min(notice.idx + 1, notice.queue.length), 0, item);
+    } else {
+      notice.queue.push(item);
+    }
+  }
+  // 通知中心历史：去重覆盖、未读重计、封顶 50
+  const hi = notice.history.findIndex((h) => h.key === item.key);
+  const rec = { ...item, read: false };
+  if (hi >= 0) notice.history[hi] = rec; else notice.history.unshift(rec);
+  if (notice.history.length > HISTORY_CAP) notice.history.length = HISTORY_CAP;
+  // 无障碍：入队即向 aria-live 区播报一次
+  const live = $("#mq-live");
+  if (live) live.textContent = item.text;
+  blinkMarqueeLamp();
+  renderNoticeCenter();
+  marqueeSchedule();
+}
+
+/** 灯带闪 2 次（200ms 亮/灭 ×2）；严重级入队后 updateLamp 会转常亮红。 */
+function blinkMarqueeLamp() {
+  const bar = $("#marquee-bar");
+  if (!bar) return;
+  bar.classList.remove("mq-blink-fx");
+  void bar.offsetWidth;
+  bar.classList.add("mq-blink-fx");
+  clearTimeout(notice.blinkTimer);
+  notice.blinkTimer = setTimeout(() => bar.classList.remove("mq-blink-fx"), 900);
+}
+
+/** 灯带常态：有严重级在队/在播 → 红常亮 + ▲ 徽标；否则绿。 */
+function updateMarqueeLamp() {
+  const bar = $("#marquee-bar");
+  if (!bar) return;
+  const severe = notice.queue.some((q) => q.severe);
+  bar.classList.toggle("mq-severe", severe);
+  const badge = $("#mq-alert-badge");
+  if (badge) badge.hidden = !severe;
+}
+
+/** 播放调度：队列空隐藏（AC-5-5）；免打扰跳过非高优（AC-5-6，队列保留）。 */
+function marqueeSchedule() {
+  clearTimeout(notice.dwellTimer);
+  const bar = $("#marquee-bar");
+  if (!bar) return;
+  if (!notice.queue.length) {
+    bar.hidden = true;
+    closeMarqueeDetail();
+    updateMarqueeLamp();
+    return;
+  }
+  if (notice.idx >= notice.queue.length) notice.idx = 0;
+  if (inQuietHours()) {
+    // 免打扰：跳到下一条高优先级；全被抑制则停播（bar 隐藏，队列保留）
+    let i = notice.idx;
+    while (i < notice.queue.length && notice.queue[i].level !== "high") i++;
+    if (i >= notice.queue.length) {
+      bar.hidden = true;
+      updateMarqueeLamp();
+      return; // 次日 8:00 后由 30s 心跳 marqueeSchedule 自动恢复
+    }
+    notice.idx = i;
+  }
+  bar.hidden = false;
+  updateMarqueeLamp();
+  playMarqueeItem(notice.queue[notice.idx], notice.idx);
+}
+
+/** 播放单条：40px/s 匀速横滚，时长按（视口宽+文本宽）/速度换算。 */
+function playMarqueeItem(item, idx) {
+  const track = $("#mq-track");
+  const pos = $("#mq-pos");
+  const viewport = $("#mq-viewport");
+  if (!track || !viewport) return;
+  pos.textContent = `${idx + 1}/${notice.queue.length}`;
+  track.textContent = item.text;
+  viewport.setAttribute("aria-label", `通知 ${idx + 1}/${notice.queue.length}：${item.text}，按回车查看详情`);
+  track.classList.remove("mq-run");
+  void track.offsetWidth; // 重启动画
+  if (reducedMotion()) {
+    track.classList.add("mq-run"); // 降级态：CSS 停滚静态显示
+    return;
+  }
+  const vw = viewport.clientWidth;
+  const tw = track.scrollWidth;
+  const dur = Math.max((vw + tw) / MARQUEE_SPEED, 1.5);
+  track.style.setProperty("--mq-dur", `${dur}s`);
+  track.style.setProperty("--mq-from", `${vw}px`);
+  track.style.setProperty("--mq-to", `${-tw}px`);
+  track.classList.add("mq-run");
+}
+
+/** 出队（主操作执行后 / 手动移除）：同步 1/N 计数与通知中心未读。 */
+function removeNotice(key) {
+  const i = notice.queue.findIndex((q) => q.key === key);
+  if (i >= 0) {
+    notice.queue.splice(i, 1);
+    if (notice.idx > i) notice.idx--;
+    if (notice.idx >= notice.queue.length) notice.idx = 0;
+  }
+  const h = notice.history.find((x) => x.key === key);
+  if (h) h.read = true;
+  renderNoticeCenter();
+  marqueeSchedule();
+}
+
+/** 详情条（6.2）：当前条完整内容 + 主操作；展开期间滚动暂停。 */
+function openMarqueeDetail(item) {
+  const det = $("#mq-detail");
+  const bar = $("#marquee-bar");
+  if (!det || !bar || !item) return;
+  det.innerHTML = `
+    <div class="mq-detail-body">${esc(item.detail || item.text)}</div>
+    <div class="mq-detail-actions">
+      ${item.action ? `<button class="btn" id="mq-act">${esc(item.action.label)}</button>` : ""}
+      <button class="btn--ghost btn" id="mq-dismiss">移除本条</button>
+    </div>`;
+  det.hidden = false;
+  bar.classList.add("mq-open");
+  $("#mq-act")?.addEventListener("click", async () => {
+    closeMarqueeDetail();
+    try { if (item.action) await item.action.run(); } catch (_) { /* 动作失败：条目留队，不吞错误页 */ }
+    removeNotice(item.key);
+  });
+  $("#mq-dismiss")?.addEventListener("click", () => {
+    closeMarqueeDetail();
+    removeNotice(item.key);
+  });
+  $("#mq-act")?.focus();
+}
+function closeMarqueeDetail() {
+  const det = $("#mq-detail");
+  const bar = $("#marquee-bar");
+  if (det) det.hidden = true;
+  if (bar) bar.classList.remove("mq-open");
+}
+
+/** 通知中心（7.5）：铃铛 + 未读角标 + 320px 下拉历史列表。 */
+function renderNoticeCenter() {
+  const badge = $("#nc-badge");
+  const unread = notice.history.filter((h) => !h.read).length;
+  if (badge) {
+    badge.hidden = unread === 0;
+    badge.textContent = String(Math.min(unread, 99));
+  }
+  const panel = $("#nc-panel");
+  if (!panel || panel.hidden) return;
+  const fmtTime = (ts) => {
+    const d = new Date(ts);
+    const p2 = (x) => String(x).padStart(2, "0");
+    return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+  panel.innerHTML = notice.history.length
+    ? notice.history.map((h) => `
+      <div class="nc-item" data-key="${esc(h.key)}" tabindex="0" role="button">
+        <span class="nc-time">${fmtTime(h.ts)}</span><span class="nc-badge-lv nc-lv-${h.severe ? "severe" : h.level}">${h.severe ? "▲严重" : h.level === "high" ? "高" : "普通"}</span>${h.read ? "" : " ●"}
+        <span class="nc-text">${esc(h.text)}</span>
+      </div>`).join("")
+    : `<div class="nc-empty">暂无历史通知</div>`;
+  panel.querySelectorAll(".nc-item").forEach((el) => {
+    const open = () => {
+      const h = notice.history.find((x) => x.key === el.dataset.key);
+      if (!h) return;
+      h.read = true;
+      renderNoticeCenter();
+      const q = notice.queue.find((x) => x.key === h.key) || h;
+      openMarqueeDetail(q);
+    };
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+}
+
+function bindMarquee() {
+  const bar = $("#marquee-bar");
+  const viewport = $("#mq-viewport");
+  if (!bar || !viewport) return;
+  // 点击字幕条目 → 开详情条（UI 规范 6.2 已确认交互；主操作跳转/执行后本条出队，
+  // 对应 PRD AC-5-4 的「跳转 + 移除」语义经详情条主操作完成）
+  viewport.addEventListener("click", () => {
+    if (notice.queue.length) openMarqueeDetail(notice.queue[notice.idx]);
+  });
+  viewport.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (notice.queue.length) openMarqueeDetail(notice.queue[notice.idx]);
+    }
+  });
+  // 单条滚完 → 停一小段接下一条
+  $("#mq-track")?.addEventListener("animationend", (e) => {
+    if (e.target.id !== "mq-track" || e.animationName !== "marquee-scroll") return;
+    notice.idx = (notice.idx + 1) % notice.queue.length;
+    notice.dwellTimer = setTimeout(marqueeSchedule, MARQUEE_DWELL_MS);
+  });
+  // Esc / 点击空白收起详情并恢复滚动
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMarqueeDetail();
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("#marquee-bar")?.classList.contains("mq-open")) return;
+    if (e.target.closest("#marquee-bar")) return;
+    closeMarqueeDetail();
+  });
+  // 通知中心铃铛
+  const ncBtn = $("#nc-btn");
+  const ncPanel = $("#nc-panel");
+  ncBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    ncPanel.hidden = !ncPanel.hidden;
+    ncBtn.setAttribute("aria-expanded", String(!ncPanel.hidden));
+    if (!ncPanel.hidden) {
+      notice.history.forEach((h) => { h.read = true; });
+      renderNoticeCenter();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!ncPanel || ncPanel.hidden) return;
+    if (e.target.closest("#nc-btn")) return;
+    ncPanel.hidden = true;
+    ncBtn?.setAttribute("aria-expanded", "false");
+  });
+  // 免打扰边界自动恢复（AC-5-6 次日 8:00 后自动开始滚动）+ 队列兜底心跳
+  setInterval(() => {
+    if (!notice.queue.length) return;
+    if ($("#marquee-bar").hidden) marqueeSchedule();
+  }, 30_000);
+}
+
+/* ── 7.4 底部指令条：破坏性/高影响操作确认（44px，8s 超时，Enter/Esc 全键盘）── */
+let cmdTimer = 0, cmdResolve = null;
+function commandBar(opName, summary) {
+  return new Promise((resolve) => {
+    const bar = $("#cmd-bar");
+    if (!bar) { resolve(window.confirm(`确认${opName}？\n${summary}`)); return; }
+    $("#cmd-text").innerHTML = `确认${esc(opName)}？<br><span class="mini">${esc(summary)}</span>`;
+    bar.classList.remove("cmd-in", "cmd-out");
+    bar.hidden = false;
+    void bar.offsetWidth;
+    bar.classList.add("cmd-in");
+    clearTimeout(cmdTimer);
+    cmdResolve = resolve;
+    $("#cmd-ok").focus();
+    cmdTimer = setTimeout(() => finishCmdBar(false), 8000); // --bar-timeout
+  });
+}
+function finishCmdBar(ok) {
+  const bar = $("#cmd-bar");
+  if (!bar || bar.hidden) return;
+  clearTimeout(cmdTimer);
+  bar.classList.remove("cmd-in");
+  if (reducedMotion()) {
+    bar.hidden = true;
+  } else {
+    bar.classList.add("cmd-out");
+    setTimeout(() => { bar.hidden = true; bar.classList.remove("cmd-out"); }, 120);
+  }
+  if (cmdResolve) { cmdResolve(ok); cmdResolve = null; }
+}
+function bindCmdBar() {
+  $("#cmd-ok")?.addEventListener("click", () => finishCmdBar(true));
+  $("#cmd-cancel")?.addEventListener("click", () => finishCmdBar(false));
+  document.addEventListener("keydown", (e) => {
+    const bar = $("#cmd-bar");
+    if (!bar || bar.hidden) return;
+    if (e.key === "Enter" && document.activeElement?.closest("#cmd-bar")) { e.preventDefault(); finishCmdBar(true); }
+    if (e.key === "Escape") { e.preventDefault(); finishCmdBar(false); }
+    if (e.key === "Tab") { // FocusTrap：焦点锁定在指令条双按钮内循环
+      e.preventDefault();
+      const btns = [$("#cmd-ok"), $("#cmd-cancel")];
+      const cur = btns.indexOf(document.activeElement);
+      btns[(cur + (e.shiftKey ? btns.length - 1 : 1)) % btns.length]?.focus();
+    }
+  });
+}
+
+/* ── 7.1 面板结构框装饰：1.5px 描边 + 8 颗 aria-hidden 铆钉（每次渲染后追加）── */
+const RIVET_POS = ["tl", "tr", "bl", "br", "tc", "bc", "ml", "mr"];
+function decoratePanels(root) {
+  (root || document).querySelectorAll(".panel:not(.panel--frame)").forEach((p) => {
+    p.classList.add("panel--frame");
+    RIVET_POS.forEach((pos) => {
+      const r = document.createElement("span");
+      r.className = "rivet";
+      r.dataset.pos = pos;
+      r.setAttribute("aria-hidden", "true");
+      p.appendChild(r);
+    });
+  });
+}
+/** 指令脉冲（7.1）：确认执行后对应面板灯带闪 1 次。 */
+function pulsePanel(panel) {
+  if (!panel) return;
+  panel.classList.remove("panel--pulse");
+  void panel.offsetWidth;
+  panel.classList.add("panel--pulse");
+  setTimeout(() => panel.classList.remove("panel--pulse"), 300);
 }
 
 /** F10 语音播报：WebView2 speechSynthesis，选系统 zh 语音读要点。
  * 选型理由（v2.1）：Windows 上 WebView2 的 TTS 直接映射系统已装的中文语音
  * （Huihui/Kangkang 等，即 SAPI 语音体系），零新增依赖、窗口隐藏到托盘仍可出声；
  * 红线：只用系统 TTS，不做真人声纹克隆。 */
-function speakBrief(text) {
+function speakBrief(text, scene) {
+  // v2.2 语音包：scene 为场景键（如 version_boot），预录样音接入后按场景选包；
+  // 当前默认走系统 TTS（C 档样音资源接入在语音包阶段完成）。
   try {
+    if (scene) window.__briefScene = scene;
     const synth = window.speechSynthesis;
     if (!synth) return;
     synth.cancel();
