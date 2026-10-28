@@ -1,0 +1,316 @@
+name: update-e2e
+
+# 自动更新端到端验证（正例 + 4 个负例），全部在 Windows 真机上、全部走匿名网络。
+#
+# 红线（本文件必须自证，不靠口头声明）：
+# 1. 不触碰 v2.1.0 已发布 Release 资产：
+#    · 只对 Release 做 **GET 下载**（匿名取真实安装包/签名/清单做夹具）；
+#    · 不 PUT/PATCH/DELETE，不 `gh release upload`，不创建/修改 Release。
+#    本工作流**不含**任何 release 写操作，且不申请 `contents: write`——
+#    权限上就没法改发布物（最小权限即结构性保证）。
+# 2. 负例必须真的被拒：断言读的是插件真实返回的错误串，不接受「没崩就算过」。
+# 3. 正例必须真的装上：断言读的是安装后 exe 的 FileVersion + 卸载注册表
+#    DisplayVersion（NSIS 安装器写入），不是界面显示。
+#
+# 触发：只手动（workflow_dispatch）。不挂 tag，避免与发布流水线互相干扰。
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: "旧版本号（构造的低版本构建，必须 < 2.1.0）"
+        required: false
+        default: "2.0.0"
+
+# 只读：下载 Release 资产 / checkout。没有任何写权限，结构上不可能改发布物。
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 打印运行上下文（匿名、无令牌）
+        shell: pwsh
+        run: |
+          Write-Host "repo=$env:GITHUB_REPOSITORY  sha=$env:GITHUB_SHA  ref=$env:GITHUB_REF"
+          Write-Host "run=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          # 显式确认本 job 拿不到写权限令牌：只读 GITHUB_TOKEN 是本工作流的红线证据之一。
+          Write-Host "GITHUB_TOKEN 存在=$([bool]$env:GITHUB_TOKEN)（仅 read 权限，见 workflow permissions）"
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 tauri-cli 与 Python 依赖确认
+        shell: pwsh
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          python --version
+
+      # ── 匿名下载真实发布物（不带 Authorization 头；这是「普通用户可完成」的证据）──
+      - name: 匿名下载 v2.1.0 发布资产（不携带任何令牌）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path assets | Out-Null
+          $tag = "v2.1.0"
+          $names = @(
+            "latest.json",
+            "workbench_2.1.0_x64-setup.exe",
+            "workbench_2.1.0_x64-setup.exe.sig"
+          )
+          foreach ($n in $names) {
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$n"
+            # -UseBasicParsing + 不设任何认证头：reqwest/curl 默认匿名
+            curl.exe -sS -L --max-time 120 -o "assets/$n" -w "HTTP %{http_code} %{size_download}B  $n`n" $url
+            if ($LASTEXITCODE -ne 0) { throw "匿名下载失败：$url" }
+          }
+          Get-ChildItem assets | ForEach-Object {
+            Write-Host ("  {0} = {1} 字节  sha256={2}" -f $_.Name, $_.Length,
+              (Get-FileHash $_.FullName -Algorithm SHA256).Hash.Substring(0,16))
+          }
+          if (-not (Test-Path "assets/workbench_2.1.0_x64-setup.exe")) { throw "安装包未下载成功" }
+
+      - name: 匿名可达性断言（无令牌、无 Cookie）
+        shell: pwsh
+        run: |
+          # 用 .NET HttpClient 且不加任何默认凭证，证明「普通用户环境」可达
+          $h = New-Object System.Net.Http.HttpClient
+          $h.DefaultRequestHeaders.UserAgent.ParseAdd("wb-e2e-probe/1.0")
+          $r = $h.GetAsync("https://github.com/$env:GITHUB_REPOSITORY/releases/download/v2.1.0/latest.json").Result
+          Write-Host "latest.json 匿名状态码=$([int]$r.StatusCode) 长度=$($r.Content.Headers.ContentLength)"
+          if (-not $r.IsSuccessStatusCode) { throw "匿名访问 latest.json 失败：$([int]$r.StatusCode)" }
+
+      # ── 构造旧版本 2.0.0（带真实 updater 链路的低版本构建）──
+      # 构造方式（写进报告的口径）：
+      #   · 同一份源码（当前 main），只把 tauri.conf.json 的 version 改成 2.0.0，
+      #     并用 `--config` 深合并打开 E2E feature 驱动；
+      #   · version 是 tauri 的 package_info 与 NSIS DisplayVersion 的唯一来源
+      #     （tauri-cli interface/rust.rs: version = config.version，缺省才回落 Cargo），
+      #     所以改这一处即可让「旧版本」在注册表与 FileVersion 上都真的是 2.0.0；
+      #   · 端点/公钥不动 → 它就是指向同一更新端点的低版本构建。
+      - name: 构造旧版本 2.0.0 构建（E2E feature + 版本覆盖）
+        shell: pwsh
+        run: |
+          $old = "${{ github.event.inputs.old_version }}"
+          if ([string]::IsNullOrWhiteSpace($old)) { $old = "2.0.0" }
+          Write-Host "旧版本目标：$old"
+          # E2E 覆盖配置：版本号 + 允许 http 端点（负例用 127.0.0.1，正例走真实 https）
+          $cfg = [ordered]@{
+            version = $old
+            plugins = [ordered]@{
+              updater = [ordered]@{
+                endpoints = @("https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json")
+                pubkey    = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).plugins.updater.pubkey
+                dangerousInsecureTransportProtocol = $true
+              }
+            }
+          }
+          $cfg | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 "e2e-old.conf.json"
+          Get-Content "e2e-old.conf.json"
+          # 旧版本只出 NSIS（MSI 与 NSIS 安装位置不同，混用会让「已装版本」判定失真）
+          Push-Location apps/desktop/src-tauri
+          cargo tauri build --features e2e-update --config ../../../e2e-old.conf.json --bundles nsis
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "旧版本构建失败" }
+          Pop-Location
+          $exe = Get-ChildItem "target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "未找到旧版本 NSIS 安装包" }
+          Write-Host "旧版本安装包：$($exe.FullName) = $($exe.Length) 字节"
+          Copy-Item $exe.FullName "assets/old-setup.exe" -Force
+          # 记录旧版本安装包内的产品版本，供报告引用
+          $fv = (Get-Item "assets/old-setup.exe").VersionInfo
+          Write-Host "旧版本安装包 FileVersion=$($fv.FileVersion) ProductVersion=$($fv.ProductVersion)"
+
+      # ── 装旧版本 ──
+      - name: 安装旧版本 2.0.0（静默）
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "assets/old-setup.exe" -ArgumentList "/S" -Wait -PassThru
+          Write-Host "安装器退出码=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "旧版本安装失败，退出码 $($p.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA "个人工作台"
+          if (-not (Test-Path $dir)) { throw "未找到安装目录：$dir" }
+          Get-ChildItem $dir -Filter "*.exe" | ForEach-Object {
+            Write-Host ("  {0}  FileVersion={1}" -f $_.Name, $_.VersionInfo.FileVersion)
+          }
+          # 注册表证据：NSIS 写入 DisplayVersion=${VERSION}
+          $keys = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台"
+          )
+          foreach ($k in $keys) {
+            if (Test-Path $k) {
+              $v = (Get-ItemProperty $k).DisplayVersion
+              Write-Host "注册表 $k DisplayVersion=$v"
+            }
+          }
+
+      # ── 测试夹具：真实副本 + 3 个负例（本地 http，不碰 Release）──
+      - name: 构造负例夹具（副本，不改发布物）
+        shell: pwsh
+        run: |
+          python scripts/e2e-make-fixtures.py `
+            --manifest "assets/latest.json" `
+            --installer "assets/workbench_2.1.0_x64-setup.exe" `
+            --sig "assets/workbench_2.1.0_x64-setup.exe.sig" `
+            --out "fixtures" `
+            --port 8123
+          if ($LASTEXITCODE -ne 0) { throw "夹具构造失败" }
+          Get-ChildItem -Recurse fixtures | ForEach-Object { Write-Host "  $($_.FullName.Replace($PWD.Path,''))  $($_.Length)B" }
+
+      - name: 启动本地清单服务（127.0.0.1:8123）
+        shell: pwsh
+        run: |
+          $job = Start-Job -ScriptBlock {
+            param($root)
+            Set-Location $root
+            python -m http.server 8123 --bind 127.0.0.1
+          } -ArgumentList (Join-Path $PWD "fixtures")
+          # 就绪探针
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              $r = Invoke-WebRequest "http://127.0.0.1:8123/real/win.exe" -Method Head -TimeoutSec 2
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $ok) { Receive-Job $job; throw "本地清单服务未就绪" }
+          Write-Host "本地服务就绪：http://127.0.0.1:8123"
+          $job.Id | Out-File -Encoding utf8 "fixtures/.jobid"
+
+      # ══ 正例：真实 GitHub 匿名端点，全链路 ══
+      - name: "正例：检测 2.1.0 → 下载 → 验签 → 安装 → 重启后版本确认"
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "未找到旧版本主程序：$exe" }
+          $result = Join-Path $PWD "evidence/positive.json"
+          New-Item -ItemType Directory -Force -Path "evidence" | Out-Null
+          $env:WB_E2E_RESULT   = $result
+          $env:WB_E2E_ENDPOINT = ""   # 空 = 用 tauri.conf.json 里的真实 GitHub 地址
+          $before = (Get-Item $exe).VersionInfo.FileVersion
+          Write-Host "启动前 FileVersion=$before"
+          if ($before -notlike "2.0.0*") { throw "旧版本未正确安装：期望 2.0.0，实际 $before" }
+
+          $p = Start-Process -FilePath $exe -PassThru
+          Write-Host "旧版本 PID=$($p.Id)"
+
+          # 等结果文件出现且进入终态（installer_launched / 出错）
+          $deadline = (Get-Date).AddMinutes(10)
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $result) {
+              $raw = Get-Content $result -Raw
+              if ($raw -match "installer_launched" -or $raw -match '"ok":\s*false') { break }
+            }
+            Start-Sleep -Seconds 3
+          }
+          if (-not (Test-Path $result)) { throw "正例未产出结果文件（10 分钟超时）" }
+          Get-Content $result -Raw | Write-Host
+
+          # 等安装器完成：轮询已装 exe 的 FileVersion 变成 2.1.0
+          $deadline = (Get-Date).AddMinutes(10)
+          $now = $null
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+            if (Test-Path $exe) {
+              $now = (Get-Item $exe).VersionInfo.FileVersion
+              Write-Host "轮询：已装 FileVersion=$now"
+              if ($now -like "2.1.0*") { break }
+            }
+          }
+          $reg = $null
+          $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台"
+          if (Test-Path $k) { $reg = (Get-ItemProperty $k).DisplayVersion }
+
+          $j = Get-Content $result -Raw | ConvertFrom-Json
+          Write-Host "--- 正例判定 ---"
+          Write-Host "stage=$($j.stage) ok=$($j.ok) current=$($j.current_version) announced=$($j.announced_version)"
+          Write-Host "downloaded_bytes=$($j.downloaded_bytes) verified=$($j.verified) installer_launched=$($j.installer_launched)"
+          Write-Host "装上后 FileVersion=$now  DisplayVersion=$reg"
+
+          if ($j.current_version -notlike "2.0.0*") { throw "current_version 不是 2.0.0：$($j.current_version)" }
+          if ($j.announced_version -ne "2.1.0") { throw "未检测到 2.1.0：$($j.announced_version)" }
+          if (-not $j.verified) { throw "验签未通过" }
+          if (-not $j.installer_launched) { throw "安装器未拉起" }
+          if ($now -notlike "2.1.0*") { throw "安装后 FileVersion 不是 2.1.0：$now" }
+          if ($reg -notlike "2.1.0*") { throw "注册表 DisplayVersion 不是 2.1.0：$reg" }
+          Write-Host "✅ 正例通过：2.0.0 → 检测 2.1.0 → 下载 → 验签 → 安装 → 版本确认为 2.1.0"
+
+      - name: 负例驱动（4 个，全部必须被拒绝）
+        shell: pwsh
+        run: |
+          # ⚠ 负例必须重新装回 2.0.0：正例已把机器上的应用升到 2.1.0，
+          #    而 2.1.0 已是端点上的最新版，"检测到更新"会返回 none，负例就失去区分度。
+          function Reset-ToOld {
+            $p = Start-Process -FilePath "assets/old-setup.exe" -ArgumentList "/S" -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "回滚 2.0.0 失败：$($p.ExitCode)" }
+            $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
+            Write-Host "回滚后 FileVersion=$((Get-Item $exe).VersionInfo.FileVersion)"
+          }
+
+          $cases = @(
+            @{ name="n1-篡改安装包内容"; endpoint="http://127.0.0.1:8123/n1/latest.json"; expect="InvalidSignature"; stage="download" },
+            @{ name="n2-篡改签名";       endpoint="http://127.0.0.1:8123/n2/latest.json"; expect="InvalidSignature"; stage="download" },
+            @{ name="n3-篡改清单版本";   endpoint="http://127.0.0.1:8123/n3/latest.json"; expect="SignedVersionMismatch"; stage="download" },
+            @{ name="n4-篡改清单URL";    endpoint="http://127.0.0.1:8123/n4/latest.json"; expect="Download request failed"; stage="download" }
+          )
+
+          $all = @()
+          foreach ($c in $cases) {
+            Write-Host "`n===== $($c.name) ====="
+            Reset-ToOld
+            $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
+            $result = Join-Path $PWD "evidence/$($c.name).json"
+            $env:WB_E2E_RESULT   = $result
+            $env:WB_E2E_ENDPOINT = $c.endpoint
+            Remove-Item $result -ErrorAction SilentlyContinue
+            $p = Start-Process -FilePath $exe -PassThru
+            $deadline = (Get-Date).AddMinutes(4)
+            $done = $false
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path $result) {
+                $raw = Get-Content $result -Raw
+                if ($raw -match '"ok"\s*:\s*(true|false)') { $done = $true; break }
+              }
+              Start-Sleep -Seconds 2
+            }
+            if (-not $done) { throw "$($c.name) 未产出终态结果文件" }
+            $j = Get-Content $result -Raw | ConvertFrom-Json
+            Write-Host "stage=$($j.stage) ok=$($j.ok) error=$($j.error)"
+            if ($j.ok -ne $false) { throw "$($c.name) 没有被拒绝（ok=true），红线不成立" }
+            if ($j.error -notlike "*$($c.expect)*") { throw "$($c.name) 错误不可定位：期望含 '$($c.expect)'，实际 '$($j.error)'" }
+            # 关键：安装包不得被装上 —— 版本必须还停在 2.0.0
+            Start-Sleep -Seconds 3
+            $v = (Get-Item $exe).VersionInfo.FileVersion
+            if ($v -notlike "2.0.0*") { throw "$($c.name) 竟然装上了新版本：FileVersion=$v" }
+            Write-Host "✅ $($c.name) 被拒绝且版本未变（$v）"
+            $all += [pscustomobject]@{ case=$c.name; rejected=$true; stage=$j.stage; error=$j.error; version_after=$v }
+          }
+          $all | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "evidence/negatives.json"
+          Write-Host "`n全部负例："
+          $all | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: 停本地服务
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "fixtures/.jobid") {
+            $id = Get-Content "fixtures/.jobid"
+            Stop-Job -Id ([int]$id) -ErrorAction SilentlyContinue
+            Remove-Job -Id ([int]$id) -Force -ErrorAction SilentlyContinue
+          }
+          Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
+          Write-Host "本地服务已停"
+
+      - name: 归档证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-e2e-evidence
+          path: |
+            evidence/
+            fixtures/fixtures.json
+          if-no-files-found: warn
+          retention-days: 30

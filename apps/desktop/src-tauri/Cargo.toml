@@ -8,6 +8,14 @@ description = "个人工作台 v2.1 桌面壳（Tauri 2，单机版）"
 name = "wb_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# E2E-only feature：自动更新端到端验证的驱动（src/e2e.rs）。
+# 默认关闭，发布流水线 `cargo tauri build` 不打开它，因此 Release 资产里
+# 不含任何测试入口；只有 .github/workflows/update-e2e.yml 会显式 `--features e2e-update`。
+# 关掉后本模块整体不参与编译，二进制与 v2.1.0 发布物同一份代码路径。
+[features]
+default = []
+e2e-update = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

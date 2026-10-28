@@ -32,6 +32,11 @@ use wb_core::{
     CivilDate, Store, StoreError,
 };
 
+/// 自动更新 E2E 驱动（仅 `--features e2e-update` 编译，见 Cargo.toml 该 feature 注释）。
+#[cfg(feature = "e2e-update")]
+pub mod e2e;
+
+
 /// 应用状态：数据库根目录（登录用户数据目录）在启动时确定，之后只读。
 struct AppPaths {
     data_dir: PathBuf,
@@ -679,6 +684,16 @@ pub fn run() {
             // 只检查不安装；发现新版 emit 给前端，由用户确认后才走 install_update。
             // 失败静默（离线/端点未就绪是常态），设置页仍保留手动检查入口。
             tauri::async_runtime::spawn(async move {
+                // E2E 构建（--features e2e-update）：不走向上 emit，直接驱动
+                // check → download → verify → install 全链路，把结果写进 WB_E2E_RESULT。
+                // 发布构建不含这段（feature 默认关闭），走下面原本的静默检查。
+                #[cfg(feature = "e2e-update")]
+                {
+                    if std::env::var("WB_E2E_RESULT").map(|v| !v.trim().is_empty()).unwrap_or(false) {
+                        crate::e2e::run_once(handle.clone()).await;
+                        return;
+                    }
+                }
                 if let Ok(updater) = handle.updater() {
                     if let Ok(Some(u)) = updater.check().await {
                         let _ = handle.emit("update-available", serde_json::json!({
