@@ -1,6 +1,6 @@
 [package]
 name = "wb-desktop"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "个人工作台 v2.1 桌面壳（Tauri 2，单机版）"
 

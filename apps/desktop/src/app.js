@@ -35,6 +35,8 @@ async function reload() {
     state.alertsData = await invoke("alerts", { year: YEAR });
     state.kpis = await invoke("kpi_overview", { year: YEAR });
     state.units = await invoke("units", { year: YEAR });
+    if (state.view === "intel") await loadIntel();
+    if (state.view === "dealer") await loadDealer();
     render();
     updateFilterCount();
   } catch (e) {
@@ -94,6 +96,102 @@ function dateCell(item) {
     return d;
   };
   return `${fmt(item.planned_start_date, item.planned_start_precision)} → ${fmt(item.planned_end_date, item.planned_end_precision)}`;
+}
+
+// ── 视图：项目情报（FR-2，v2.2）──
+// 红线：抓取失败只影响本视图；离线可启动（AC-2-11），失败原因如实可见（AC-2-5）
+async function loadIntel() {
+  try { state.intel = await invoke("intel_get"); } catch (_) { state.intel = null; }
+}
+function relBadge(r) {
+  if (r === "core") return '<span class="lamp lamp--green">相关</span>';
+  if (r === "suspect") return '<span class="lamp lamp--amber">疑似不相关</span>';
+  return "";
+}
+function tierZh(t) {
+  return { provincial_main: "省级主通道", provincial_fallback: "省级兜底", city_batch1: "一批",
+    city_batch2: "二批", city_weekly: "周频观察", manual_only: "人工通道", infeasible: "不可行" }[t] || t;
+}
+function viewIntel() {
+  const d = state.intel;
+  if (!d) {
+    return `<div class="panel"><div class="empty">情报数据加载失败（离线或数据库异常）。<br>
+      <button class="btn" id="intel-refresh">重试</button></div></div>`;
+  }
+  const cov = d.coverage || {};
+  const sites = d.sites || {};
+  const reg = d.registry || [];
+  const siteRows = reg.map((r) => {
+    const st = sites[r.id] || {};
+    const status = !r.scheduled
+      ? '<span class="mini">不进自动调度</span>'
+      : st.last_status === "ok"
+        ? `<span class="mini">✅ 成功（${st.last_success || ""}）</span>`
+        : st.last_status
+          ? `<span class="mini" style="color:var(--warn,#c0392b)">${st.last_status === "blocked" ? "被拦截" : st.last_status === "network" ? "网络失败" : "解析失败"}：${esc(st.last_detail || "")}</span>`
+          : '<span class="mini">未采集</span>';
+    return `<tr><td>${r.name}</td><td>${r.city}</td><td>${tierZh(r.tier)}</td><td>${status}</td><td class="mini">${esc(r.note)}</td></tr>`;
+  }).join("");
+  const items = (d.items || []).map((it) => {
+    const verdictBtns = it.manual_verdict
+      ? '<span class="mini">已人工改判</span>'
+      : `<button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="core">✓ 相关</button>
+         <button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="excluded">✗ 无关</button>`;
+    return `<div class="card${it.relevance === "core" ? " card--selected" : ""}">
+      <div class="card-title">${it.incomplete ? "⚠ " : ""}${esc(it.title)}</div>
+      <div class="mini">${esc(it.org || "单位缺失")} · ${esc(it.area || "地区缺失")} · ${esc(it.date || "日期缺失")}${it.amount ? " · " + esc(it.amount) : ""}</div>
+      <div class="mini">来源：${esc(it.site_name)} · <a href="${esc(it.url)}" target="_blank">原文链接</a></div>
+      ${it.reasons?.length ? `<div class="mini">命中：${esc(it.reasons.join("，"))}</div>` : ""}
+      <div>${relBadge(it.relevance)} ${verdictBtns}</div>
+    </div>`;
+  }).join("");
+  return `
+  <div class="panel">
+    <div><b>项目情报</b> · 最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条
+      <button class="btn" id="intel-refresh">立即刷新</button></div>
+  </div>
+  <div class="panel">
+    <div><b>源站状态</b>（${reg.length} 源；芜湖/池州为自有 API，适配器待第二批逐站验证）</div>
+    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>依据</th></tr>${siteRows}</table>
+  </div>
+  <div class="panel">
+    <div><b>相关项目</b>（${(d.items || []).length} 条，按发布日期倒序；「疑似不相关」可人工改判）</div>
+    ${items || '<div class="empty">今日 0 条相关——已检查的源均无命中，与「没采到」区分见上表各源状态。</div>'}
+  </div>`;
+}
+
+// ── 视图：渠道网点（FR-1，v2.2）──
+async function loadDealer() {
+  try { state.dealer = await invoke("dealer_get"); } catch (_) { state.dealer = null; }
+}
+function viewDealer() {
+  const d = state.dealer;
+  if (!d) {
+    return `<div class="panel"><div class="empty">网点数据加载失败。<br><button class="btn" id="dealer-refresh">重试</button></div></div>`;
+  }
+  const diff = d.last_diff;
+  let diffHtml = "";
+  if (!diff) {
+    diffHtml = '<div class="empty">尚未执行周比对（每周自动一次，也可手动刷新建首周基线）。</div>';
+  } else if (diff.baseline_week) {
+    diffHtml = `<div class="empty">首周基线已建立：共 ${diff.total} 家网点。下周起开始增减比对。</div>`;
+  } else {
+    const addList = (diff.added || []).map((n) => `<li>${esc(n.company_name)}（${esc(n.area)}）</li>`).join("");
+    const rmList = (diff.removed || []).map((n) => `<li>${esc(n.company_name)}（${esc(n.area)}）</li>`).join("");
+    diffHtml = `<div>本周比对：新增 ${(diff.added || []).length} 家 / 消失 ${(diff.removed || []).length} 家 · 当前共 ${diff.total} 家</div>
+      ${addList ? `<div class="mini"><b>新增：</b><ul>${addList}</ul></div>` : ""}
+      ${rmList ? `<div class="mini"><b>消失：</b><ul>${rmList}</ul></div>` : ""}`;
+  }
+  return `
+  <div class="panel">
+    <div><b>渠道网点（极飞·安徽）</b> · 上次比对：${esc(d.last_run_date || "从未")}
+      <button class="btn" id="dealer-refresh">立即刷新</button></div>
+    ${diffHtml}
+  </div>
+  <div class="panel">
+    <div><b>当前快照</b>（${(d.snapshot || []).length} 家）</div>
+    <div class="mini">${(d.snapshot || []).slice(0, 50).map((n) => esc(n.company_name)).join(" · ") || "空"}</div>
+  </div>`;
 }
 
 // ── 视图：晨报（F2） ──
@@ -401,6 +499,7 @@ function morphAxis(a, b) {
 const VIEWS = {
   brief: viewBrief, kanban: viewKanban, detail: viewDetail,
   timeline: viewTimeline, kpi: viewKpi, units: viewUnits,
+  intel: viewIntel, dealer: viewDealer,
   add: viewAdd, settings: viewSettings,
 };
 
@@ -490,6 +589,33 @@ function bindView() {
       } catch (e) {
         out.textContent = "添加失败：" + e;
       }
+    });
+    return;
+  }
+
+  if (state.view === "intel") {
+    $("#intel-refresh")?.addEventListener("click", async (e) => {
+      e.target.textContent = "采集中…（约 1 分钟，同站间隔≥2s）";
+      e.target.disabled = true;
+      try { await invoke("intel_refresh"); } catch (err) { alert("启动采集失败：" + err); }
+    });
+    document.querySelectorAll("[data-verdict-key]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          await invoke("intel_set_verdict", { key: b.dataset.verdictKey, verdict: b.dataset.verdictVal });
+          await loadIntel();
+          render("reflow");
+        } catch (err) { alert("改判失败：" + err); }
+      });
+    });
+    return;
+  }
+
+  if (state.view === "dealer") {
+    $("#dealer-refresh")?.addEventListener("click", async (e) => {
+      e.target.textContent = "比对中…";
+      e.target.disabled = true;
+      try { await invoke("dealer_refresh"); } catch (err) { alert("启动比对失败：" + err); }
     });
     return;
   }
@@ -636,13 +762,16 @@ $("#main").addEventListener("keydown", (e) => {
 });
 
 // ── 导航与筛选绑定 ──
-$("#nav").addEventListener("click", (e) => {
+$("#nav").addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-view]");
   if (!btn) return;
   // v2.2：导航反馈音升级为气闸合盖/弹出伺服音（4.3），不再叠加 uiTick
   state.view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b === btn)));
+  // FR-2/FR-1：进入情报/网点视图时按需拉取（离线失败只影响本视图）
+  if (state.view === "intel") await loadIntel();
+  if (state.view === "dealer") await loadDealer();
   render();
 });
 document.querySelectorAll(".chip").forEach((chip) => {
@@ -759,6 +888,43 @@ async function bindShellEvents() {
 
   // 托盘菜单「查看晨报」→ 切到晨报页
   await listen("brief-open", () => gotoView("brief"));
+
+  // FR-2 情报日采集完成 → 字幕摘要「今日新增相关项目 N 条」（PRD：不把正文塞进通知）
+  await listen("intel-updated", (e) => {
+    const d = e.payload || {};
+    enqueueNotice({
+      key: `intel-${d.manual ? "manual-" : ""}${new Date().toISOString().slice(0, 10)}`,
+      level: d.failed > 0 ? "normal" : "normal",
+      severe: false,
+      title: "项目情报已更新",
+      text: `◆ ${d.summary || "情报采集完成"}`,
+      action: { label: "查看情报", run: async () => { await loadIntel(); gotoView("intel"); } },
+    });
+    if (state.view === "intel") { loadIntel().then(() => render("reflow")); }
+  });
+
+  // FR-1 网点周比对完成
+  await listen("dealer-updated", (e) => {
+    const d = e.payload || {};
+    if (d.ok === false) {
+      enqueueNotice({
+        key: `dealer-fail-${Date.now()}`,
+        level: "high",
+        severe: true,
+        title: "网点比对失败",
+        text: `◆ 极飞网点比对失败：${d.status} ${d.detail || ""}`,
+      });
+      return;
+    }
+    enqueueNotice({
+      key: `dealer-ok-${new Date().toISOString().slice(0, 10)}`,
+      level: "normal",
+      title: "网点比对完成",
+      text: "◆ 极飞安徽网点比对已完成，可到「网点」页查看增减。",
+      action: { label: "查看网点", run: async () => { await loadDealer(); gotoView("dealer"); } },
+    });
+    if (state.view === "dealer") { loadDealer().then(() => render("reflow")); }
+  });
 
   // 启动静默检查发现新版 → 字幕通知 + 指令条确认（44px 底部指令条，UI 规范 7.5）
   await listen("update-available", (e) => {

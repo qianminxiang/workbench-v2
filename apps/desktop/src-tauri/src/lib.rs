@@ -27,6 +27,7 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 use wb_core::{
     brief::{self, DeliveryState, QuietHours},
+    intel,
     rules::{self, Ruleset},
     sync_client,
     CivilDate, Store, StoreError,
@@ -514,6 +515,228 @@ fn spawn_brief_scheduler(app: tauri::AppHandle) {
     });
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v2.2 FR-2 项目情报 + FR-1 极飞网点（应用内直连，用户 2026-10-28 拍板）
+// 红线：抓取失败只影响本视图，不阻断启动/看板/晨报/导入（AC-2-11）
+// ─────────────────────────────────────────────────────────────────────
+
+fn intel_state_file(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("intel_state.json")
+}
+
+fn load_intel(paths: &AppPaths) -> intel::IntelState {
+    intel::IntelState::load(&paths.data_dir)
+}
+
+/// 日频抓取一轮（调度线程与手动「立即刷新」共用）。
+/// 抓取在独立线程执行不阻塞 UI；同站间隔 ≥2s（预研口径）；失败只标记站点。
+fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
+    std::thread::spawn(move || {
+        let (data_dir, today_iso, start_iso, end_iso) = {
+            let Some(paths) = app.try_state::<Mutex<AppPaths>>() else { return };
+            let p = paths.lock().unwrap();
+            let t = today();
+            (
+                p.data_dir.clone(),
+                t.to_iso(),
+                t.add_days(-90).to_iso(),
+                t.to_iso(),
+            )
+        };
+        let fetcher = intel::UreqFetcher;
+        let mut state = intel::IntelState::load(&data_dir);
+        let mut results: Vec<intel::SiteResult> = Vec::new();
+        let mut new_total = 0usize;
+        let mut failed = 0usize;
+        let mut first = true;
+        for spec in intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
+            if !first {
+                // 同站请求间隔 ≥2s：跨站也保持，避免整体突发
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            first = false;
+            let r = intel::fetch_site(spec, &fetcher, intel::KEYWORD, &start_iso, &end_iso, &today_iso);
+            let sr = match r {
+                Ok(items) => {
+                    let (new_n, _) = intel::merge_items(&mut state, items, &today_iso);
+                    new_total += new_n;
+                    let n = state.items.values().filter(|i| i.site_id == spec.id).count();
+                    intel::SiteResult {
+                        site_id: spec.id.to_string(),
+                        status: intel::FetchStatus::Ok,
+                        detail: String::new(),
+                        items: n,
+                        new_items: new_n,
+                    }
+                }
+                Err((st, detail)) => {
+                    failed += 1;
+                    intel::SiteResult { site_id: spec.id.to_string(), status: st, detail, items: 0, new_items: 0 }
+                }
+            };
+            // 站点状态行（含失败原因，界面可见 AC-2-5）
+            let row = state.sites.entry(spec.id.to_string()).or_default();
+            row.last_attempt = Some(today_iso.clone());
+            match sr.status {
+                intel::FetchStatus::Ok => {
+                    row.last_success = Some(today_iso.clone());
+                    row.last_status = Some(intel::FetchStatus::Ok);
+                    row.last_detail = String::new();
+                    row.fail_streak = 0;
+                }
+                ref st => {
+                    row.last_status = Some(st.clone());
+                    row.last_detail = sr.detail.clone();
+                    row.fail_streak += 1;
+                }
+            }
+            results.push(sr);
+        }
+        state.last_run_date = Some(today_iso.clone());
+        let (connected, planned) = intel::coverage_counts();
+        let summary = format!(
+            "今日新增相关项目 {} 条，{} 个源采集失败；已接入 {} / 计划覆盖 {} 源",
+            new_total, failed, connected, planned
+        );
+        state.save(&data_dir);
+        let _ = app.emit(
+            "intel-updated",
+            serde_json::json!({ "summary": summary, "manual": manual, "new_total": new_total, "failed": failed }),
+        );
+    });
+}
+
+/// FR-1 极飞网点周比对（周频：距上次 ≥7 天才自动跑；手动可强制）
+fn spawn_dealer_run(app: tauri::AppHandle, manual: bool) {
+    std::thread::spawn(move || {
+        let Some(paths) = app.try_state::<Mutex<AppPaths>>() else { return };
+        let data_dir = {
+            let p = paths.lock().unwrap();
+            p.data_dir.clone()
+        };
+        let fetcher = intel::UreqFetcher;
+        let mut state = intel::IntelState::load(&data_dir);
+        match intel::fetch_dealers(&fetcher) {
+            Ok(nodes) => {
+                // 先对旧快照算 diff，再把快照更新为本次全量
+                let diff = intel::diff_dealers(&state.dealer_snapshot, &nodes);
+                state.dealer_snapshot = nodes;
+                state.last_dealer_run_date = Some(today().to_iso());
+                state.dealer_last_diff = Some(diff);
+                state.save(&data_dir);
+                let _ = app.emit("dealer-updated", serde_json::json!({ "manual": manual, "ok": true }));
+            }
+            Err((st, detail)) => {
+                // 失败不改快照，只发事件让界面可见（AC-1-4 口径）
+                let _ = app.emit(
+                    "dealer-updated",
+                    serde_json::json!({ "manual": manual, "ok": false, "status": format!("{:?}", st), "detail": detail }),
+                );
+            }
+        }
+    });
+}
+
+/// 情报视图数据：条目按发布日期倒序（无关级不进列表），站点状态 + 覆盖计数
+#[tauri::command]
+fn intel_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let state = load_intel(&paths);
+    let mut items: Vec<&intel::IntelItem> = state
+        .items
+        .values()
+        .filter(|i| i.relevance != intel::Relevance::Excluded)
+        .collect();
+    items.sort_by(|a, b| b.date.cmp(&a.date).then(b.first_seen.cmp(&a.first_seen)));
+    let (connected, planned) = intel::coverage_counts();
+    Ok(serde_json::json!({
+        "items": items,
+        "sites": state.sites,
+        "registry": intel::SITE_REGISTRY.iter().map(|s| serde_json::json!({
+            "id": s.id, "name": s.name, "city": s.city,
+            "tier": format!("{:?}", s.tier), "scheduled": s.tier.is_scheduled(),
+            "note": s.note,
+        })).collect::<Vec<_>>(),
+        "coverage": { "connected": connected, "planned": planned },
+        "last_run_date": state.last_run_date,
+        "total_stored": state.items.len(),
+    }))
+}
+
+/// 手动「立即刷新」（AC-2-5：失败源可一键重试）
+#[tauri::command]
+fn intel_refresh(app: tauri::AppHandle) -> Result<(), String> {
+    spawn_intel_run(app, true);
+    Ok(())
+}
+
+/// 人工改判（AC-2-7：不被自动规则覆盖）
+#[tauri::command]
+fn intel_set_verdict(
+    paths: State<Mutex<AppPaths>>,
+    key: String,
+    verdict: String,
+) -> Result<(), String> {
+    let paths = paths.lock().unwrap();
+    let mut state = load_intel(&paths);
+    let v = match verdict.as_str() {
+        "core" => intel::Relevance::Core,
+        "suspect" => intel::Relevance::Suspect,
+        "excluded" => intel::Relevance::Excluded,
+        _ => return Err(format!("非法判定值: {}", verdict)),
+    };
+    if !intel::set_verdict(&mut state, &key, v) {
+        return Err("条目不存在".to_string());
+    }
+    state.save(&paths.data_dir);
+    Ok(())
+}
+
+/// FR-1：网点视图数据 + 手动刷新
+#[tauri::command]
+fn dealer_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let state = load_intel(&paths);
+    Ok(serde_json::json!({
+        "snapshot": state.dealer_snapshot,
+        "last_diff": state.dealer_last_diff,
+        "last_run_date": state.last_dealer_run_date,
+    }))
+}
+
+#[tauri::command]
+fn dealer_refresh(app: tauri::AppHandle) -> Result<(), String> {
+    spawn_dealer_run(app, true);
+    Ok(())
+}
+
+/// 情报调度线程：每 10 分钟醒一次；当日未采集且已过 9:30（晨报之后）→ 日频采集；
+/// 距上次网点比对 ≥7 天 → 周频比对。轮询而非定点，理由同晨报调度（休眠/时钟跳变）。
+fn spawn_intel_scheduler(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(600));
+        let Some(paths) = app.try_state::<Mutex<AppPaths>>() else { continue };
+        let (today_iso, minutes) = (today().to_iso(), now_minutes());
+        let state = {
+            let p = paths.lock().unwrap();
+            load_intel(&p)
+        };
+        if state.last_run_date.as_deref() != Some(today_iso.as_str()) && minutes >= 9 * 60 + 30 {
+            spawn_intel_run(app.clone(), false);
+        }
+        // 周频：距上次 ≥7 天
+        let dealer_due = state
+            .last_dealer_run_date
+            .as_deref()
+            .and_then(|d| CivilDate::parse(d))
+            .map(|d| CivilDate::diff_days(d, today()) >= 7)
+            .unwrap_or(true);
+        if dealer_due {
+            spawn_dealer_run(app.clone(), false);
+        }
+    });
+}
+
 /// v2.1 防多开兜底所需的全部 Win32 声明（仅 CreateMutexW / GetLastError /
 /// FindWindowW）。不引 windows-sys 依赖（会动 Cargo.lock 触发全量依赖重解析）；
 /// kernel32/user32 本就是 Rust Windows 目标的默认链接库，显式声明链接属性求稳。
@@ -632,6 +855,11 @@ pub fn run() {
             get_pending_brief,
             trigger_brief,
             mark_brief_delivered,
+            intel_get,
+            intel_refresh,
+            intel_set_verdict,
+            dealer_get,
+            dealer_refresh,
         ])
         // B7：点关闭 = 最小化到托盘，晨报仍从托盘送达；
         // 只有托盘菜单「退出」才真正退出（退出后的补推靠 last_brief.json）。
@@ -721,6 +949,8 @@ pub fn run() {
 
             // 9:00 调度线程
             spawn_brief_scheduler(handle.clone());
+            // v2.2 FR-2/FR-1：情报日频 + 网点周频调度（独立线程，失败不影响本地功能）
+            spawn_intel_scheduler(handle.clone());
 
             // ── 启动静默检查更新（v2.1 默认策略）──
             // 只检查不安装；发现新版 emit 给前端，由用户确认后才走 install_update。

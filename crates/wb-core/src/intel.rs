@@ -717,6 +717,9 @@ pub struct IntelState {
     pub dealer_snapshot: Vec<DealerNode>,
     #[serde(default)]
     pub dealer_first_baseline: bool,
+    /// 最近一次周比对结果（界面展示用）
+    #[serde(default)]
+    pub dealer_last_diff: Option<DealerDiff>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -909,7 +912,7 @@ pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, (FetchStatus, S
 }
 
 /// 周比对：首周建基线（baseline_week=true 无增减）；之后按归一化主键 diff
-pub fn diff_dealers(prev: &[DealerNode], next: Vec<DealerNode>) -> DealerDiff {
+pub fn diff_dealers(prev: &[DealerNode], next: &[DealerNode]) -> DealerDiff {
     let prev_keys: std::collections::BTreeMap<String, &DealerNode> =
         prev.iter().map(|n| (n.node_key(), n)).collect();
     let next_keys: std::collections::BTreeSet<String> = next.iter().map(|n| n.node_key()).collect();
@@ -1162,20 +1165,20 @@ mod tests {
             guid: "G1".into(), company_name: "甲公司".into(), area: "安徽省/淮南市/凤台县".into(),
             address: "a".into(), phone: "p".into(), tags: vec!["client".into()],
         }];
-        let d0 = diff_dealers(&[], prev.clone());
+        let d0 = diff_dealers(&[], &prev);
         assert!(d0.baseline_week);
         let next = vec![
             prev[0].clone(),
             DealerNode { guid: "G2".into(), company_name: "乙公司".into(), area: "安徽省/合肥市/肥西县".into(),
                 address: "b".into(), phone: "q".into(), tags: vec!["client".into()] },
         ];
-        let d1 = diff_dealers(&prev, next);
+        let d1 = diff_dealers(&prev, &next);
         assert!(!d1.baseline_week);
         assert_eq!(d1.added.len(), 1);
         assert_eq!(d1.removed.len(), 0);
         assert_eq!(d1.total, 2);
         // 原有网点消失
-        let d2 = diff_dealers(&prev, vec![]);
+        let d2 = diff_dealers(&prev, &[]);
         assert_eq!(d2.removed.len(), 1);
     }
 }
