@@ -542,7 +542,7 @@ fn single_instance_fallback_guard() {
         // 「已存在」时 CreateMutexW 同样返回有效句柄，判定依据是 GetLastError；
         // 返回的句柄由本进程持有到退出（不 CloseHandle），与首实例生命周期绑定。
         let mutex = wide(&format!("{APP_ID}-wb-fallback-sim"));
-        let _h = win_si_ffi::CreateMutexW(std::ptr::null(), 1, mutex.as_ptr());
+        let _h = win_si_ffi::CreateMutexW(std::ptr::null_mut(), 1, mutex.as_ptr());
         if win_si_ffi::GetLastError() != ERROR_ALREADY_EXISTS {
             return; // 首实例：仅占住兜底互斥体，其余交给插件正常机制
         }
