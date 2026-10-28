@@ -45,6 +45,7 @@ pub mod keys {
     pub const QUIET_START: &str = "quiet_start"; // "HH:MM"
     pub const QUIET_END: &str = "quiet_end"; // "HH:MM"
     pub const VOICE_ENABLED: &str = "voice_enabled"; // "1" / "0"
+    pub const VOICE_PACK: &str = "voice_pack"; // "system" | "pack"（v2.2 语音包）
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────

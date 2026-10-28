@@ -17,6 +17,7 @@ pub mod store;
 pub mod sync;
 pub mod sync_client;
 pub mod update;
+pub mod voice;
 
 pub use date::{normalize, normalize_with_base, normalize_pair, CivilDate, NormalizedDate, Precision, RelativeBase, Role};
 pub use entry::{quick_add, QuickAdd, QuickAddResult};

@@ -92,6 +92,14 @@ fn load_prefs(conn: &rusqlite::Connection) -> (QuietHours, bool) {
     (quiet, voice_enabled)
 }
 
+/// v2.2 语音包偏好：读取 voice_pack 键；仅认 "pack" 为语音包模式，
+/// 其余值（含未设置）一律回落 "system"（系统 TTS 朗读实时文案）。
+/// 归一规则集中在 wb_core::voice（可单测），这里只负责取键。
+fn load_voice_pack(conn: &rusqlite::Connection) -> String {
+    let raw = sync_client::state_get(conn, sync_client::keys::VOICE_PACK);
+    wb_core::voice::normalize_pack(raw.as_deref()).to_string()
+}
+
 /// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
 fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
     let (quiet, voice_enabled) = load_prefs(conn);
@@ -99,6 +107,7 @@ fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
         "quiet_start": wb_core::local_time::fmt_hhmm(quiet.start_minute),
         "quiet_end": wb_core::local_time::fmt_hhmm(quiet.end_minute),
         "voice_enabled": voice_enabled,
+        "voice_pack": load_voice_pack(conn),
     })
 }
 
@@ -254,19 +263,24 @@ fn get_prefs(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String>
     Ok(prefs_json(store.conn()))
 }
 
-/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关。
-/// 时间格式在本地就拦下，不合法不落库；成功返回回读后的规范值。
+/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）。
+/// 时间格式在本地就拦下，不合法不落库；voice_pack 仅认 system/pack 两值；
+/// 成功返回回读后的规范值。
 #[tauri::command]
 fn set_prefs(
     paths: State<Mutex<AppPaths>>,
     quiet_start: String,
     quiet_end: String,
     voice_enabled: bool,
+    voice_pack: String,
 ) -> Result<serde_json::Value, String> {
     let s = wb_core::local_time::parse_hhmm(&quiet_start)
         .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
     let e = wb_core::local_time::parse_hhmm(&quiet_end)
         .ok_or_else(|| "免打扰结束时间格式不合法（应为 HH:MM）".to_string())?;
+    if wb_core::voice::normalize_pack(Some(&voice_pack)) != voice_pack {
+        return Err("voice_pack 仅支持 system / pack".to_string());
+    }
     {
         let paths = paths.lock().unwrap();
         let store = open_store(&paths)?;
@@ -286,6 +300,12 @@ fn set_prefs(
             store.conn(),
             sync_client::keys::VOICE_ENABLED,
             if voice_enabled { "1" } else { "0" },
+        )
+        .map_err(err_string)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::VOICE_PACK,
+            &voice_pack,
         )
         .map_err(err_string)?;
         Ok(prefs_json(store.conn()))

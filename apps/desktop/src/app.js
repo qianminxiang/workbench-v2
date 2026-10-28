@@ -666,9 +666,11 @@ function bindView() {
       const qs = $("#quiet-start").value || "22:00";
       const qe = $("#quiet-end").value || "08:00";
       try {
+        const cur = state.prefs || await invoke("get_prefs");
         state.prefs = await invoke("set_prefs", {
           quietStart: qs, quietEnd: qe,
           voiceEnabled: $("#f10-master").checked,
+          voicePack: cur.voice_pack === "pack" ? "pack" : "system",
         });
         $("#quiet-saved").textContent = `已保存：${state.prefs.quiet_start}–${state.prefs.quiet_end}`;
       } catch (e) {
@@ -810,21 +812,27 @@ $("#filter-clear").addEventListener("click", () => {
       });
     }
   } catch (_) { /* 无记录即正常 */ }
-  // F10 总开关初始化：从偏好库读真实状态（默认开启），不再写死 disabled
+  // F10 总开关 + v2.2 语音包开关初始化：从偏好库读真实状态，不再写死 disabled
   try {
     state.prefs = await invoke("get_prefs");
     const sw = $("#f10-master");
     sw.disabled = false;
     sw.checked = !!state.prefs.voice_enabled;
-    sw.addEventListener("change", async () => {
+    const vp = $("#voice-pack");
+    vp.disabled = false;
+    vp.checked = state.prefs.voice_pack === "pack";
+    const savePrefs = async () => {
       try {
         const cur = state.prefs || await invoke("get_prefs");
         state.prefs = await invoke("set_prefs", {
           quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
           voiceEnabled: sw.checked,
+          voicePack: vp.checked ? "pack" : "system",
         });
       } catch (_) { /* 写失败时开关状态可能不同步，下次启动回读纠偏 */ }
-    });
+    };
+    sw.addEventListener("change", savePrefs);
+    vp.addEventListener("change", savePrefs);
   } catch (_) { /* 偏好读取失败：开关保持 disabled，不误播报 */ }
   bindShellEvents();
   bindMarquee();
@@ -871,7 +879,12 @@ async function bindShellEvents() {
     });
     if (state.view === "brief") reload();
     if (d.voice_enabled && !d.notification_suppressed && $("#f10-master").checked && d.speech) {
-      speakBrief(d.speech, d.new_version ? "version_boot" : undefined);
+      // v2.2 语音包场景推导：新版本即时晨报 → S1；迟到补发 → S2；
+      // 周一带周聚合 → S3；其余 → S1 晨报准点。
+      const scene = d.new_version ? "version_boot"
+        : (d.late_minutes > 0 ? "brief_late"
+          : (d.counts && d.counts.weekly ? "weekly" : "brief"));
+      speakBrief(d.speech, scene);
     }
   });
 
@@ -956,6 +969,11 @@ async function bindShellEvents() {
         },
       },
     });
+    // v2.2 语音包 S8（银刃）：更新提示语音。口径与晨报一致——
+    // 免打扰时段只滚动不播报、跟随 F10 总开关。
+    if (state.prefs?.voice_enabled && !inQuietNow() && $("#f10-master").checked) {
+      speakBrief(`发现新版本 v${d.version}，可以更新。`, "update");
+    }
   });
 }
 
@@ -1322,15 +1340,63 @@ function pulsePanel(panel) {
   setTimeout(() => panel.classList.remove("panel--pulse"), 300);
 }
 
-/** F10 语音播报：WebView2 speechSynthesis，选系统 zh 语音读要点。
- * 选型理由（v2.1）：Windows 上 WebView2 的 TTS 直接映射系统已装的中文语音
- * （Huihui/Kangkang 等，即 SAPI 语音体系），零新增依赖、窗口隐藏到托盘仍可出声；
- * 红线：只用系统 TTS，不做真人声纹克隆。 */
+/** 免打扰窗口判定（前端侧，用于 update 等前端直发事件的语音抑制；
+ * 晨报链路由后端 notification_suppressed 判定，两端口径一致：HH:MM 跨午夜回绕）。
+ * 偏好未读取/格式异常时按「不在免打扰」处理（宁可多播不静默丢提示）。 */
+function inQuietNow() {
+  const p = state.prefs;
+  if (!p || !p.quiet_start || !p.quiet_end) return false;
+  const [sh, sm] = String(p.quiet_start).split(":").map(Number);
+  const [eh, em] = String(p.quiet_end).split(":").map(Number);
+  if ([sh, sm, eh, em].some((x) => !Number.isFinite(x))) return false;
+  const now = new Date();
+  const cur = now.getHours() * 60 + now.getMinutes();
+  const s = sh * 60 + sm;
+  const e = eh * 60 + em;
+  return s <= e ? (cur >= s && cur < e) : (cur >= s || cur < e);
+}
+
+/** F10 语音播报：v2.2 语音包 · 按场景选包。
+ * 两档模式（voice_pack 偏好键，sync_state 键值表为唯一事实源）：
+ * - "system"（默认）：WebView2 speechSynthesis 选系统 zh 语音朗读实时文案；
+ * - "pack"：播 2026-10-28 定稿样音（S1–S9 场景映射见 VOICE_PACK_SCENES）。
+ *   C 档（破阵·浑厚版）金属电子音系统 TTS 无法合成，必须预录 WAV 随包分发
+ *   （apps/desktop/src/voice/，16bit/40kHz/立体声，9 条共约 10.3MB）。
+ * 边界（voice.md 第六章）：定稿样音验证的是音色，内容为示例句；
+ * 实时动态数字以字幕与界面文案为准——pack 模式下字幕/通知照发真实文案。
+ * 播放失败（资源缺失/被策略拦截）回落系统 TTS，语音失败绝不阻断主流程。
+ * 红线：不做真人声纹克隆；样音均为合成音色。 */
+const VOICE_PACK_SCENES = {
+  brief: "s1_brief",           // S1 晨报准点（破阵·浑厚版）
+  version_boot: "s1_brief",    // FR-6 新版本即时晨报：内容仍是晨报 → S1 音色
+  brief_late: "s2_brief_late", // S2 晨报迟到补发（银刃）
+  weekly: "s3_weekly",         // S3 周一·周聚合（破阵·浑厚版）
+  overdue: "s4_overdue",       // S4 逾期提醒（破阵·浑厚版；触发链路待后续版本接入）
+  duesoon: "s5_duesoon",       // S5 临期提醒（破阵·浑厚版；触发链路待后续版本接入）
+  behind: "s6_behind",         // S6 进度预警（银刃；P1 默认关闭）
+  schedule: "s7_schedule",     // S7 今日行程（银刃；schedule_block 落地前恒空）
+  update: "s8_update",         // S8 新版本更新提示（银刃）
+  todos: "s9_todos",           // S9 待办主动推送（银刃；触发链路待后续版本接入）
+};
+
 function speakBrief(text, scene) {
-  // v2.2 语音包：scene 为场景键（如 version_boot），预录样音接入后按场景选包；
-  // 当前默认走系统 TTS（C 档样音资源接入在语音包阶段完成）。
   try {
     if (scene) window.__briefScene = scene;
+    const sc = scene || window.__briefScene;
+    const pack = !!(state.prefs && state.prefs.voice_pack === "pack");
+    const wav = pack && sc ? VOICE_PACK_SCENES[sc] : null;
+    if (wav) {
+      const a = new Audio(`./voice/${wav}.wav`);
+      a.play().catch(() => speakTts(text)); // 资源缺失/播放失败 → 系统 TTS 兜底
+      return;
+    }
+    speakTts(text);
+  } catch (_) { /* 语音失败绝不阻断晨报主流程 */ }
+}
+
+/** 系统 TTS 路径（v2.1 原实现）：选系统 zh 语音读实时文案。 */
+function speakTts(text) {
+  try {
     const synth = window.speechSynthesis;
     if (!synth) return;
     synth.cancel();
@@ -1340,5 +1406,5 @@ function speakBrief(text, scene) {
     if (zh) u.voice = zh;
     u.rate = 1.0;
     synth.speak(u);
-  } catch (_) { /* 语音失败绝不阻断晨报主流程 */ }
+  } catch (_) { /* 语音失败绝不阻断主流程 */ }
 }

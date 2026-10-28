@@ -508,9 +508,9 @@ fn fetch_epoint(
     end: &str,
     today: &str,
 ) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    let cfg = spec.epoint.as_ref().ok_or_else(|| {
-        // 芜湖（.NET API）/ 池州（自有 JSON API）为非 Epoint 站，接口参数未逐站验证，
-        // 按「未验证不冒充已实现」如实返回，待第二批逐站接入（AC-2-9）
+    // 芜湖（.NET API）/ 池州（自有 JSON API）为非 Epoint 站，接口参数未逐站验证，
+    // 按「未验证不冒充已实现」如实返回，待第二批逐站接入（AC-2-9）
+    spec.epoint.as_ref().ok_or_else(|| {
         (FetchStatus::ParseError, "非 Epoint 站，适配器待第二批逐站验证实现".to_string())
     })?;
     let mut items = Vec::new();
