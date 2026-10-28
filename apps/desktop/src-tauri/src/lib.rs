@@ -492,8 +492,77 @@ fn spawn_brief_scheduler(app: tauri::AppHandle) {
     });
 }
 
+/// v2.1 防多开兜底所需的全部 Win32 声明（仅 CreateMutexW / GetLastError /
+/// FindWindowW）。不引 windows-sys 依赖（会动 Cargo.lock 触发全量依赖重解析）；
+/// kernel32/user32 本就是 Rust Windows 目标的默认链接库，显式声明链接属性求稳。
+#[cfg(target_os = "windows")]
+mod win_si_ffi {
+    use std::os::raw::{c_int, c_void};
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn CreateMutexW(
+            attrs: *mut c_void,
+            initial_owner: c_int,
+            name: *const u16,
+        ) -> *mut c_void;
+        pub fn GetLastError() -> u32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn FindWindowW(class: *const u16, window: *const u16) -> *mut c_void;
+    }
+}
+
+/// v2.1 防多开·应用侧兜底仲裁（任务书要求①：仲裁失败也不许双进程常驻）。
+/// 插件的二次启动退出路径**仅在 FindWindowW 命中仲裁窗口时生效**（插件
+/// windows.rs:82-131：互斥体已存在但窗口找不到时整个退出块被跳过，二次
+/// 启动方会完整启动成双进程——run 40597450315 / 40604956721 场景2 的
+/// 实测形态）。本兜底在构建 Builder 之前自判，补上这条缺口：
+///   · 自持一把独立命名互斥体（与插件的 {id}-sim 不同名；进程终止由 OS
+///     回收句柄，崩溃也不会残留）；
+///   · 互斥体已存在（确有首实例）且插件仲裁窗口（{id}-sic/-siw，见插件
+///     windows.rs:73-74）找不到 → 通道已断、插件救不了 → 本进程立即退出，
+///     保住「不双开」红线（通道已断时首实例窗口可能仍藏于托盘，恢复能力
+///     以通道健在为前提，此边界如实写入自检文档）；
+///   · 仲裁窗口健在 → 不介入，让插件 setup 走正常路径（回调恢复+置前+退出），
+///     兜底绝不抢在插件前面，正常路径行为零变化。
+/// 类名/窗口名与插件保持一致的约定：identifier 变更时此处需同步（插件侧
+/// 读 app.config().identifier，此处在 Builder 构建前拿不到 config，故沿用
+/// 同一常量；两处均已注释标明）。
+#[cfg(target_os = "windows")]
+fn single_instance_fallback_guard() {
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    // 与 tauri.conf.json 的 identifier 保持同步（同上注释）
+    const APP_ID: &str = "com.anhui.pr.workbench";
+
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+
+    unsafe {
+        // 「已存在」时 CreateMutexW 同样返回有效句柄，判定依据是 GetLastError；
+        // 返回的句柄由本进程持有到退出（不 CloseHandle），与首实例生命周期绑定。
+        let mutex = wide(&format!("{APP_ID}-wb-fallback-sim"));
+        let _h = win_si_ffi::CreateMutexW(std::ptr::null(), 1, mutex.as_ptr());
+        if win_si_ffi::GetLastError() != ERROR_ALREADY_EXISTS {
+            return; // 首实例：仅占住兜底互斥体，其余交给插件正常机制
+        }
+        let class = wide(&format!("{APP_ID}-sic"));
+        let window = wide(&format!("{APP_ID}-siw"));
+        if win_si_ffi::FindWindowW(class.as_ptr(), window.as_ptr()).is_null() {
+            // 有首实例 + 通道断：插件不会退出本进程，这里补位退出。
+            std::process::exit(0);
+        }
+        // 通道健在：正常路径交给插件（回调恢复+置前+二次启动方退出）。
+    }
+}
+
 /// 应用启动入口。
 pub fn run() {
+    // 防多开兜底必须先于一切初始化执行（见函数注释）；
+    // 非 Windows 平台为空操作。
+    #[cfg(target_os = "windows")]
+    single_instance_fallback_guard();
+
     tauri::Builder::default()
         // v2.1 防多开：必须注册在插件链最前面——
         // 二次启动（任务栏最小化态 / 托盘态 / 快速双击竞态）把已有主窗口置前，

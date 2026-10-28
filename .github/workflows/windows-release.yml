@@ -323,12 +323,50 @@ jobs:
           #  · **观察项**：窗口是否被 unminimize / show 并置前。需要真实交互桌面，
           #    CI 会话下若取不到可见态，如实记为「未取到可见证据」，不伪造通过。
           $exe = (Resolve-Path "target/release/wb-desktop.exe").Path
+          # 单实例插件的隐藏仲裁窗口类名/窗口名 = {identifier}-sic / -siw（见插件 windows.rs）
+          $id = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).identifier
           Add-Type -Namespace WB -Name U -MemberDefinition @'
           [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);
           [DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr h);
           [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
           [DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);
+          [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern System.IntPtr FindWindow(string c, string n);
           '@
+          # ── 2026-10-28 修复：主窗口定位必须排除插件的隐藏仲裁窗口 ──
+          # 插件仲裁窗口带 WS_VISIBLE 样式（分层透明工具窗，用户不可见但
+          # IsWindowVisible=True），且在主窗口之前创建。原 Wait-Main 用 .NET
+          # MainWindowHandle 取「第一个可见顶层窗」，轮询完全可能抢在主窗口
+          # 创建前解析到仲裁窗口——run 40597450315 / 40604956721 场景2 的
+          # PostMessage(WM_CLOSE) 因此打到了仲裁窗口上，DefWindowProc 直接
+          # DestroyWindow 销毁仲裁通道 → 二次启动方 FindWindowW 落空 → 插件
+          # 不退出它 → 整应用完整启动（双进程双窗口）。这里改为枚举顶层窗并
+          # 按类名/扩展样式过滤，并把候选清单打进日志备查。
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class WBWinEnum {
+            public delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int max);
+            [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+            public static List<string[]> List(int pid) {
+              var r = new List<string[]>();
+              EnumWindows(delegate(IntPtr h, IntPtr l) {
+                uint wpid; GetWindowThreadProcessId(h, out wpid);
+                if (wpid == (uint)pid) {
+                  var sb = new StringBuilder(256); GetClassName(h, sb, 256);
+                  r.Add(new string[] { h.ToString(), sb.ToString(), GetWindowLong(h, -20).ToString(), IsWindowVisible(h).ToString() });
+                }
+                return true;
+              }, IntPtr.Zero);
+              return r;
+            }
+          }
+          "@
           function Get-Procs { @(Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue) }
           function Kill-All {
             & taskkill /T /F /IM wb-desktop.exe 2>$null | Out-Null
@@ -362,19 +400,28 @@ jobs:
             return [pscustomobject]@{ Ok = $false; Alive = $n; Exited = $ex; Wait = [math]::Round($sw.Elapsed.TotalSeconds, 1) }
           }
 
-          function Wait-Main {
-            for ($i = 0; $i -lt 40; $i++) {
-              $p = Get-Procs | Select-Object -First 1
-              if ($p) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { return $p } }
+          function Wait-RealMain([int]$procId) {
+            # 真主窗口：可见 + 非插件仲裁窗（*-sic/*-siw）+ 非分层/工具窗
+            # （WS_EX_LAYERED|WS_EX_TOOLWINDOW = 0x80000|0x80 = 0x80080）
+            for ($i = 0; $i -lt 60; $i++) {
+              foreach ($w in [WBWinEnum]::List($procId)) {
+                if ($w[1] -like "*-sic" -or $w[1] -like "*-siw") { continue }
+                $ex = [int64]$w[2]
+                if (($ex -band 0x80080) -ne 0) { continue }
+                if ($w[3] -ne "True") { continue }
+                Write-Host "主窗口定位：hwnd=$($w[0]) class=$($w[1]) ex=0x$($ex.ToString('X'))（轮询第 $i 次）"
+                return [IntPtr][Convert]::ToInt64($w[0])
+              }
               Start-Sleep -Milliseconds 500
             }
-            return (Get-Procs | Select-Object -First 1)
+            Write-Host "::warning::60 次轮询（30s）未定位到真主窗口，pid=$procId 顶层窗清单："
+            [WBWinEnum]::List($procId) | ForEach-Object { Write-Host "   hwnd=$($_[0]) class=$($_[1]) ex=$($_[2]) visible=$($_[3])" }
+            return [IntPtr]::Zero
           }
 
           Kill-All
           $p1 = Start-Process -FilePath $exe -PassThru
-          $p1 = Wait-Main
-          $h1 = $p1.MainWindowHandle
+          $h1 = Wait-RealMain $p1.Id
           Write-Host "首次启动：pid=$($p1.Id) hwnd=$h1"
 
           # ── 场景 1：任务栏最小化态 ──
@@ -385,7 +432,7 @@ jobs:
             $minimizedObserved = [WB.U]::IsIconic($h1)
             Write-Host "场景1：窗口最小化已生效=$minimizedObserved"
           } else {
-            Write-Host "::warning::场景1：取不到 MainWindowHandle（CI 会话可能无交互桌面），无法施加最小化态；硬断言（单进程）照常执行"
+            Write-Host "::warning::场景1：30s 内未定位到真主窗口（CI 会话可能无交互桌面），无法施加最小化态；硬断言（单进程）照常执行"
           }
           $s1 = Start-Process -FilePath $exe -PassThru
           $w1 = Wait-Settled -procs @($s1) -TimeoutSec 25
@@ -395,21 +442,28 @@ jobs:
           if ($w1.Exited -lt 1) { throw "场景1 失守：二次启动进程等待 $($w1.Wait)s 仍未退出（pid=$($s1.Id)）" }
           $restored = "未取到可见证据"
           if ($h1 -ne 0) {
-            $p1.Refresh()
-            $restored = if ([WB.U]::IsIconic($p1.MainWindowHandle)) { "仍最小化（未恢复）" } else { "已恢复（IsIconic=false）" }
+            # 用启动时定位的真主窗口句柄复查，不用 .NET MainWindowHandle——
+            # 托盘/仲裁窗在场时它会解析到错误窗口（见本步顶部根因注释）。
+            $restored = if ([WB.U]::IsIconic($h1)) { "仍最小化（未恢复）" } else { "已恢复（IsIconic=false）" }
+            if ($restored -like "仍最小化*") { Write-Host "::warning::场景1：二次启动后真主窗口仍未恢复（恢复逻辑未生效，硬断言未含此项，如实上报）" }
           }
           Write-Host "场景1 结果：存活进程=$n1，落败进程已退出(exit=$($s1.ExitCode))，窗口恢复=$restored"
 
           # ── 场景 2：托盘态（B7：点 × 只 hide 不退出）──
           if ($h1 -ne 0) {
-            [void][WB.U]::PostMessage($h1, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            [void][WB.U]::PostMessage($h1, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE → 真主窗口
             Start-Sleep -Seconds 3
             $alive = (Get-Procs).Count
             if ($alive -ne 1) { throw "场景2 前置不成立：点 × 后进程应常驻托盘，实际存活 $alive 个" }
-            $pp = Get-Procs | Select-Object -First 1; $pp.Refresh()
-            Write-Host "场景2 前置：点 × 后进程常驻 $alive 个（hide 不退出），窗口可见=$([WB.U]::IsWindowVisible($pp.MainWindowHandle))"
+            # 硬前置：插件仲裁窗口必须仍在——通道完整性是二次启动方能被仲裁的前提。
+            # 此前两次失败（run 40597450315 / 40604956721）的根因就是 WM_CLOSE 误中
+            # 仲裁窗口致通道销毁；把该状态前移到「施加态」就 throw，失败日志直接
+            # 指向根因，而不是 25s 后才在「判据」处红。
+            $arb = [WB.U]::FindWindow("$id-sic", "$id-siw")
+            if ($arb -eq [IntPtr]::Zero) { throw "场景2 前置不成立：点 × 后插件仲裁窗口（$id-sic）已消失——通道被销毁，二次启动将无法被仲裁" }
+            Write-Host "场景2 前置：点 × 后进程常驻 $alive 个（hide 不退出），仲裁窗口健在=True，真主窗口可见=$([WB.U]::IsWindowVisible($h1))（应为 False）"
           } else {
-            Write-Host "::warning::场景2：无窗口句柄可发 WM_CLOSE，跳过托盘态施加；硬断言照常执行"
+            Write-Host "::warning::场景2：无真主窗口句柄可发 WM_CLOSE，跳过托盘态施加；硬断言照常执行"
           }
           $s2 = Start-Process -FilePath $exe -PassThru
           $w2 = Wait-Settled -procs @($s2) -TimeoutSec 25
@@ -418,9 +472,10 @@ jobs:
           if ($n2 -ne 1) { throw "场景2 失守：二次启动后存活 $n2 个进程（应为 1）" }
           if ($w2.Exited -lt 1) { throw "场景2 失守：二次启动进程等待 $($w2.Wait)s 仍未退出（pid=$($s2.Id)）" }
           $vis = "未取到可见证据"
-          $pp2 = Get-Procs | Select-Object -First 1; $pp2.Refresh()
-          if ($pp2.MainWindowHandle -ne 0) {
-            $vis = if ([WB.U]::IsWindowVisible($pp2.MainWindowHandle)) { "可见（已置前）" } else { "不可见" }
+          if ($h1 -ne 0) {
+            # 同上：用真主窗口句柄判定，hide→二次启动→回调 show 后应可见。
+            $vis = if ([WB.U]::IsWindowVisible($h1)) { "可见（已 show+置前）" } else { "不可见（未恢复）" }
+            if ($vis -eq "不可见（未恢复）") { Write-Host "::warning::场景2：二次启动后真主窗口仍不可见（托盘恢复逻辑未生效，硬断言未含此项，如实上报）" }
           }
           Write-Host "场景2 结果：存活进程=$n2，落败进程已退出，窗口=$vis"
 
