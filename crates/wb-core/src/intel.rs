@@ -424,8 +424,8 @@ fn normalize_date_value(v: Option<&serde_json::Value>) -> String {
             // 毫秒时间戳（徽采云 publishDate）→ 东八区日期
             let ms = n.as_i64().unwrap_or(0);
             if ms > 1_000_000_000_000 {
-                let secs = (ms - 8 * 3600 * 1000) / 1000;
-                let days = secs.div_euclid(86400);
+                let secs = ms / 1000;
+                let days = (secs + 8 * 3600).div_euclid(86400);
                 let (y, m, d) = civil_from_days(days);
                 format!("{:04}-{:02}-{:02}", y, m, d)
             } else {
@@ -508,10 +508,16 @@ fn fetch_epoint(
     end: &str,
     today: &str,
 ) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
+    let cfg = spec.epoint.as_ref().ok_or_else(|| {
+        // 芜湖（.NET API）/ 池州（自有 JSON API）为非 Epoint 站，接口参数未逐站验证，
+        // 按「未验证不冒充已实现」如实返回，待第二批逐站接入（AC-2-9）
+        (FetchStatus::ParseError, "非 Epoint 站，适配器待第二批逐站验证实现".to_string())
+    })?;
     let mut items = Vec::new();
     for page in 0..MAX_PAGES_PER_SITE as usize {
         let (url, body) = build_epoint_request(spec, wd, start, end, page);
         let resp = http.post_json(&url, &body, Duration::from_secs(20)).map_err(map_http)?;
+        ensure_not_blocked(&resp)?;
         let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
         let v = if spec.epoint.as_ref().map(|c| c.double_wrap).unwrap_or(false) {
             // 淮南：双层 JSON 包装（外层字符串再包一层 JSON）
@@ -523,9 +529,14 @@ fn fetch_epoint(
         } else {
             v
         };
-        let records = find_record_arrays(&v, 0);
+        // 标准路径 /result/results 优先（空数组=合法空结果，AC-2-8）；
+        // 站间差异（双层包装/异构键名）回落到递归发现
+        let records = match v.pointer("/result/results") {
+            Some(serde_json::Value::Array(a)) => a.clone(),
+            _ => find_record_arrays(&v, 0),
+        };
         if records.is_empty() {
-            if page == 0 {
+            if page == 0 && v.pointer("/result/results").is_none() && find_record_arrays(&v, 0).is_empty() {
                 return Err((FetchStatus::ParseError, "未在响应中定位到记录数组".into()));
             }
             break;
@@ -564,6 +575,7 @@ fn fetch_huicaiyun(
         "pageNo": 1, "pageSize": 15, "isTitleSearch": 1, "order": "desc", "leaf": "0",
     });
     let resp = http.post_json(&url, &body.to_string(), Duration::from_secs(20)).map_err(map_http)?;
+    ensure_not_blocked(&resp)?;
     let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
     let records = v
         .pointer("/result/data/data")
@@ -589,7 +601,7 @@ fn date_str_to_ms(s: &str) -> Option<i64> {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some((days * 86_400 - 16 * 3600) * 1000)
+    Some((days * 86_400 - 8 * 3600) * 1000)
 }
 
 fn fetch_ggzy_ah(
@@ -609,6 +621,7 @@ fn fetch_ggzy_ah(
     let resp = http
         .post_json(&url, &form, Duration::from_secs(20))
         .map_err(map_http)?;
+    ensure_not_blocked(&resp)?;
     let mut items = Vec::new();
     let mut rest = resp.as_str();
     while let Some(i) = rest.find("newDetail?guid=") {
@@ -665,6 +678,16 @@ fn urlencoding_min(s: &str) -> String {
         }
     }
     out
+}
+
+/// 拦截页特征检测（AC-2-5）：HTTP 200 但内容是验证/拦截页也算 Blocked。
+/// 放在 fetch 层而非仅生产 HTTP 实现里，保证 mock 测试与生产行为一致。
+fn ensure_not_blocked(body: &str) -> Result<(), (FetchStatus, String)> {
+    if body.contains("频繁访问") || body.contains("NEED_CAPTCHA") || body.contains("访问被拦截") {
+        Err((FetchStatus::Blocked, "命中拦截特征 captcha_page".into()))
+    } else {
+        Ok(())
+    }
 }
 
 fn map_http(e: HttpErr) -> (FetchStatus, String) {
@@ -725,7 +748,6 @@ impl IntelState {
 /// 去重合并一批新条目（AC-2-4：站点+URL 规范化幂等；AC-2-7：人工改判保留）
 pub fn merge_items(state: &mut IntelState, incoming: Vec<IntelItem>, today: &str) -> (usize, usize) {
     let mut new_count = 0usize;
-    let mut total = 0usize;
     for it in incoming {
         if let Some(ov) = state.overrides.get(&it.key) {
             let mut kept = it;
@@ -741,7 +763,6 @@ pub fn merge_items(state: &mut IntelState, incoming: Vec<IntelItem>, today: &str
             state.items.insert(it.key.clone(), it);
         }
     }
-    total = state.items.len();
     // 存储封顶 500 条（最旧的先淘汰），防长期内存/磁盘增长
     if state.items.len() > 500 {
         let keys: Vec<String> = state.items.keys().cloned().collect();
@@ -749,10 +770,11 @@ pub fn merge_items(state: &mut IntelState, incoming: Vec<IntelItem>, today: &str
         for k in keys.into_iter().take(excess) {
             state.items.remove(&k);
         }
-        total = state.items.len();
+        let _ = today;
+        return (new_count, state.items.len());
     }
     let _ = today;
-    (new_count, total)
+    (new_count, state.items.len())
 }
 
 /// 人工改判（AC-2-7）
@@ -782,27 +804,33 @@ pub fn run_daily(
     let mut failed = 0usize;
     for spec in SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
         let r = fetch_site(spec, http, KEYWORD, start, end, today);
-        let row = state.sites.entry(spec.id.to_string()).or_default();
-        row.last_attempt = Some(today.to_string());
         let sr = match r {
             Ok(items) => {
                 let (new_n, _) = merge_items(state, items, today);
-                row.last_success = Some(today.to_string());
-                row.last_status = Some(FetchStatus::Ok);
-                row.last_detail = String::new();
-                row.fail_streak = 0;
                 let n = state.items.values().filter(|i| i.site_id == spec.id).count();
                 new_total += new_n;
                 SiteResult { site_id: spec.id.to_string(), status: FetchStatus::Ok, detail: String::new(), items: n, new_items: new_n }
             }
             Err((st, detail)) => {
                 failed += 1;
-                row.last_status = Some(st.clone());
-                row.last_detail = detail.clone();
-                row.fail_streak += 1;
-                SiteResult { site_id: spec.id.to_string(), status: st, detail, items: 0, new_items: 0 }
+                SiteResult { site_id: spec.id.to_string(), status: st.clone(), detail: detail.clone(), items: 0, new_items: 0 }
             }
         };
+        let row = state.sites.entry(spec.id.to_string()).or_default();
+        row.last_attempt = Some(today.to_string());
+        match sr.status {
+            FetchStatus::Ok => {
+                row.last_success = Some(today.to_string());
+                row.last_status = Some(FetchStatus::Ok);
+                row.last_detail = String::new();
+                row.fail_streak = 0;
+            }
+            ref st => {
+                row.last_status = Some(st.clone());
+                row.last_detail = sr.detail.clone();
+                row.fail_streak += 1;
+            }
+        }
         results.push(sr);
     }
     state.last_run_date = Some(today.to_string());
@@ -932,7 +960,8 @@ mod tests {
             "result": { "results": [
                 { "title": "XX县农业无人机植保服务采购公告", "webdate": "2026-10-20 10:00:00",
                   "linkurl": "/jyxx/001/202610/t20261020_123.html", "infoid": "a1",
-                  "content": "为推进统防统治工作，采购植保无人机", "xiaqucode": "六安市" },
+                  "purchaseName": "XX县农业农村局", "xiaqucode": "六安市",
+                  "content": "为推进统防统治工作，采购植保无人机" },
                 { "title": "城市宣传片航拍服务招标", "webdate": "2026-10-19",
                   "linkurl": "https://ggzy.example.com/jyxx/002.html", "infoid": "a2", "content": "航拍" }
             ]}
@@ -1057,7 +1086,9 @@ mod tests {
         assert!(summary.contains(&format!("已接入 {} / 计划覆盖 {} 源", connected, planned)));
         // epoint 空数组：page0 非空记录数组→Ok 0 条；徽采云/ggzy_ah 无匹配 mock → Network 失败计入失败源
         let ok_sources = results.iter().filter(|r| r.status == FetchStatus::Ok).count();
-        assert!(ok_sources >= 15, "16 地市 Epoint 站应解析成功（空结果也是成功）");
+        // 该 mock 对全部站返回 Epoint 空结构：14 个 Epoint 地市站解析成功（空结果=成功，AC-2-8）；
+        // 芜湖/池州（适配器待实现）、省级主通道与徽采云（格式不匹配）计 4 个失败源，摘要如实呈现
+        assert_eq!(ok_sources, 14);
     }
 
     #[test]
@@ -1086,7 +1117,7 @@ mod tests {
                 "title": "当涂县公安局无人机机场采购项目合同公告",
                 "projectName": "当涂县公安局无人机机场采购项目",
                 "purchaseName": "当涂县公安局", "districtName": "当涂县",
-                "publishDate": 1791856760000, "budgetPrice": null,
+                "publishDate": 1791856760000i64, "budgetPrice": null,
                 "pathName": "采购公告 | 合同公告 | 合同公告"
             }]}}
         }).to_string();
