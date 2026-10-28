@@ -100,6 +100,13 @@ jobs:
           # E2E 覆盖配置：版本号 + 允许 http 端点（负例用 127.0.0.1，正例走真实 https）
           $cfg = [ordered]@{
             version = $old
+            # createUpdaterArtifacts 必须在这一跳关掉：仓库主配置里它是 true，
+            # tauri-cli 因此会把 updater 打包产物全部签名，并在 `sign_updaters()` 里
+            # 强制要求 TAURI_SIGNING_PRIVATE_KEY —— 本工作流只读、不注入任何 secret，
+            # 缺私钥会直接以 "A public key has been found, but no private key" 中断构建。
+            # 关掉只影响「旧版本安装包的 .sig 产物」，运行时 updater 读的是
+            # plugins.updater（pubkey/endpoints 仍在），驱动链路完全不受影响。
+            bundle = [ordered]@{ createUpdaterArtifacts = $false }
             plugins = [ordered]@{
               updater = [ordered]@{
                 endpoints = @("https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json")
@@ -196,7 +203,6 @@ jobs:
 
           $p = Start-Process -FilePath $exe -PassThru
           Write-Host "旧版本 PID=$($p.Id)"
-
           # 等结果文件出现且进入终态（installer_launched / 出错）
           $deadline = (Get-Date).AddMinutes(10)
           while ((Get-Date) -lt $deadline) {
@@ -230,6 +236,11 @@ jobs:
           Write-Host "downloaded_bytes=$($j.downloaded_bytes) verified=$($j.verified) installer_launched=$($j.installer_launched)"
           Write-Host "装上后 FileVersion=$now  DisplayVersion=$reg"
 
+          # 先判「链路本身是否成功」：失败时直接把 stage 与插件原始报错抛出来，
+          # 否则下方 verified/installer_launched 为 null 会抛出误导性断言。
+          if ($j.ok -ne $true) {
+            throw "正例链路失败：stage=$($j.stage) error=$($j.error)（原始结果见 evidence/positive.json）"
+          }
           if ($j.current_version -notlike "2.0.0*") { throw "current_version 不是 2.0.0：$($j.current_version)" }
           if ($j.announced_version -ne "2.1.0") { throw "未检测到 2.1.0：$($j.announced_version)" }
           if (-not $j.verified) { throw "验签未通过" }
@@ -244,16 +255,25 @@ jobs:
           # ⚠ 负例必须重新装回 2.0.0：正例已把机器上的应用升到 2.1.0，
           #    而 2.1.0 已是端点上的最新版，"检测到更新"会返回 none，负例就失去区分度。
           function Reset-ToOld {
+            # NSIS 覆盖安装要求主程序文件未被占用：先强杀残留进程再装，
+            # 否则会因文件占用装不上（表现为 ExitCode 非 0，掩盖真正的失败原因）。
+            Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
             $p = Start-Process -FilePath "assets/old-setup.exe" -ArgumentList "/S" -Wait -PassThru
             if ($p.ExitCode -ne 0) { throw "回滚 2.0.0 失败：$($p.ExitCode)" }
             $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
             Write-Host "回滚后 FileVersion=$((Get-Item $exe).VersionInfo.FileVersion)"
           }
 
+          # ⚠ 断言串取自插件真实 Display 文本（不能写枚举名，枚举名不会出现在报错里）：
+          #   minisign_verify::Error::InvalidSignature  → "The signature verification failed"
+          #   updater::Error::SignedVersionMismatch     → "The update was signed for version {signed}
+          #                                               but the update endpoint announced version {announced}."
+          #   updater::Error::Network("Download request failed with status: {code}")
           $cases = @(
-            @{ name="n1-篡改安装包内容"; endpoint="http://127.0.0.1:8123/n1/latest.json"; expect="InvalidSignature"; stage="download" },
-            @{ name="n2-篡改签名";       endpoint="http://127.0.0.1:8123/n2/latest.json"; expect="InvalidSignature"; stage="download" },
-            @{ name="n3-篡改清单版本";   endpoint="http://127.0.0.1:8123/n3/latest.json"; expect="SignedVersionMismatch"; stage="download" },
+            @{ name="n1-篡改安装包内容"; endpoint="http://127.0.0.1:8123/n1/latest.json"; expect="signature verification failed"; stage="download" },
+            @{ name="n2-篡改签名";       endpoint="http://127.0.0.1:8123/n2/latest.json"; expect="signature verification failed"; stage="download" },
+            @{ name="n3-篡改清单版本";   endpoint="http://127.0.0.1:8123/n3/latest.json"; expect="signed for version 2.1.0 but the update endpoint announced version 2.2.0"; stage="download" },
             @{ name="n4-篡改清单URL";    endpoint="http://127.0.0.1:8123/n4/latest.json"; expect="Download request failed"; stage="download" }
           )
 
@@ -280,6 +300,7 @@ jobs:
             $j = Get-Content $result -Raw | ConvertFrom-Json
             Write-Host "stage=$($j.stage) ok=$($j.ok) error=$($j.error)"
             if ($j.ok -ne $false) { throw "$($c.name) 没有被拒绝（ok=true），红线不成立" }
+            if ($j.stage -ne $c.stage) { throw "$($c.name) 失败阶段不符：期望 $($c.stage)，实际 $($j.stage)（错误可能出现在别处，归因不成立）" }
             if ($j.error -notlike "*$($c.expect)*") { throw "$($c.name) 错误不可定位：期望含 '$($c.expect)'，实际 '$($j.error)'" }
             # 关键：安装包不得被装上 —— 版本必须还停在 2.0.0
             Start-Sleep -Seconds 3
