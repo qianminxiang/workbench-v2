@@ -167,10 +167,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "夹具构造失败" }
           Get-ChildItem -Recurse fixtures | ForEach-Object { Write-Host "  $($_.FullName.Replace($PWD.Path,''))  $($_.Length)B" }
 
-      # 本地清单服务不单独起步骤：PowerShell Job（Start-Job）随所在步骤的 pwsh
-      # 退出即被终止，跨步骤不存活（run 40647230091 实测：负例步连接被拒，
-      # stage=check / "error sending request"）。改在负例驱动步骤内以分离进程
-      # 方式启动、随步骤结束清理，生命周期与使用方同域。
+      - name: 启动本地清单服务（127.0.0.1:8123）
+        shell: pwsh
+        run: |
+          # ⚠ 必须用「独立进程」而不是 Start-Job：Start-Job 起的后台作业挂在当前
+          #    step 的 pwsh 会话上，step 一结束作业即被回收，端口随之关闭。表现为
+          #    后续 step 里被测程序在 check 阶段报 "error sending request for url
+          #    (http://127.0.0.1:8123/...)"，会被误判成链路问题而非签名拒绝。
+          $root = Join-Path $PWD "fixtures"
+          $py = (Get-Command python).Source
+          $srv = Start-Process -FilePath $py -ArgumentList "-m","http.server","8123","--bind","127.0.0.1" `
+                 -WorkingDirectory $root -PassThru -WindowStyle Hidden
+          $srv.Id | Out-File -Encoding utf8 "fixtures/.serverpid"
+          # 就绪探针
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              $r = Invoke-WebRequest "http://127.0.0.1:8123/real/win.exe" -Method Head -TimeoutSec 2
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $ok) { throw "本地清单服务未就绪（pid=$($srv.Id)，进程存活=$(-not $srv.HasExited)）" }
+          Write-Host "本地服务就绪：http://127.0.0.1:8123（pid=$($srv.Id)）"
 
       # ══ 正例：真实 GitHub 匿名端点，全链路 ══
       - name: "正例：检测 2.1.0 → 下载 → 验签 → 安装 → 重启后版本确认"
@@ -240,31 +258,28 @@ jobs:
       - name: 负例驱动（4 个，全部必须被拒绝）
         shell: pwsh
         run: |
-          # ── 本地清单服务：分离进程，本步骤内启动/清理 ──
-          # （Start-Job 跨步骤不存活，见上方注释；Start-Process 是真进程，步骤内全程健在）
-          $srvOut = Join-Path $PWD "fixtures/.srv-out.log"
-          $srvErr = Join-Path $PWD "fixtures/.srv-err.log"
-          $srv = Start-Process -FilePath "python" `
-            -ArgumentList "-m","http.server","8123","--bind","127.0.0.1" `
-            -WorkingDirectory (Join-Path $PWD "fixtures") `
-            -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -PassThru
-          Write-Host "本地服务 PID=$($srv.Id)，等待就绪…"
-          $ready = $false
-          for ($i = 0; $i -lt 30; $i++) {
-            if ($srv.HasExited) {
-              Write-Host "服务进程意外退出，stderr："; Get-Content $srvErr -ErrorAction SilentlyContinue
-              throw "本地清单服务启动即退出"
-            }
-            try {
-              $r = Invoke-WebRequest "http://127.0.0.1:8123/real/win.exe" -Method Head -TimeoutSec 2
-              if ($r.StatusCode -eq 200) { $ready = $true; break }
-            } catch { Start-Sleep -Seconds 1 }
-          }
-          if (-not $ready) { throw "本地清单服务 30 秒内未就绪" }
-          Write-Host "本地服务就绪：http://127.0.0.1:8123（PID=$($srv.Id)）"
-
           # ⚠ 负例必须重新装回 2.0.0：正例已把机器上的应用升到 2.1.0，
           #    而 2.1.0 已是端点上的最新版，"检测到更新"会返回 none，负例就失去区分度。
+          # ⚠ 负例依赖本地 8123 服务；若服务已死，被测程序会在 check 阶段报
+          #    "error sending request for url"，看起来像链路问题而非签名拒绝。
+          #    先做前置探针，把「基础设施挂了」与「负例没被拒绝」区分开。
+          $probe = $false
+          for ($i = 0; $i -lt 15; $i++) {
+            try {
+              $r = Invoke-WebRequest "http://127.0.0.1:8123/n1/latest.json" -TimeoutSec 3
+              if ($r.StatusCode -eq 200) { $probe = $true; break }
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $probe) { throw "前置检查失败：本地清单服务不可达（127.0.0.1:8123），不构成负例结论" }
+
+          # reqwest 读 HTTP(S)_PROXY；目标即使是 127.0.0.1 也可能被转发给代理，
+          # 造成 transport 层失败。被测进程启动前显式清空，并显式放行回环地址。
+          $env:NO_PROXY = "127.0.0.1,localhost"
+          $env:no_proxy = "127.0.0.1,localhost"
+          foreach ($k in @("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy")) {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+          }
+
           function Reset-ToOld {
             # NSIS 覆盖安装要求主程序文件未被占用：先强杀残留进程再装，
             # 否则会因文件占用装不上（表现为 ExitCode 非 0，掩盖真正的失败原因）。
@@ -328,14 +343,18 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          # 服务在负例步骤内以 Start-Process 分离进程启动（非 Job），这里按进程名兜底清理。
-          Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-            Where-Object { $_.CommandLine -match 'http\.server 8123' } |
-            ForEach-Object {
-              Write-Host "停 PID=$($_.ProcessId)：$($_.CommandLine)"
-              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            }
-          Write-Host "本地服务清理完成"
+          if (Test-Path "fixtures/.serverpid") {
+            $id = [int](Get-Content "fixtures/.serverpid")
+            Get-Process -Id $id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Host "已停止本地服务进程 pid=$id"
+          } else {
+            Write-Host "未找到服务 pid 记录"
+          }
+          # 兜底：按命令行清理残留的 http.server
+          Get-CimInstance Win32_Process -Filter "Name like 'python%'" |
+            Where-Object { $_.CommandLine -like "*http.server*8123*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Write-Host "本地服务已停"
 
       - name: 归档证据
         if: always()
