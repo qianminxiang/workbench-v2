@@ -8,6 +8,7 @@ pub mod brief;
 pub mod date;
 pub mod entry;
 pub mod import;
+pub mod import_generic;
 pub mod intel;
 pub mod local_time;
 pub mod model;
