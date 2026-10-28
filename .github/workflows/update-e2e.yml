@@ -238,7 +238,10 @@ jobs:
 
           # 先判「链路本身是否成功」：失败时直接把 stage 与插件原始报错抛出来，
           # 否则下方 verified/installer_launched 为 null 会抛出误导性断言。
-          if ($j.ok -ne $true) {
+          # ⚠ 注意：install() 成功时插件直接 std::process::exit(0)，落盘的是「安装前」那次
+          # 写入（含 installer_launched=true，但**不含 stage/ok 字段**），所以这里只在
+          # ok 字段确实存在且为 false 时才判失败——不能把「无 ok 字段」当成失败。
+          if ($j.PSObject.Properties.Name -contains 'ok' -and $j.ok -ne $true) {
             throw "正例链路失败：stage=$($j.stage) error=$($j.error)（原始结果见 evidence/positive.json）"
           }
           if ($j.current_version -notlike "2.0.0*") { throw "current_version 不是 2.0.0：$($j.current_version)" }
