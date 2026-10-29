@@ -100,6 +100,20 @@ fn load_voice_pack(conn: &rusqlite::Connection) -> String {
     wb_core::voice::normalize_pack(raw.as_deref()).to_string()
 }
 
+/// v2.2.1 主题档位：读取 theme 键。仅认 "light"（办公态）与 "system"（跟随系统），
+/// 其余值（含未设置、旧版脏值）一律回落 **"dark"（机甲态）**。
+///
+/// 为什么默认锁暗色：机甲风只画在暗色主题里，原来的默认值是「跟随系统」——
+/// 用户实机（亮色系统环境）打开看到的是素净办公界面，机甲视觉完全没生效，
+/// 实测反馈「UI 的效果基本未实现」。默认锁暗色是对症直改，亮色档保留在设置里可切。
+fn load_theme(conn: &rusqlite::Connection) -> String {
+    match sync_client::state_get(conn, sync_client::keys::THEME).as_deref() {
+        Some("light") => "light".to_string(),
+        Some("system") => "system".to_string(),
+        _ => "dark".to_string(),
+    }
+}
+
 /// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
 fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
     let (quiet, voice_enabled) = load_prefs(conn);
@@ -108,6 +122,7 @@ fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
         "quiet_end": wb_core::local_time::fmt_hhmm(quiet.end_minute),
         "voice_enabled": voice_enabled,
         "voice_pack": load_voice_pack(conn),
+        "theme": load_theme(conn),
     })
 }
 
@@ -263,9 +278,9 @@ fn get_prefs(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String>
     Ok(prefs_json(store.conn()))
 }
 
-/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）。
+/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）+ 主题档位（v2.2.1）。
 /// 时间格式在本地就拦下，不合法不落库；voice_pack 仅认 system/pack 两值；
-/// 成功返回回读后的规范值。
+/// theme 仅认 dark/light/system 三值（未设置默认 dark）；成功返回回读后的规范值。
 #[tauri::command]
 fn set_prefs(
     paths: State<Mutex<AppPaths>>,
@@ -273,6 +288,7 @@ fn set_prefs(
     quiet_end: String,
     voice_enabled: bool,
     voice_pack: String,
+    theme: String,
 ) -> Result<serde_json::Value, String> {
     let s = wb_core::local_time::parse_hhmm(&quiet_start)
         .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
@@ -280,6 +296,9 @@ fn set_prefs(
         .ok_or_else(|| "免打扰结束时间格式不合法（应为 HH:MM）".to_string())?;
     if wb_core::voice::normalize_pack(Some(&voice_pack)) != voice_pack {
         return Err("voice_pack 仅支持 system / pack".to_string());
+    }
+    if !matches!(theme.as_str(), "dark" | "light" | "system") {
+        return Err("theme 仅支持 dark / light / system".to_string());
     }
     {
         let paths = paths.lock().unwrap();
@@ -308,8 +327,20 @@ fn set_prefs(
             &voice_pack,
         )
         .map_err(err_string)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::THEME,
+            &theme,
+        )
+        .map_err(err_string)?;
         Ok(prefs_json(store.conn()))
     }
+}
+
+/// 业务年度（v2.2.1）：前端启动时回填 YEAR，看板/明细/时间线/晨报同一年。
+#[tauri::command]
+fn fiscal_year() -> i32 {
+    wb_core::FISCAL_YEAR
 }
 
 // ─────────────────────── 桌面自动更新（v2.1 目标①） ───────────────────────
@@ -422,7 +453,9 @@ fn deliver_brief(
     version_event: Option<brief::VersionBootEvent>,
 ) -> Result<serde_json::Value, String> {
     let store = open_store(paths)?;
-    let year = today().year;
+    // 业务年度固定取 FISCAL_YEAR（v2.2.1）：此前用 today().year，
+    // 到了年度切换点会出现「界面看 2027、晨报取 2026」的错年。
+    let year = wb_core::FISCAL_YEAR;
     let items = wb_core::repo::load_items(store.conn(), year).map_err(err_string)?;
     let rs = Ruleset::default();
     let t = today();
@@ -721,7 +754,76 @@ fn dealer_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String
         "snapshot": state.dealer_snapshot,
         "last_diff": state.dealer_last_diff,
         "last_run_date": state.last_dealer_run_date,
+        // v2.2.1：快照树（安徽省 → 16 地市 → 区县），区县从公司名/地址/区域解析，
+        // 解析不到的归「待归类」。映射表在 wb_core::anhui（带单测），这里只做分组。
+        "tree": dealer_tree(&state.dealer_snapshot),
+        // 本周新增/消失按地市分组（与树同一套归属口径）
+        "added_by_city": diff_by_city(state.dealer_last_diff.as_ref().map(|d| &d.added)),
+        "removed_by_city": diff_by_city(state.dealer_last_diff.as_ref().map(|d| &d.removed)),
     }))
+}
+
+/// 网点 → 地市归属：区县名优先（公司名+区域+地址三处找），找不到再试
+/// 文本里是否直接出现 16 市市名；都不命中归「待归类」。
+fn dealer_city(node: &wb_core::intel::DealerNode) -> &'static str {
+    let hay = format!("{}{}{}", node.company_name, node.area, node.address);
+    if let Some((_, city)) = wb_core::anhui::locate_in_text(&hay) {
+        return city;
+    }
+    for c in wb_core::anhui::CITIES {
+        if hay.contains(c) || hay.contains(c.trim_end_matches('市')) {
+            return c;
+        }
+    }
+    "待归类"
+}
+
+/// 快照树：[{city, districts: [{district, dealers: [公司名…]}], total}]，
+/// 地市按 CITIES 固定顺序、区县按拼音序（BTreeMap 自然序）、待归类排最后。
+fn dealer_tree(snapshot: &[wb_core::intel::DealerNode]) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut tree: BTreeMap<&str, BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
+    for n in snapshot {
+        let city = dealer_city(n);
+        let hay = format!("{}{}{}", n.company_name, n.area, n.address);
+        let district = wb_core::anhui::locate_in_text(&hay)
+            .map(|(d, _)| d)
+            .unwrap_or("待归类");
+        tree.entry(city).or_default().entry(district).or_default().push(&n.company_name);
+    }
+    let mut cities: Vec<serde_json::Value> = Vec::new();
+    // 地市按 CITIES 固定顺序（皖北→皖中→皖南的既定排列），「待归类」固定排最后
+    let mut ordered: Vec<&str> = wb_core::anhui::CITIES.iter().copied().filter(|c| tree.contains_key(c)).collect();
+    if tree.contains_key("待归类") {
+        ordered.push("待归类");
+    }
+    for city in ordered {
+        let districts = &tree[*city];
+        let total: usize = districts.values().map(|v| v.len()).sum();
+        cities.push(serde_json::json!({
+            "city": city,
+            "total": total,
+            "districts": districts.iter().map(|(d, names)| serde_json::json!({
+                "district": d, "count": names.len(), "dealers": names,
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    serde_json::json!(cities)
+}
+
+/// 增减明细按地市分组：[{city, nodes: [{name, area}]}]
+fn diff_by_city(nodes: Option<&Vec<wb_core::intel::DealerNode>>) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut by: BTreeMap<&str, Vec<serde_json::Value>> = BTreeMap::new();
+    for n in nodes.into_iter().flatten() {
+        by.entry(dealer_city(n)).or_default().push(serde_json::json!({
+            "name": n.company_name, "area": n.area,
+        }));
+    }
+    by.into_iter()
+        .map(|(city, nodes)| serde_json::json!({ "city": city, "nodes": nodes }))
+        .collect::<Vec<_>>()
+        .into()
 }
 
 #[tauri::command]
@@ -857,6 +959,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        // v2.2.1 设置页导入：原生文件选择器（此前手填路径，空路径点击静默无反应）
+        .plugin(tauri_plugin_dialog::init())
         // tauri-plugin-updater 2.14 起移除了 init()，改用 Builder；
         // pubkey/endpoints 从 tauri.conf.json plugins.updater 读取。
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -870,6 +974,7 @@ pub fn run() {
             add_item,
             get_prefs,
             set_prefs,
+            fiscal_year,
             check_update,
             install_update,
             get_pending_brief,

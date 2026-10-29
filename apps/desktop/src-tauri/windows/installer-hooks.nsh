@@ -2,12 +2,12 @@
 ; 综合工作台 · v2.2.1 存量迁移钩子（产品名「个人工作台」→「综合工作台」）
 ;
 ; 为什么必须有这个文件：
-;   tauri NSIS 模板把产品名在编译期焊进三条键路径（installer.nsi L67/L69/L87）：
+;   tauri NSIS 模板把产品名在编译期焊进三条键路径（installer.nsi L58/L60/L78）：
 ;     UNINSTKEY       = Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}
 ;     MANUPRODUCTKEY  = Software\${MANUFACTURER}\${PRODUCTNAME}
 ;     PLACEHOLDER_INSTALL_DIR = placeholder\${PRODUCTNAME}
-;   且自动更新走的 `/UPDATE` 模式**永不卸载旧版**（L336-339：$UpdateMode=1 跳过卸载），
-;   升级模式**不创建快捷方式**（模板中 $UpdateMode=1 提前 Return）。
+;   且自动更新走的 `/UPDATE` 模式**永不卸载旧版**（L295-296：$UpdateMode=1 跳过卸载），
+;   升级模式**不创建快捷方式**（L916-918 / L945-946：$UpdateMode=1 提前 Return）。
 ;   产品名一改，老用户升级的默认结果就是：两套卸载项 + 两个安装目录 + 旧桌面图标残留指向旧目录。
 ;   旧目录里同样有 wb-desktop.exe 与 uninstall.exe，而 identifier（com.anhui.pr.workbench）
 ;   保持不变 → 两份安装共用同一把单实例锁，表现为「点图标没反应」的随机假故障。
@@ -23,71 +23,66 @@
 ;   v2.2.0 bundle.publisher = 安徽省小团队
 ;   → MANUPRODUCTKEY 随之各异。旧产品名只能硬编码在这里：新版编译期的
 ;     ${PRODUCTNAME} 已经是「综合工作台」，无法再用来指代旧名。
-;
-; 【2026-10-29 修复记录 · 阻断 CI 的编译错误】
-;   原写法把整条 "HKLM\Software\...\Uninstall" 当成 EnumRegKey / ReadRegStr 的
-;   rootkey 一个参数，makensis 直接中止：
-;     EnumRegKey expects 4 parameters, got 3.
-;   NSIS 注册表指令的 rootkey 只能是**字面枚举常量**（实测：传变量同样报
-;   "Usage: ReadRegStr ..." 并中止），子键必须独立成一个参数。故：
-;     · 枚举改成编译期宏 WB_PurgeOldMsiUnder，由调用点传入根键常量与唯一后缀；
-;     · 所有 ReadRegStr 的 rootkey 收回成字面常量；
-;     · 32/64 位视图用 HKLM32/HKLM64/HKCU32/HKCU64 显式覆盖，
-;       取代手写 WOW6432Node（后者在 32 位视图下会二次嵌套）。
 ; ─────────────────────────────────────────────────────────────────────────────
 
 !define WB_OLD_PRODUCTNAME "个人工作台"
 !define WB_OLD_MANU_V210 "安徽大区小团队"
 !define WB_OLD_MANU_V220 "安徽省小团队"
-!define WB_UNINST_SUBKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
 ; ── 旧 MSI：枚举 Uninstall 子键，按下标名（即 ProductCode GUID）调 msiexec /x ──
-; 为什么要单独处理：模板 PageReinstall 的 FindWixInstall（installer.nsi L199-221）靠
+; 为什么要单独处理：模板 PageReinstall 的 FindWixInstall（L170-186）靠
 ; DisplayName==${PRODUCTNAME} 且 Publisher==${MANUFACTURER} 匹配旧 MSI；
 ; 改名 + 改发行者后这两个条件对旧 MSI 全部不成立，那条路径已结构性断裂。
 ; 不在这里清掉，MSI 老用户升级后就是 Program Files 与 LocalAppData 两份并存。
 ;
-; 为什么是宏而不是 Function：EnumRegKey / ReadRegStr 的 rootkey 必须是编译期字面量，
-; 无法在运行时用变量传根键（传变量会直接编译失败）。宏在调用点展开，根键由调用点
-; 以常量传入。后缀 SUFFIX 保证三处展开的标签不重名（否则 label already declared）。
-!macro WB_PurgeOldMsiUnder ROOT SUFFIX
+; 为什么写成「宏 + 编译期根键」而不是 `Function + $R8 传根键`（v2.2.1 修订，实测支撑）：
+;   NSIS 的 EnumRegKey / ReadRegStr 的 rootkey 参数**只接受字面根键**，给变量不认。
+;   旧写法 `EnumRegKey $1 "$R8" $2` 直接被 makensis 拒绝：
+;     "EnumRegKey expects 4 parameters, got 3." —— 根键位缺失，而且就算补成 4 个参数，
+;     把 $R8 放在根键位也不是合法根键。`ReadRegStr $0 "$R8\$1" ...` 同理报
+;     "Usage: ReadRegStr $(user_var: output) rootkey subkey entry"。
+;   ⇒ 根键必须编译期确定，只能由一个宏在每个根键上各展开一次。
+;   标签用 ${__LINE__} 派生唯一名，避免三次宏展开撞名（"label already declared"）。
+;   副作用：不再需要调用（Call）跳转，宏内直接用 $R9/$R0..$R6，与模板共享变量空间。
+;   WOW6432Node 只对 HKLM 有意义（64 位视图下才是独立节点），HKCU 不枚举。
+!macro WB_PurgeOldMsiAt ROOTKEY
+  !define WB_MSI_UID ${__LINE__}
   StrCpy $2 0
-  wb_msi_loop_${SUFFIX}:
-    EnumRegKey $1 ${ROOT} "${WB_UNINST_SUBKEY}" $2
-    StrCmp $1 "" wb_msi_done_${SUFFIX}
+  wb_msi_loop_${WB_MSI_UID}:
+    EnumRegKey $1 "${ROOTKEY}" "Software\Microsoft\Windows\CurrentVersion\Uninstall" $2
+    StrCmp $1 "" wb_msi_done_${WB_MSI_UID}
     IntOp $2 $2 + 1
-    ReadRegStr $R0 ${ROOT} "${WB_UNINST_SUBKEY}\$1" "DisplayName"
-    StrCmp $R0 "${WB_OLD_PRODUCTNAME}" 0 wb_msi_loop_${SUFFIX}
-    ReadRegStr $R3 ${ROOT} "${WB_UNINST_SUBKEY}\$1" "Publisher"
-    StrCmp $R3 "${WB_OLD_MANU_V220}" wb_msi_hit_${SUFFIX}
-    StrCmp $R3 "${WB_OLD_MANU_V210}" wb_msi_hit_${SUFFIX}
-    Goto wb_msi_loop_${SUFFIX}
-  wb_msi_hit_${SUFFIX}:
-    ReadRegStr $R4 ${ROOT} "${WB_UNINST_SUBKEY}\$1" "UninstallString"
+    ReadRegStr $R0 "${ROOTKEY}" "Software\Microsoft\Windows\CurrentVersion\Uninstall\$1" "DisplayName"
+    StrCmp $R0 "${WB_OLD_PRODUCTNAME}" 0 wb_msi_loop_${WB_MSI_UID}
+    ReadRegStr $R3 "${ROOTKEY}" "Software\Microsoft\Windows\CurrentVersion\Uninstall\$1" "Publisher"
+    StrCmp $R3 "${WB_OLD_MANU_V220}" wb_msi_hit_${WB_MSI_UID}
+    StrCmp $R3 "${WB_OLD_MANU_V210}" wb_msi_hit_${WB_MSI_UID}
+    Goto wb_msi_loop_${WB_MSI_UID}
+  wb_msi_hit_${WB_MSI_UID}:
+    ReadRegStr $R4 "${ROOTKEY}" "Software\Microsoft\Windows\CurrentVersion\Uninstall\$1" "UninstallString"
     ${StrLoc} $R5 $R4 "msiexec" ">"
-    StrCmp $R5 "" wb_msi_loop_${SUFFIX}
+    StrCmp $R5 "" wb_msi_loop_${WB_MSI_UID}
     DetailPrint "清理旧 MSI 安装：键=$1"
     ExecWait '"$SYSDIR\msiexec.exe" /x $1 /qn /norestart' $R6
     ; 1603/1925 之类多因权限不足：不中断安装，但要留痕，不假装清干净了
     DetailPrint "msiexec /x 退出码=$R6（0=成功，3010=需重启，1603/1925=权限不足）"
-    Goto wb_msi_loop_${SUFFIX}
-  wb_msi_done_${SUFFIX}:
+    Goto wb_msi_loop_${WB_MSI_UID}
+  wb_msi_done_${WB_MSI_UID}:
+  !undef WB_MSI_UID
 !macroend
 
 !macro WB_PurgeOldMsi
-  ; 四个视图各自枚举一遍：旧 MSI 可能装在 64 位机（HKLM64）或按用户装（HKCU），
-  ; 也可能落在 32 位视图里。显式指定视图，不依赖 SetRegView 的当前值。
-  !insertmacro WB_PurgeOldMsiUnder HKLM64 64
-  !insertmacro WB_PurgeOldMsiUnder HKLM32 32
-  !insertmacro WB_PurgeOldMsiUnder HKCU64 u64
-  !insertmacro WB_PurgeOldMsiUnder HKCU32 u32
+  ; 64 位视图下 HKLM 原生键；WOW6432Node 是 32 位视图的镜像节点，两者要分开枚举
+  !insertmacro WB_PurgeOldMsiAt HKLM
+  !insertmacro WB_PurgeOldMsiAt HKLM32
+  !insertmacro WB_PurgeOldMsiAt HKCU
 !macroend
 
 ; ── 旧 NSIS：卸载项（HKCU/HKLM）+ 制造者键（两个发行者）+ 自启动值 ──
 !macro WB_PurgeOldRegistration
-  DeleteRegKey HKCU "${WB_UNINST_SUBKEY}\${WB_OLD_PRODUCTNAME}"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${WB_OLD_PRODUCTNAME}"
   ClearErrors
-  DeleteRegKey HKLM "${WB_UNINST_SUBKEY}\${WB_OLD_PRODUCTNAME}"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${WB_OLD_PRODUCTNAME}"
   ClearErrors
   DeleteRegKey HKCU "Software\${WB_OLD_MANU_V220}\${WB_OLD_PRODUCTNAME}"
   ClearErrors
@@ -110,9 +105,13 @@
 !macroend
 
 ; ── 旧 NSIS：安装目录。先确认旧主程序已退出，否则文件占用会让删除半途失败。
-;    用模板同款 CheckIfAppIsRunning（按 exe 名 wb-desktop.exe 查杀：静默/被动自动杀、
-;    交互模式给用户确认），与模板 Section Install 同一手段 —— 旧名与新名的
-;    MAINBINARYNAME 相同，故单实例锁也一并解除。
+;    用模板同款 CheckIfAppIsRunning（静默/被动自动杀、交互模式给用户确认），与模板
+;    Section Install 里同一手段 —— 旧名与新名的 MAINBINARYNAME 相同，故单实例锁也一并解除。
+;    注意第一个参数必须是**完整可执行文件路径**：模板宏签名是
+;    `!macro CheckIfAppIsRunning executablePath productName`，内部把它交给
+;    RestartManager_RegisterFile 去注册一个具体文件；传裸 exe 名注册不到任何进程，
+;    查杀会静默失效、后面 RMDir /r 就被占用卡住。旧版装在
+;    $LOCALAPPDATA\个人工作台，故这里显式给旧目录下的全路径。
 !macro WB_PurgeOldInstallDir
   !insertmacro CheckIfAppIsRunning "$LOCALAPPDATA\${WB_OLD_PRODUCTNAME}\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   ${If} ${FileExists} "$LOCALAPPDATA\${WB_OLD_PRODUCTNAME}\${MAINBINARYNAME}.exe"
@@ -127,7 +126,7 @@
 
 !macro NSIS_HOOK_PREINSTALL
   ; 旧 NSIS 安装判定：注册项还在、或旧目录还在（用户可能手工删过一侧）
-  ReadRegStr $R9 HKCU "${WB_UNINST_SUBKEY}\${WB_OLD_PRODUCTNAME}" "UninstallString"
+  ReadRegStr $R9 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${WB_OLD_PRODUCTNAME}" "UninstallString"
   ${If} $R9 != ""
   ${OrIf} ${FileExists} "$LOCALAPPDATA\${WB_OLD_PRODUCTNAME}\${MAINBINARYNAME}.exe"
     DetailPrint "检测到旧产品名「${WB_OLD_PRODUCTNAME}」安装，执行存量迁移"
@@ -142,7 +141,7 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; /UPDATE 分支下模板不创建快捷方式。
+  ; /UPDATE 分支下模板不创建快捷方式（L916-918 / L945-946）。
   ; 旧名图标已在 PREINSTALL 删除，这里不补建，自动更新用户升级后就没有桌面图标 ——
   ; 这是改名最容易漏掉的一处连带损失。按当前产品名重建，指向新安装目录。
   ${If} $UpdateMode = 1

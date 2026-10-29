@@ -4,6 +4,7 @@
 //! 本 crate 承载业务规则与系统层能力（导入、存储、备份、迁移、合并、更新校验），
 //! 以纯函数与明确事务边界实现，可脱离 GUI 单测——这也是「实现自检」能给出实测数据的唯一路径。
 
+pub mod anhui;
 pub mod brief;
 pub mod date;
 pub mod entry;
@@ -19,6 +20,11 @@ pub mod sync;
 pub mod sync_client;
 pub mod update;
 pub mod voice;
+
+/// 业务年度（工作台口径的「今年」）。v2.2.1 起固定为 **2027**：
+/// 看板 / 明细 / 年度时间线 / 晨报的筛选年度统一取这一处，前端 app.js 的 `YEAR`
+/// 由后端 `fiscal_year` 命令回填，两端不再各写一份常量而相互漂移。
+pub const FISCAL_YEAR: i32 = 2027;
 
 pub use date::{normalize, normalize_with_base, normalize_pair, CivilDate, NormalizedDate, Precision, RelativeBase, Role};
 pub use entry::{quick_add, QuickAdd, QuickAddResult};

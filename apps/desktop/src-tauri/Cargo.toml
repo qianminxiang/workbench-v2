@@ -28,6 +28,8 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 # v2.1 防多开：单实例锁，二次启动置前已有主窗口（任务栏最小化态/托盘态/快速双击竞态）
 tauri-plugin-single-instance = "2"
+# v2.2.1 设置页导入：接原生文件选择器（用户手填路径点导入「无法拉起」）
+tauri-plugin-dialog = "2"
 # v2.1 B7①：today()/now_minutes() 取本机时区偏移（换算本身在 wb-core::local_time）
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }

@@ -381,16 +381,84 @@ fn find_record_arrays(v: &serde_json::Value, depth: u8) -> Vec<serde_json::Value
     }
 }
 
+/// 清洗入库文本：去 HTML 标签 + 解码常见实体 + 折叠空白。
+///
+/// 为什么必须在**入库前**做：部分源站（Epoint 系）把搜索高亮原样塞进 title 字段，
+/// 形如 `<em>无</em><em>人</em><em>机</em>`——逐字高亮，标签夹在字与字之间。
+/// 前端 `esc()` 只转义尖括号、不会剥离标签，于是界面字面显示 `<em>无</em>…`，
+/// 用户看到的是调试残渣而不是项目名。清洗放在领域层（而不是前端渲染时），
+/// 保证 JSON 库存本身干净、导出/搜索/去重都基于同一份文本。
+pub fn clean_text(s: &str) -> String {
+    // ① 去标签（含未闭合的残片），标签内内容保留
+    let mut buf = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => buf.push(c),
+            _ => {}
+        }
+    }
+    // ② 实体解码（先做 &amp; 之外的具名实体，再统一处理数字实体）
+    let mut out = buf
+        .replace("&nbsp;", " ")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    // ③ 数字实体（&#xxx; / &#xhh;），只处理可见字符，越界值原样保留
+    let chars: Vec<char> = out.chars().collect();
+    let mut decoded = String::with_capacity(chars.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '&' && i + 1 < chars.len() && chars[i + 1] == '#' {
+            let rest: String = chars[i..].iter().take(12).collect();
+            if let Some(semi) = rest.find(';') {
+                let body = &rest[2..semi];
+                let v = if let Some(hex) = body.strip_prefix('x').or_else(|| body.strip_prefix('X')) {
+                    u32::from_str_radix(hex, 16).ok()
+                } else {
+                    body.parse::<u32>().ok()
+                };
+                if let Some(cp) = v.and_then(char::from_u32) {
+                    decoded.push(cp);
+                    i += semi + 1;
+                    continue;
+                }
+            }
+        }
+        decoded.push(chars[i]);
+        i += 1;
+    }
+    out = decoded;
+    // ④ 折叠空白（换行/制表/连续空格 → 单空格）
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// 解析单条记录为 IntelItem（六字段抽取，缺失标 incomplete）
 fn record_to_item(spec: &SiteSpec, rec: &serde_json::Value, today: &str) -> IntelItem {
-    let title = rec
-        .get("title").or_else(|| rec.get("projectName")).and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
-    let org = rec
-        .get("purchaseName").or_else(|| rec.get("purchaseunitname")).or_else(|| rec.get("jiaoyimethod"))
-        .and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
-    let area = rec
-        .get("districtName").or_else(|| rec.get("area")).or_else(|| rec.get("xiaqucode"))
-        .and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+    let title = clean_text(
+        rec.get("title").or_else(|| rec.get("projectName")).and_then(|t| t.as_str()).unwrap_or("").trim(),
+    );
+    let org = clean_text(
+        rec.get("purchaseName")
+            .or_else(|| rec.get("purchaseunitname"))
+            .or_else(|| rec.get("jiaoyimethod"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim(),
+    );
+    let area = clean_text(
+        rec.get("districtName")
+            .or_else(|| rec.get("area"))
+            .or_else(|| rec.get("xiaqucode"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim(),
+    );
     let date = normalize_date_value(rec.get("webdate").or_else(|| rec.get("publishDate")).or_else(|| rec.get("infodatepx")));
     let amount = rec
         .get("budgetPrice").or_else(|| rec.get("monitorAmount")).or_else(|| rec.get("totalContractAmount"))
@@ -734,10 +802,16 @@ pub struct SiteStateRow {
 impl IntelState {
     pub fn load(dir: &std::path::Path) -> IntelState {
         let p = dir.join("intel_state.json");
-        std::fs::read_to_string(&p)
+        let mut st: IntelState = std::fs::read_to_string(&p)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // 存量清洗迁移：v2.2.1 之前入库的条目可能带着源站高亮标签
+        // （形如 `<em>无</em><em>人</em><em>机</em>`），加载时就地洗一遍并回写。
+        if clean_stored(&mut st) {
+            let _ = st.save(dir);
+        }
+        st
     }
 
     pub fn save(&self, dir: &std::path::Path) {
@@ -746,6 +820,30 @@ impl IntelState {
             let _ = std::fs::write(p, s);
         }
     }
+}
+
+/// 存量条目清洗：把已入库条目的 title/org/area 过一遍 `clean_text`。
+/// 返回是否发生了改写（false = 存量已干净，不触发回写）。
+pub fn clean_stored(state: &mut IntelState) -> bool {
+    let mut changed = false;
+    for it in state.items.values_mut() {
+        let t = clean_text(&it.title);
+        let o = clean_text(&it.org);
+        let a = clean_text(&it.area);
+        if t != it.title {
+            it.title = t;
+            changed = true;
+        }
+        if o != it.org {
+            it.org = o;
+            changed = true;
+        }
+        if a != it.area {
+            it.area = a;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// 去重合并一批新条目（AC-2-4：站点+URL 规范化幂等；AC-2-7：人工改判保留）
@@ -939,6 +1037,47 @@ pub fn diff_dealers(prev: &[DealerNode], next: &[DealerNode]) -> DealerDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_text_strips_highlight_tags_and_decodes_entities() {
+        // 源站搜索高亮：标签夹在字与字之间，去标签后应还原成项目名
+        assert_eq!(clean_text("<em>无</em><em>人</em><em>机</em>"), "无人机");
+        assert_eq!(clean_text("A &amp; B &lt;x&gt;"), "A & B <x>");
+        assert_eq!(clean_text("&#22909;&#x4EBA;"), "好人");
+        assert_eq!(clean_text("  多  空格\n换行 "), "多 空格 换行");
+        // 纯文本不应被改动（幂等）
+        assert_eq!(clean_text("普通项目名"), "普通项目名");
+        assert_eq!(clean_text("普通项目名"), clean_text("普通项目名"));
+    }
+
+    #[test]
+    fn clean_stored_rewrites_persisted_highlight_titles_once() {
+        let mut st = IntelState::default();
+        st.items.insert(
+            "k".into(),
+            IntelItem {
+                key: "k".into(),
+                site_id: "s".into(),
+                site_name: "n".into(),
+                title: "<em>无</em><em>人</em><em>机</em>采购公告".into(),
+                org: "<b>某县农业农村局</b>".into(),
+                area: "六安市".into(),
+                date: "2026-10-20".into(),
+                amount: None,
+                url: "https://x.example/a.html".into(),
+                relevance: Relevance::Core,
+                reasons: vec![],
+                incomplete: false,
+                manual_verdict: false,
+                first_seen: "2026-10-20".into(),
+            },
+        );
+        assert!(clean_stored(&mut st));
+        let it = &st.items["k"];
+        assert_eq!(it.title, "无人机采购公告");
+        assert_eq!(it.org, "某县农业农村局");
+        assert!(!clean_stored(&mut st)); // 幂等：已干净就不再改写、不触发回写
+    }
 
     struct MockHttp {
         responses: BTreeMap<String, Result<String, HttpErr>>,

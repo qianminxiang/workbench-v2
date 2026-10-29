@@ -6,7 +6,38 @@
 "use strict";
 
 const invoke = (cmd, payload) => window.__TAURI__.core.invoke(cmd, payload);
-const YEAR = 2026;
+// 业务年度（v2.2.1）：默认 2027；启动时由后端 fiscal_year 命令回填，两端同源。
+let YEAR = 2027;
+
+// 当前生效的主题档位（dark=机甲态 / light=办公态 / system=跟随系统）
+let currentTheme = "dark";
+
+/** 主题档位落到 <html data-theme>。默认锁机甲态（v2.2.1 对症项：
+ *  原默认「跟随系统」，用户在亮色系统上打开看到的是素净办公界面，机甲视觉完全没生效）。 */
+function applyTheme(theme) {
+  const t = ["dark", "light", "system"].includes(theme) ? theme : "dark";
+  const root = document.documentElement;
+  if (t === "system") root.removeAttribute("data-theme");
+  else root.dataset.theme = t;
+  currentTheme = t;
+  return t;
+}
+
+/** 轻量浮层提示：不打断流程的即时反馈（如「该通知已处理」）。 */
+function toast(text, ms) {
+  const dur = ms || 2600;
+  let el = document.getElementById("wb-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "wb-toast";
+    el.className = "wb-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.hidden = true; }, dur);
+}
 
 // ── 状态 ──
 const state = {
@@ -137,12 +168,14 @@ function viewIntel() {
       ? '<span class="mini">已人工改判</span>'
       : `<button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="core">✓ 相关</button>
          <button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="excluded">✗ 无关</button>`;
-    return `<div class="card${it.relevance === "core" ? " card--selected" : ""}">
-      <div class="card-title">${it.incomplete ? "⚠ " : ""}${esc(it.title)}</div>
-      <div class="mini">${esc(it.org || "单位缺失")} · ${esc(it.area || "地区缺失")} · ${esc(it.date || "日期缺失")}${it.amount ? " · " + esc(it.amount) : ""}</div>
-      <div class="mini">来源：${esc(it.site_name)} · <a href="${esc(it.url)}" target="_blank">原文链接</a></div>
-      ${it.reasons?.length ? `<div class="mini">命中：${esc(it.reasons.join("，"))}</div>` : ""}
-      <div>${relBadge(it.relevance)} ${verdictBtns}</div>
+    return `<div class="card card--intel${it.relevance === "core" ? " card--selected" : ""}">
+      <div class="body">
+        <div class="card-title">${it.incomplete ? "⚠ " : ""}${esc(it.title)}</div>
+        <div class="mini">${esc(it.org || "单位缺失")} · ${esc(it.area || "地区缺失")} · ${esc(it.date || "日期缺失")}${it.amount ? " · " + esc(it.amount) : ""}</div>
+        <div class="mini">来源：${esc(it.site_name)} · <a href="${esc(it.url)}" target="_blank">原文链接</a></div>
+        ${it.reasons?.length ? `<div class="mini">命中：${esc(it.reasons.join("，"))}</div>` : ""}
+        <div class="intel-actions">${relBadge(it.relevance)} ${verdictBtns}</div>
+      </div>
     </div>`;
   }).join("");
   return `
@@ -151,7 +184,7 @@ function viewIntel() {
       <button class="btn" id="intel-refresh">立即刷新</button></div>
   </div>
   <div class="panel">
-    <div><b>源站状态</b>（${reg.length} 源；芜湖/池州为自有 API，适配器待第二批逐站验证）</div>
+    <div><b>源站状态</b>（${reg.length} 源）</div>
     <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>依据</th></tr>${siteRows}</table>
   </div>
   <div class="panel">
@@ -170,18 +203,33 @@ function viewDealer() {
     return `<div class="panel"><div class="empty">网点数据加载失败。<br><button class="btn" id="dealer-refresh">重试</button></div></div>`;
   }
   const diff = d.last_diff;
+  const byCityList = (rows, label) => (rows || []).map((g) => `
+      <div class="mini"><b>${esc(g.city)}（${(g.nodes || []).length} 家）：</b>
+        <ul class="tree-dealers">${(g.nodes || []).map((n) => `<li>${esc(n.name)}${n.area ? "（" + esc(n.area) + "）" : ""}</li>`).join("")}</ul></div>`).join("");
   let diffHtml = "";
   if (!diff) {
     diffHtml = '<div class="empty">尚未执行周比对（每周自动一次，也可手动刷新建首周基线）。</div>';
   } else if (diff.baseline_week) {
     diffHtml = `<div class="empty">首周基线已建立：共 ${diff.total} 家网点。下周起开始增减比对。</div>`;
   } else {
-    const addList = (diff.added || []).map((n) => `<li>${esc(n.company_name)}（${esc(n.area)}）</li>`).join("");
-    const rmList = (diff.removed || []).map((n) => `<li>${esc(n.company_name)}（${esc(n.area)}）</li>`).join("");
     diffHtml = `<div>本周比对：新增 ${(diff.added || []).length} 家 / 消失 ${(diff.removed || []).length} 家 · 当前共 ${diff.total} 家</div>
-      ${addList ? `<div class="mini"><b>新增：</b><ul>${addList}</ul></div>` : ""}
-      ${rmList ? `<div class="mini"><b>消失：</b><ul>${rmList}</ul></div>` : ""}`;
+      ${byCityList(d.added_by_city, "新增")}
+      ${byCityList(d.removed_by_city, "消失")}`;
   }
+  // 三级树：安徽省 → 16 地市 → 区县（v2.2.1 改版：~190 家平铺观感是文字墙）
+  const tree = d.tree || [];
+  const total = (d.snapshot || []).length;
+  const treeHtml = tree.length
+    ? tree.map((c, ci) => `
+      <details class="tree-city"${ci === 0 ? " open" : ""}>
+        <summary>${esc(c.city)}<span class="tree-badge">${c.total}</span></summary>
+        ${(c.districts || []).map((dist) => `
+        <details class="tree-district">
+          <summary>${esc(dist.district)}<span class="tree-badge">${dist.count}</span></summary>
+          <ul class="tree-dealers">${(dist.dealers || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
+        </details>`).join("")}
+      </details>`).join("")
+    : '<div class="empty">暂无网点数据</div>';
   return `
   <div class="panel">
     <div><b>渠道网点（极飞·安徽）</b> · 上次比对：${esc(d.last_run_date || "从未")}
@@ -189,8 +237,8 @@ function viewDealer() {
     ${diffHtml}
   </div>
   <div class="panel">
-    <div><b>当前快照</b>（${(d.snapshot || []).length} 家）</div>
-    <div class="mini">${(d.snapshot || []).slice(0, 50).map((n) => esc(n.company_name)).join(" · ") || "空"}</div>
+    <div><b>当前快照</b>（安徽省 · ${total} 家，按地市/区县归组）</div>
+    ${treeHtml}
   </div>`;
 }
 
@@ -207,8 +255,7 @@ function viewBrief() {
     </div></div>`).join("");
   return `
     <div class="panel panel--chamfer" style="--panel-strip: var(--mech-ok); padding:16px">
-      <b>晨报 · <span class="mono">${esc(b.date)}</span><span class="radar" title="规则引擎扫描中" aria-hidden="true"></span></b>
-      <div class="mini text-2" style="margin:2px 0 12px">规则引擎纯函数求值 · 各端本地 9:00 触发（架构 §6.2-D）</div>
+      <b>晨报 · <span class="mono">${esc(b.date)}</span><span class="radar" title="扫描中" aria-hidden="true"></span></b>
       <div><span class="text-2">① 当日到期 / 应启动</span>${list(b.due_today) || '<div class="mini">无</div>'}</div>
       <hr class="divider">
       <div><span class="text-2">② 临期</span>${list(b.due_soon, "amber") || '<div class="mini">无</div>'}</div>
@@ -379,26 +426,29 @@ function viewSettings() {
   return `<div class="panel panel--chamfer" style="padding:16px; max-width:720px">
     <b>数据</b>
     <div class="settings-row">
-      <span>导入存量 Excel（写前自动备份，失败即阻断写入）</span>
+      <span>导入存量 Excel</span>
       <span><input type="text" id="imp-path" placeholder="…\\work_progress.xlsx" style="width:280px">
+      <button class="btn btn--ghost" id="imp-pick">选择文件…</button>
       <button class="btn" id="imp-go">导入</button></span>
     </div>
     <div class="settings-row">
-      <span>立即全量备份（L2：db + 每表 JSON，轮转前 integrity_check）</span>
+      <span>立即全量备份</span>
       <button class="btn btn--ghost" id="bk-go">立即备份</button>
     </div>
     <hr class="divider">
     <b>外观</b>
     <div class="settings-row">
-      <span>主题（档位 B：亮=办公态 / 暗=机甲态，默认跟随系统）</span>
+      <span>主题</span>
       <select id="theme">
-        <option value="">跟随系统</option><option value="light">锁定亮色</option><option value="dark">锁定暗色</option>
+        <option value="dark"${(state.prefs?.theme || "dark") === "dark" ? " selected" : ""}>机甲态（默认）</option>
+        <option value="light"${(state.prefs?.theme || "dark") === "light" ? " selected" : ""}>办公态</option>
+        <option value="system"${(state.prefs?.theme || "dark") === "system" ? " selected" : ""}>跟随系统</option>
       </select>
     </div>
     <hr class="divider">
-    <b>提醒送达（B7：系统通知 + 应用内；托盘常驻）</b>
+    <b>提醒送达</b>
     <div class="settings-row">
-      <span>免打扰时段（期间只通知不播报，晨报照常生成不丢）</span>
+      <span>免打扰时段</span>
       <span style="display:flex;gap:8px;align-items:center">
         <input type="time" id="quiet-start">
         –
@@ -406,21 +456,17 @@ function viewSettings() {
       </span>
     </div>
     <div class="settings-row">
-      <span class="mini">免打扰窗口按本地时钟生效（v2.1 修复 UTC 偏移：晨报本地 9:00 准点）</span>
       <span class="mini" id="quiet-saved"></span>
     </div>
     <hr class="divider">
-    <b>语音播报（F10 · v2.1 上线）</b>
+    <b>语音播报</b>
     <div class="settings-row">
-      <span>总开关在主界面右上角，默认开启；关闭后只弹通知不出声。</span>
-    </div>
-    <div class="settings-row">
-      <span class="mini">播报走系统中文语音（Windows 自带），读晨报要点不逐字念全部；不做真人声纹克隆。</span>
+      <span class="mini">总开关在主界面右上角</span>
     </div>
     <hr class="divider">
-    <b>更新（自动检查 + 确认后安装，Ed25519 验签）</b>
+    <b>更新</b>
     <div class="settings-row">
-      <span>检查更新（启动时已静默检查过一次，这里手动复查）</span>
+      <span>检查更新</span>
       <span style="display:flex;gap:8px;align-items:center">
         <button class="btn btn--ghost" id="upd-go">检查更新</button>
         <span class="mini" id="upd-status"></span>
@@ -621,14 +667,47 @@ function bindView() {
   }
 
   if (state.view === "settings") {
-    $("#imp-go")?.addEventListener("click", async () => {
-      const path = $("#imp-path").value.trim();
-      if (!path) return;
+    const doImport = async (rawPath) => {
+      const path = (rawPath || "").trim();
+      if (!path) { alert("请先选择要导入的 Excel 文件（.xlsx）。"); return; }
       try {
         const r = await invoke("import_excel", { xlsxPath: path, year: YEAR });
         alert(`导入完成：${r.persist.items_written} 项 / ${r.persist.kpis_written} KPI 落库，回读一致 ${r.persist.items_readback}。`);
         reload();
-      } catch (e) { alert("导入失败：" + e); }
+      } catch (e) {
+        alert(`导入失败：${e}\n\n请确认路径存在、文件是 .xlsx 工作表，且表头能被识别。`);
+      }
+    };
+    // v2.2.1：原生文件选择器。此前只有手填路径文本框，路径为空点击直接 return，
+    // 用户实机反馈「无法拉起」——静默无反应比报错更让人无从下手。
+    const pickExcel = async () => {
+      try {
+        const dlg = window.__TAURI__?.dialog;
+        if (!dlg || typeof dlg.open !== "function") {
+          alert("当前环境不支持原生文件选择器，请手动填写文件路径。");
+          return null;
+        }
+        const picked = await dlg.open({
+          multiple: false, directory: false, title: "选择要导入的 Excel 工作表",
+          filters: [{ name: "Excel 工作表", extensions: ["xlsx", "xlsm"] }],
+        });
+        if (typeof picked === "string" && picked) return picked;
+        if (Array.isArray(picked) && picked.length) return picked[0];
+        return null; // 用户取消：无任何副作用
+      } catch (e) { alert("打开文件选择器失败：" + e); return null; }
+    };
+    const pickAndImport = async () => {
+      const p = await pickExcel();
+      if (!p) return;
+      const input = $("#imp-path");
+      if (input) input.value = p;
+      await doImport(p);
+    };
+    $("#imp-pick")?.addEventListener("click", pickAndImport);
+    $("#imp-go")?.addEventListener("click", async () => {
+      const typed = ($("#imp-path")?.value || "").trim();
+      if (typed) { await doImport(typed); return; }
+      await pickAndImport(); // 没填路径也不再静默：直接拉起选择器
     });
     $("#bk-go")?.addEventListener("click", async () => {
       try {
@@ -671,6 +750,7 @@ function bindView() {
           quietStart: qs, quietEnd: qe,
           voiceEnabled: $("#f10-master").checked,
           voicePack: cur.voice_pack === "pack" ? "pack" : "system",
+          theme: currentTheme,
         });
         $("#quiet-saved").textContent = `已保存：${state.prefs.quiet_start}–${state.prefs.quiet_end}`;
       } catch (e) {
@@ -680,8 +760,18 @@ function bindView() {
     $("#quiet-start")?.addEventListener("change", saveQuiet);
     $("#quiet-end")?.addEventListener("change", saveQuiet);
 
-    $("#theme")?.addEventListener("change", (e) => {
-      document.documentElement.dataset.theme = e.target.value;
+    $("#theme")?.addEventListener("change", async (e) => {
+      const theme = applyTheme(e.target.value);
+      try {
+        const cur = state.prefs || await invoke("get_prefs");
+        state.prefs = await invoke("set_prefs", {
+          quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
+          voiceEnabled: cur.voice_enabled,
+          voicePack: cur.voice_pack || "system",
+          theme,
+          theme: currentTheme,
+        });
+      } catch (err) { toast("主题未保存（下次启动可能回退）：" + err); }
     });
 
   }
@@ -799,6 +889,9 @@ $("#filter-clear").addEventListener("click", () => {
 
 // B7 补推：启动时检查上次未送达的晨报
 (async function boot() {
+  // v2.2.1：业务年度以后端 wb_core::FISCAL_YEAR 为准（默认 2027），
+  // 看板 / 明细 / 年度时间线 / 晨报用同一个年度，避免前后端各写一份。
+  try { YEAR = await invoke("fiscal_year"); } catch (_) { /* 后端不可用则沿用默认值 */ }
   try {
     const pending = await invoke("get_pending_brief");
     // v2.2 FR-5：补推不再用横幅，入字幕队列（AC-5-1 数据来源沿用）
@@ -815,6 +908,9 @@ $("#filter-clear").addEventListener("click", () => {
   // F10 总开关 + v2.2 语音包开关初始化：从偏好库读真实状态，不再写死 disabled
   try {
     state.prefs = await invoke("get_prefs");
+    // v2.2.1：主题回填。index.html 已预置 data-theme="dark"（打开即机甲态，
+    // 兼顾避免亮色闪屏），这里按用户已存偏好纠正（办公态/跟随系统）。
+    applyTheme(state.prefs?.theme || "dark");
     const sw = $("#f10-master");
     sw.disabled = false;
     sw.checked = !!state.prefs.voice_enabled;
@@ -828,6 +924,7 @@ $("#filter-clear").addEventListener("click", () => {
           quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
           voiceEnabled: sw.checked,
           voicePack: vp.checked ? "pack" : "system",
+          theme: currentTheme,
         });
       } catch (_) { /* 写失败时开关状态可能不同步，下次启动回读纠偏 */ }
     };
@@ -1006,6 +1103,7 @@ const notice = {
   idx: 0,         // 当前播放下标
   dwellTimer: 0,
   blinkTimer: 0,
+  detailKey: null, // 详情条当前展示的条目 key（只允许是还在队列里的条目）
 };
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1107,7 +1205,11 @@ function marqueeSchedule() {
   }
   bar.hidden = false;
   updateMarqueeLamp();
-  playMarqueeItem(notice.queue[notice.idx], notice.idx);
+  const cur = notice.queue[notice.idx];
+  // v2.2.1：详情条只展示**当前队列条目**。队列推进/出队后自动收起——
+  // 否则会出现「字幕播着网点比对、详情条却挂着已出队的情报新增」的错位观感。
+  if (notice.detailKey && notice.detailKey !== cur.key) closeMarqueeDetail();
+  playMarqueeItem(cur, notice.idx);
 }
 
 /** 播放单条：40px/s 匀速横滚，时长按（视口宽+文本宽）/速度换算。 */
@@ -1144,6 +1246,7 @@ function removeNotice(key) {
   }
   const h = notice.history.find((x) => x.key === key);
   if (h) h.read = true;
+  if (notice.detailKey === key) closeMarqueeDetail(); // 出队即收起详情条
   renderNoticeCenter();
   marqueeSchedule();
 }
@@ -1153,6 +1256,7 @@ function openMarqueeDetail(item) {
   const det = $("#mq-detail");
   const bar = $("#marquee-bar");
   if (!det || !bar || !item) return;
+  notice.detailKey = item.key; // 记录详情条展示的是哪一条（队列变化时收起）
   det.innerHTML = `
     <div class="mq-detail-body">${esc(item.detail || item.text)}</div>
     <div class="mq-detail-actions">
@@ -1177,6 +1281,7 @@ function closeMarqueeDetail() {
   const bar = $("#marquee-bar");
   if (det) det.hidden = true;
   if (bar) bar.classList.remove("mq-open");
+  notice.detailKey = null;
 }
 
 /** 通知中心（7.5）：铃铛 + 未读角标 + 320px 下拉历史列表。 */
@@ -1207,7 +1312,10 @@ function renderNoticeCenter() {
       if (!h) return;
       h.read = true;
       renderNoticeCenter();
-      const q = notice.queue.find((x) => x.key === h.key) || h;
+      const q = notice.queue.find((x) => x.key === h.key);
+      // v2.2.1：历史里**已出队**的条目不再当「当前通知」打开。此前的 `|| h` 兜底
+      // 会把旧通知塞进详情条，与字幕正在播的条目对不上——观感像旧横幅残留。
+      if (!q) { toast("该通知已处理"); return; }
       openMarqueeDetail(q);
     };
     el.addEventListener("click", open);
@@ -1234,6 +1342,7 @@ function bindMarquee() {
   $("#mq-track")?.addEventListener("animationend", (e) => {
     if (e.target.id !== "mq-track" || e.animationName !== "marquee-scroll") return;
     notice.idx = (notice.idx + 1) % notice.queue.length;
+    closeMarqueeDetail(); // 字幕推进到下一条 → 详情条收起（只展示当前队列条目）
     notice.dwellTimer = setTimeout(marqueeSchedule, MARQUEE_DWELL_MS);
   });
   // Esc / 点击空白收起详情并恢复滚动

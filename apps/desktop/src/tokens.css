@@ -545,7 +545,7 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 }
 
 /* ── 7.4 底部指令条 ── */
-#cmd-bar {
+#cmd-bar:not([hidden]) {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
   height: var(--bar-height); min-width: 380px; max-width: 720px;
   display: flex; align-items: center; gap: 12px;
@@ -561,8 +561,65 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 @keyframes cmd-in  { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes cmd-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 14px); } }
 
+/* ── v2.2.1：情报卡片纵向堆叠 ──
+   情报卡此前直接用 .card（display:flex 行向）且没有 .body 包裹，四个子块被排成
+   一行互相挤压，右侧的「相关/无关」按钮被挤出面板裁掉（用户标注「未完整显示」）。 */
+.card--intel {
+  flex-direction: column;
+  align-items: stretch;
+}
+.card--intel .body {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.card--intel .card-title {
+  font-size: var(--fs-card-title); font-weight: 600;
+  white-space: normal; overflow: visible; text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.card--intel .mini { overflow-wrap: anywhere; }
+.card--intel .intel-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px;
+}
+.card--intel a { overflow-wrap: anywhere; }
+
+/* ── v2.2.1：轻量浮层提示 ── */
+.wb-toast {
+  position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%);
+  max-width: 520px; padding: 10px 16px; z-index: 120;
+  background: var(--mech-inset); color: var(--mech-text-1);
+  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-card);
+  font-size: var(--fs-body); box-shadow: var(--shadow-lift);
+}
+.wb-toast[hidden] { display: none; }
+
+/* ── v2.2.1：网点三级树（安徽省 → 地市 → 区县） ── */
+.tree-city, .tree-district { margin: 2px 0; }
+.tree-city > summary, .tree-district > summary {
+  cursor: pointer; user-select: none; padding: 4px 8px;
+  border-radius: var(--radius-card); list-style: none;
+}
+.tree-city > summary::-webkit-details-marker,
+.tree-district > summary::-webkit-details-marker { display: none; }
+.tree-city > summary:hover, .tree-district > summary:hover { background: var(--mech-inset); }
+.tree-city > summary { font-weight: 600; }
+.tree-city > summary::before, .tree-district > summary::before {
+  content: "▸"; display: inline-block; width: 14px; color: var(--mech-text-3);
+  transition: transform var(--motion-micro) var(--ease-micro);
+}
+.tree-city[open] > summary::before, .tree-district[open] > summary::before { transform: rotate(90deg); }
+.tree-badge {
+  display: inline-block; min-width: 22px; text-align: center; margin-left: 8px;
+  padding: 0 6px; border-radius: 8px; font-family: var(--font-mono); font-size: 11px;
+  background: var(--mech-inset); border: var(--w-rule) solid var(--mech-seam);
+  color: var(--mech-text-2); vertical-align: middle;
+}
+.tree-district { margin-left: 18px; }
+.tree-dealers { margin: 2px 0 6px 46px; padding: 0; list-style: none; }
+.tree-dealers li { padding: 2px 0; color: var(--mech-text-2); overflow-wrap: anywhere; }
+
 /* ── 第六章：首行滚动字幕条 ── */
-#marquee-bar {
+#marquee-bar:not([hidden]) {
   position: relative; display: flex; align-items: center; gap: 8px;
   height: var(--marquee-height);
   background: var(--mech-plate);
@@ -611,7 +668,7 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
   color: var(--mech-text-3); min-width: 28px; text-align: right;
 }
 /* 详情条（6.2）：原位展开至 88px，inset 层，含完整内容 + 主操作 */
-.mq-detail {
+.mq-detail:not([hidden]) {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0;
   min-height: var(--marquee-detail-height);
   background: var(--mech-inset);

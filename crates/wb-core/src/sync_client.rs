@@ -46,6 +46,8 @@ pub mod keys {
     pub const QUIET_END: &str = "quiet_end"; // "HH:MM"
     pub const VOICE_ENABLED: &str = "voice_enabled"; // "1" / "0"
     pub const VOICE_PACK: &str = "voice_pack"; // "system" | "pack"（v2.2 语音包）
+    /// 主题档位（v2.2.1）："dark"（机甲态，默认）/ "light"（办公态）/ "system"（跟随系统）
+    pub const THEME: &str = "theme";
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────
