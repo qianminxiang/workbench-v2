@@ -53,7 +53,7 @@
         <span class="nc-badge" id="nc-badge" hidden>0</span>
         <div class="nc-panel" id="nc-panel" hidden></div>
       </button>
-      <span class="mini">语音播报</span>
+      <svg class="ico" aria-hidden="true"><use href="#ic-wave"/></svg><span class="mini">语音播报</span>
       <label class="switch" title="语音播报：晨报送达时播报要点">
         <!-- boot() 启动时从偏好库回填真实状态（默认开启）；读取成功前 disabled 防误触 -->
         <input id="f10-master" type="checkbox" checked disabled>
@@ -94,16 +94,16 @@
   </div>
 
   <nav class="nav" id="nav" style="margin-bottom:16px">
-    <button data-view="brief" aria-current="true">晨报</button>
+    <button data-view="brief" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>晨报</button>
     <button data-view="kanban">看板</button>
     <button data-view="detail">明细</button>
     <button data-view="timeline">时间线</button>
     <button data-view="kpi">KPI</button>
     <button data-view="units">单位</button>
-    <button data-view="intel">情报</button>
+    <button data-view="intel"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>情报</button>
     <button data-view="dealer">网点</button>
-    <button data-view="add">添加</button>
-    <button data-view="settings">设置</button>
+    <button data-view="add"><svg class="ico" aria-hidden="true"><use href="#ic-import"/></svg>添加</button>
+    <button data-view="settings"><svg class="ico" aria-hidden="true"><use href="#ic-gear"/></svg>设置</button>
   </nav>
 
   <main id="main"></main>

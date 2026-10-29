@@ -89,6 +89,7 @@ function updateFilterCount() {
   $("#filter-count").textContent = `${filtered().length} / ${state.items.length}`;
 }
 
+const ICO = (id) => `<svg class="ico" aria-hidden="true"><use href="#ic-${id}"/></svg>`;
 // ── 呈现辅助 ──
 const pulsedCards = new Set(); // 4.4：警示脉冲每卡每会话 1 次
 function alertOf(item) {
@@ -154,7 +155,7 @@ function viewIntel() {
   const d = state.intel;
   if (!d) {
     return `<div class="panel"><div class="empty">情报数据加载失败（离线或数据库异常）。<br>
-      <button class="btn" id="intel-refresh">重试</button></div></div>`;
+      <button class="btn" id="intel-refresh">${ICO("refresh")}重试</button></div></div>`;
   }
   const cov = d.coverage || {};
   const sites = d.sites || {};
@@ -188,7 +189,7 @@ function viewIntel() {
   return `
   <div class="panel">
     <div><b>项目情报</b> · 最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条
-      <button class="btn" id="intel-refresh">立即刷新</button></div>
+      <button class="btn" id="intel-refresh">${ICO("refresh")}立即刷新</button></div>
   </div>
   <div class="panel">
     <div><b>源站状态</b>（${reg.length} 源）</div>
@@ -207,7 +208,7 @@ async function loadDealer() {
 function viewDealer() {
   const d = state.dealer;
   if (!d) {
-    return `<div class="panel"><div class="empty">网点数据加载失败。<br><button class="btn" id="dealer-refresh">重试</button></div></div>`;
+    return `<div class="panel"><div class="empty">网点数据加载失败。<br><button class="btn" id="dealer-refresh">${ICO("refresh")}重试</button></div></div>`;
   }
   const diff = d.last_diff;
   const byCityList = (rows, label) => (rows || []).map((g) => `
@@ -240,7 +241,7 @@ function viewDealer() {
   return `
   <div class="panel">
     <div><b>渠道网点（极飞·安徽）</b> · 上次比对：${esc(d.last_run_date || "从未")}
-      <button class="btn" id="dealer-refresh">立即刷新</button></div>
+      <button class="btn" id="dealer-refresh">${ICO("refresh")}立即刷新</button></div>
     ${diffHtml}
   </div>
   <div class="panel">
@@ -432,7 +433,7 @@ function viewSettings() {
       <span>导入存量 Excel</span>
       <span><input type="text" id="imp-path" placeholder="…\\work_progress.xlsx" style="width:280px">
       <button class="btn btn--ghost" id="imp-pick">选择文件…</button>
-      <button class="btn" id="imp-go">导入</button></span>
+      <button class="btn" id="imp-go">${ICO("import")}导入</button></span>
     </div>
     <div class="settings-row">
       <span>立即全量备份</span>

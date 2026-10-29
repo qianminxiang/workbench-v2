@@ -557,6 +557,8 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate-solid) 92%, var(--
 
 .btn {
   all: unset; cursor: pointer;
+  /* v2.2.4 图标系统：按钮内图标与文案之间留 6px（.ico 为 inline-block，需 inline-flex 承载） */
+  display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 16px; border-radius: var(--radius-badge);
   background: var(--mech-brand); color: #FFFFFF;
   /* 无滤镜（P6）：hover/press 走纯色，不用 filter、不改尺寸 */
