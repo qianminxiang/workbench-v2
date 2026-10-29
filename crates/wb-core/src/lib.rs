@@ -13,6 +13,7 @@ pub mod import_generic;
 pub mod intel;
 pub mod local_time;
 pub mod model;
+pub mod pct;
 pub mod repo;
 pub mod rules;
 pub mod sfx;

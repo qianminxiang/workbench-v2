@@ -269,6 +269,131 @@
 [data-theme="light"] .diag-item { border-left-color: #c9d2dc; }
 [data-theme="light"] .diag-item pre { color: #1c2530; }
 
+/* ── v2.2.4 追加需求 C：进度 / 状态内联编辑 + 动作历史 ──
+   取色纪律沿用 tokens 既有变量，不新造颜色：控件描边 --mech-ctl（对 plate ≥3:1），
+   正文三级 --mech-text-1/2/3，选中态 --mech-brand，成功态 --mech-ok，拒绝态 --mech-warn-red。
+   数字框走 mono 字体：进度是个读数，不是随手写的字，字宽一致才看得清。 */
+.item-edit {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: var(--w-rule) dashed var(--mech-seam);
+}
+.item-edit--compact, .pct-edit--compact { gap: 4px; }
+
+.pct-edit { display: inline-flex; align-items: center; gap: 4px; }
+.pct-input {
+  all: unset; box-sizing: border-box;
+  width: 56px; padding: 3px 6px; text-align: right;
+  background: var(--mech-inset); color: var(--mech-text-1);
+  font-family: var(--font-mono); font-size: 13px;
+  border-radius: var(--radius-badge);
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl);
+  transition: box-shadow var(--motion-micro) var(--ease-micro);
+}
+.pct-input:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
+.pct-input:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), var(--shadow-focus);
+}
+.pct-edit--compact .pct-input { width: 46px; font-size: 12px; padding: 2px 5px; }
+
+/* 快捷档位：0/25/50/75/100。比主按钮矮一档，视觉上是「副操作」。 */
+.pct-stop, .st, .note-add, .hist-toggle {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 2px 8px; border-radius: var(--radius-badge);
+  background: var(--mech-inset); color: var(--mech-text-2);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl);
+  transition: box-shadow var(--motion-micro) var(--ease-micro),
+              background var(--motion-micro) var(--ease-micro),
+              color var(--motion-micro) var(--ease-micro);
+}
+.pct-stop:hover, .st:hover, .note-add:hover, .hist-toggle:hover {
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); color: var(--mech-text-1);
+}
+.pct-stop:active, .st:active, .note-add:active { background: var(--mech-groove); }
+.pct-stop:focus-visible, .st:focus-visible, .note-add:focus-visible, .hist-toggle:focus-visible {
+  outline: none; box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), var(--shadow-focus);
+}
+/* 选中态：实色 brand 底 + 白字（与 .btn 同一对比口径，不另调一档浅色） */
+.pct-stop[data-active="true"], .st[data-active="true"] {
+  background: var(--mech-brand); color: #FFFFFF;
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand);
+}
+.pct-stop[data-active="true"]:hover, .st[data-active="true"]:hover { color: #FFFFFF; }
+
+/* 状态行：三态 + 历史里出现过的已暂停/已取消 */
+.st-row { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.st { font-family: var(--font-ui, inherit); }
+
+/* 动作备注输入行 */
+.note-row { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 240px; }
+.note-input {
+  all: unset; box-sizing: border-box;
+  flex: 1 1 160px; min-width: 120px;
+  padding: 3px 8px; background: var(--mech-inset); color: var(--mech-text-1);
+  font-size: 12px; border-radius: var(--radius-badge);
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl);
+}
+.note-input::placeholder { color: var(--mech-text-3); }
+.note-input:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
+.note-input:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), var(--shadow-focus);
+}
+.note-add { color: var(--mech-brand); }
+.hist-toggle { color: var(--mech-brand); font-family: inherit; }
+
+/* 提交回显：成功走 text-2，被拒走红（只改字色，不加背景块，避免和警示条抢注意力） */
+.edit-msg { flex: 1 1 100%; min-height: 1.2em; color: var(--mech-text-2); }
+.edit-msg[data-bad="1"] { color: var(--mech-warn-red); }
+
+/* 动作历史（明细页展开区） */
+.act-hist {
+  margin-top: 6px; padding: 6px 8px;
+  background: var(--mech-inset); border-radius: var(--radius-badge);
+  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-groove);
+}
+.act-list { display: flex; flex-direction: column; gap: 4px; }
+.act-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding-bottom: 4px; border-bottom: var(--w-rule) solid var(--mech-seam);
+}
+.act-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.act-ts { color: var(--mech-text-3); font-size: 12px; flex: none; }
+.act-pct { color: var(--mech-ok); font-size: 12px; flex: none; }
+.act-note { flex: 1; color: var(--mech-text-1); font-size: 12px; overflow-wrap: anywhere; }
+
+/* 看板卡片内的编辑器默认收起，hover/focus-within 才显现：
+   看板一屏最多 6 板块 × 若干卡，全常驻会淹掉标题。 */
+.kanban .item-edit {
+  max-height: 0; overflow: hidden; opacity: 0; margin-top: 0; padding-top: 0;
+  border-top-color: transparent;
+  transition: max-height var(--motion-micro) var(--ease-micro),
+              opacity var(--motion-micro) var(--ease-micro),
+              margin-top var(--motion-micro) var(--ease-micro);
+}
+.kanban .card:hover .item-edit,
+.kanban .card:focus-within .item-edit,
+.kanban .card--selected .item-edit {
+  max-height: 140px; overflow: visible; opacity: 1;
+  margin-top: 8px; padding-top: 8px; border-top-color: var(--mech-seam);
+}
+/* 触屏/窄屏没有 hover：直接常驻，别让用户摸不到入口 */
+@media (hover: none) {
+  .kanban .item-edit {
+    max-height: none; overflow: visible; opacity: 1;
+    margin-top: 8px; padding-top: 8px; border-top-color: var(--mech-seam);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kanban .item-edit { transition: none; }
+}
+
+/* 表单控件不吃卡片选中态的整卡缩放：编辑时卡片别再抖 */
+.kanban .card:focus-within { transform: none; }
+
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-morph: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
 }

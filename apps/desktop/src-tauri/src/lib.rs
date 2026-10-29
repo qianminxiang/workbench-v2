@@ -495,6 +495,67 @@ fn add_item(
     }))
 }
 
+// ──────────────── 追加需求 C：进度 / 动作管理（update_item / log_action） ────────────────
+
+/// 更新进度与状态（追加需求 C③ 的 `update_item` 命令）。
+///
+/// 参数用扁平形式而非直接收结构体：前端 JS 传的是字符串/数字字面量，
+/// 结构体跨 IPC 时多一层序列化约定（camelCase ↔ snake_case）容易传错，
+/// 而进度这种数字传错是静默的——宁可参数多几个也不留这个坑。
+///
+/// `progress_pct` / `status` 传 `null` 表示「本次不改」，与传 `0` 语义不同：
+/// 传 0 是把进度真正归零，不能因为 JS 里 `0 || 不改` 的写法混为一谈。
+#[tauri::command]
+fn update_item(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+    progress_pct: Option<i64>,
+    status: Option<String>,
+    note: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let who = wb_core::sync_client::state_get(store.conn(), wb_core::sync_client::keys::MEMBER_ID)
+        .unwrap_or_else(|| "local".into());
+    let patch = wb_core::pct::ItemPatch {
+        item_id,
+        progress_pct,
+        status,
+        note,
+        by: Some(who),
+    };
+    let out = wb_core::pct::update_item(&store, &patch).map_err(err_string)?;
+    serde_json::to_value(&out).map_err(|e| e.to_string())
+}
+
+/// 追加一条动作记录（追加需求 C③ 的 `log_action` 命令）。
+/// 只写历史、不动数字——「今天跟甲方通了电话」不该把进度改成别的值。
+#[tauri::command]
+fn log_action(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+    note: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let who = wb_core::sync_client::state_get(store.conn(), wb_core::sync_client::keys::MEMBER_ID)
+        .unwrap_or_else(|| "local".into());
+    let a = wb_core::pct::log_action(&store, &item_id, &note, Some(&who)).map_err(err_string)?;
+    serde_json::to_value(&a).map_err(|e| e.to_string())
+}
+
+/// 某条项目的动作历史（明细页展开用，最新在上）。
+#[tauri::command]
+fn item_actions(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let logs = wb_core::pct::list_actions(store.conn(), &item_id).map_err(err_string)?;
+    serde_json::to_value(&logs).map_err(|e| e.to_string())
+}
+
 // ─────────────────────── B7：晨报送达（落盘 + 补推） ───────────────────────
 
 /// 待送达晨报状态文件（简单 JSON，落在数据目录）。
@@ -1082,6 +1143,9 @@ pub fn run() {
             units,
             backup_now,
             add_item,
+            update_item,
+            log_action,
+            item_actions,
             get_prefs,
             set_prefs,
             fiscal_year,

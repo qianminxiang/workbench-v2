@@ -124,6 +124,58 @@ function gauge(pct) {
   for (let k = 0; k < 5; k++) cells += `<i class="${k < on ? "on" : ""}"></i>`;
   return `<div class="gauge" title="${pct}%">${cells}</div>`;
 }
+
+/* ── 追加需求 C：进度 / 状态 / 动作记录（明细表与看板卡片共用一套控件） ──
+   三处刻意的取舍：
+   ① 状态枚举后端序列化成 snake_case（"active"），库里存的是中文（"进行中"）。
+      **显示一律走中文**，写回一律传中文——因为 `ItemStatus::from_zh` 只认中文，
+      直接把 "active" 发回去会被判成非法值（这条在 v2.2.4 修掉了明细表
+      直接 `esc(i.status)` 会露出 "active" 的显示问题）。
+   ② `update_item` 用 null 表示「这项不改」，所以**只在真的要改时传值**：
+      数字框留空 ≠ 传 0，前者是不改、后者是把进度归零。
+   ③ 快捷档位与后端 `PCT_STOPS` 同序（0/25/50/75/100），点一下即提交，
+      不要求用户先去点输入框再按回车。 */
+const ST_ZH = { pending: "待启动", unprepared: "未筹备", active: "进行中",
+  done: "已完成", paused: "已暂停", cancelled: "已取消" };
+/** 快捷状态：需求口径的三态（未启 / 进行 / 闭环），值必须是后端认的中文。 */
+const ST_CHIPS = [["待启动", "未启"], ["进行中", "进行"], ["已完成", "闭环"]];
+const PCT_STOPS_UI = [0, 25, 50, 75, 100];
+const statusZh = (s) => ST_ZH[s] ?? (s || "—");
+/** 当前状态对应的 chip 高亮：已暂停/已取消在库里是合法值，也要显示出来，
+ *  否则这两条在界面上会看起来"没有任何状态"。 */
+const statusChips = (i) => {
+  const cur = ST_ZH[i.status] || "";
+  const extra = cur && !ST_CHIPS.some(([v]) => v === cur) ? [[cur, cur]] : [];
+  return [...ST_CHIPS, ...extra].map(([val, label]) =>
+    `<button class="st chip--sm" data-st-set="${esc(i.id)}" data-st="${esc(val)}"
+      data-active="${String(val === cur)}" title="置为${esc(val)}">${esc(label)}</button>`).join("");
+};
+
+/** 进度编辑条：数字框 + 5 个快捷档位。`compact` 用于看板卡片（尺寸更小）。 */
+const pctEditor = (i, compact) => `<div class="pct-edit${compact ? " pct-edit--compact" : ""}">
+  <input class="pct-input" type="number" min="0" max="100" step="1"
+         value="${i.progress_pct}" data-pct-input="${esc(i.id)}"
+         aria-label="进度百分比（0–100）"${compact ? "" : ""}><span class="mini text-3">%</span>
+  ${PCT_STOPS_UI.map((s) => `<button class="pct-stop" data-pct-set="${esc(i.id)}" data-pct="${s}"
+      data-active="${String(i.progress_pct === s)}">${s}</button>`).join("")}
+</div>`;
+
+/** 动作记录输入行（含「记一条」按钮）。 */
+const noteRow = (i) => `<div class="note-row">
+  <input class="note-input" type="text" maxlength="200" placeholder="动作备注，如「已与甲方电话沟通」"
+         data-note-input="${esc(i.id)}" aria-label="动作备注">
+  <button class="note-add" data-note-add="${esc(i.id)}">${ICO("export")}记一条</button>
+</div>`;
+
+/** 明细表与看板共用的整块编辑器；看板里靠 hover/focus 浮现，明细表里常驻。 */
+const itemEditor = (i, compact) => `<div class="item-edit" data-edit-for="${esc(i.id)}">
+  ${pctEditor(i, compact)}
+  <div class="st-row">${statusChips(i)}</div>
+  ${noteRow(i)}
+  ${compact ? "" : `<button class="hist-toggle" data-hist-toggle="${esc(i.id)}"
+      aria-expanded="false">${ICO("export")}动作历史</button>`}
+  <div class="mini edit-msg" data-edit-msg="${esc(i.id)}"></div>
+</div>`;
 function dateCell(item) {
   // 时间线口径（红线）：只显示有依据的精度，月粒度绝不显示为具体日
   const fmt = (d, p) => {
@@ -301,7 +353,8 @@ function viewKanban() {
   const cardOf = (i, zh) => `<div class="card${cardAlertCls(i)}" tabindex="0">${alertStripOf(i)}
     <span class="board-strip" data-board="${boardClass(zh)}"></span>
     <div class="body"><b>${esc(i.title)}</b>
-      <div class="rowline" style="margin-top:4px">${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span>${lampFor(i)}</div>
+      <div class="rowline" style="margin-top:4px">${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span><span class="mini st-label">${statusZh(i.status)}</span>${lampFor(i)}</div>
+      ${itemEditor(i, true)}
     </div>
   </div>`;
   const focus = state.filterBoard ? CODE_OF[state.filterBoard] : "";
@@ -334,13 +387,16 @@ function viewKanban() {
 
 // ── 视图：明细（L4：9 列砍 7 列——类型+优先级合并双行，下一步移出明细表；区间/进度 mono） ──
 function viewDetail() {
-  const rows = filtered().map((i) => `<tr>
+  const rows = filtered().map((i) => `<tr data-row-for="${esc(i.id)}">
     <td>${esc(BOARD_ZH[i.board] ?? i.board)}</td>
-    <td><b>${esc(i.title)}</b></td>
+    <td><b>${esc(i.title)}</b>
+      ${itemEditor(i, false)}
+      <div class="act-hist" data-hist-for="${esc(i.id)}" hidden></div>
+    </td>
     <td>${esc(i.category ?? "—")}<div class="mini text-3">${esc(i.priority ?? "—")}</div></td>
     <td class="mono">${dateCell(i)}</td>
     <td>${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span></td>
-    <td>${esc(i.status ?? "—")}</td>
+    <td>${esc(statusZh(i.status))}</td>
     <td>${lampFor(i)}</td>
   </tr>`).join("");
   return `<div class="panel panel--chamfer" style="padding:0; overflow:auto; max-height:70vh">
@@ -1190,8 +1246,200 @@ $("#main").addEventListener("click", (e) => {
 });
 $("#main").addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " ") return;
+  // 内联编辑器里的输入框/按钮自己处理按键，别让它们被当成「点卡片」——
+  // 否则在数字框里按回车会连带触发卡片选中（旧实现只看 .card，没排除控件）。
+  if (e.target.closest && e.target.closest("button, a, input, select, textarea")) return;
   const card = e.target && e.target.closest ? e.target.closest(".card") : null;
   if (card) { e.preventDefault(); card.click(); }
+});
+
+/* ── 追加需求 C：内联编辑的事件委托（明细表 + 看板卡片共用） ──
+   一次性挂在 #main 上：视图重渲染后新控件自动生效，不必每次重绑。
+   写成功后 `reload()` 重新拉库——看到的就是库里真实的值，
+   而不是把用户输入的数字直接回显（否则越界被拒时会显示"改成功了"）。 */
+const editMsg = (id, text, bad) => {
+  const el = document.querySelector(`[data-edit-msg="${CSS.escape(id)}"]`);
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.bad = bad ? "1" : "0";
+};
+/** 轻量刷新：只重拉数据 + 120ms 交叉淡入，不走 400ms 气闸。
+ *  改一个进度数字不该让整页过一遍合盖/弹出——气闸是「换舱段」的仪式，
+ *  不是「改一个字段」的反馈。回显文字在重渲染后会丢，调用方重渲染之后再补写。 */
+async function reloadQuiet() {
+  state.items = await invoke("list_items", { year: YEAR });
+  state.alertsData = await invoke("alerts", { year: YEAR });
+  state.kpis = await invoke("kpi_overview", { year: YEAR });
+  state.units = await invoke("units", { year: YEAR });
+  render("reflow");
+  updateFilterCount();
+}
+
+/** 统一提交入口：三个字段**总是显式传**（不改的传 null）。
+ *  不省略的理由：省略会让参数"缺字段"，跨 IPC 时可能被当成缺参报错；
+ *  null 是后端约定的「这项不改」，语义清晰。传 0 才是把进度真正归零。 */
+async function submitPatch(id, { pct, status, note } = {}) {
+  const payload = {
+    itemId: id,
+    progressPct: typeof pct === "number" && !Number.isNaN(pct) ? pct : null,
+    status: typeof status === "string" && status ? status : null,
+    note: typeof note === "string" && note.trim() ? note.trim() : null,
+  };
+  if (payload.progressPct === null && !payload.status && !payload.note) {
+    editMsg(id, "没有改动，未提交。"); return false;
+  }
+  editMsg(id, "提交中…");
+  try {
+    const r = await invoke("update_item", payload);
+    const bits = [];
+    if (r.from_pct !== r.to_pct) bits.push(`进度 ${r.from_pct}% → ${r.to_pct}%`);
+    if (r.from_status !== r.to_status) {
+      bits.push(`状态 ${statusZh(r.from_status)} → ${statusZh(r.to_status)}`);
+    }
+    if (r.action_logged && bits.length === 0) bits.push("已记一条动作");
+    // 是否真有东西落库：后端可能「部分成功」（进度越界被拒、状态却改成了），
+    // 这时不能笼统报失败——如实说清哪项落库、哪项被拒。
+    const landed = r.from_pct !== r.to_pct || r.from_status !== r.to_status || r.action_logged;
+    if (!landed) {
+      editMsg(id, r.rejected_reason || "没有改动，未写入。", true);
+      sfxCancel();
+      return false;
+    }
+    const tail = r.rejected_reason ? `；${r.rejected_reason}` : "";
+    const text = bits.join(" · ") + tail;
+    const bad = !!r.rejected_reason;
+    if (bad) sfxCancel(); else sfxConfirm();
+    // 以库里的值为准重拉（自动联动的状态、被拒绝的越界值都在这一步对账）；
+    // 刷新失败不回滚——写已经落库了，此时只说"刷新失败"，不谎称没保存。
+    try {
+      await reloadQuiet();
+    } catch (err) {
+      editMsg(id, `${text}（界面刷新失败：${err}）`, true);
+      return true;
+    }
+    editMsg(id, text, bad); // 重渲染后把回显补回去
+    return true;
+  } catch (e) {
+    editMsg(id, "保存失败：" + e, true);
+    sfxCancel();
+    return false;
+  }
+}
+
+$("#main").addEventListener("click", async (e) => {
+  const pctBtn = e.target.closest("[data-pct-set]");
+  if (pctBtn) {
+    e.stopPropagation(); // 别触发卡片选中（那个 click 只认 .card）
+    const id = pctBtn.dataset.pctSet;
+    const cur = state.items.find((it) => it.id === id);
+    const v = Number(pctBtn.dataset.pct);
+    // 已经是这一档就不再写：避免点一下 50 又多一条「50%→50%」的空历史
+    if (cur && cur.progress_pct === v) { editMsg(id, ""); return; }
+    uiTick();
+    await submitPatch(id, { pct: v });
+    return;
+  }
+  const stBtn = e.target.closest("[data-st-set]");
+  if (stBtn) {
+    e.stopPropagation();
+    const id = stBtn.dataset.stSet;
+    const cur = state.items.find((it) => it.id === id);
+    if (cur && statusZh(cur.status) === stBtn.dataset.st) { editMsg(id, ""); return; }
+    uiTick();
+    await submitPatch(id, { status: stBtn.dataset.st });
+    return;
+  }
+  const addBtn = e.target.closest("[data-note-add]");
+  if (addBtn) {
+    e.stopPropagation();
+    const id = addBtn.dataset.noteAdd;
+    const input = document.querySelector(`[data-note-input="${CSS.escape(id)}"]`);
+    const note = input?.value ?? "";
+    if (!note.trim()) { editMsg(id, "备注不能为空。", true); input?.focus(); return; }
+    await submitPatch(id, { note });
+    return;
+  }
+  const histBtn = e.target.closest("[data-hist-toggle]");
+  if (histBtn) {
+    e.stopPropagation();
+    const id = histBtn.dataset.histToggle;
+    const box = document.querySelector(`[data-hist-for="${CSS.escape(id)}"]`);
+    if (!box) return;
+    const open = box.hidden;
+    if (open) {
+      try {
+        const logs = await invoke("item_actions", { itemId: id });
+        box.innerHTML = logs.length
+          ? `<div class="act-list">${logs.map((a) => `<div class="act-row">
+              <span class="mono act-ts">${esc((a.created_at || "").replace("T", " ").slice(0, 16))}</span>
+              ${a.from_pct != null && a.from_pct !== a.to_pct
+                ? `<span class="mono act-pct">${a.from_pct}%→${a.to_pct}%</span>` : ""}
+              <span class="act-note">${esc(a.note)}</span>
+              <span class="mini text-3">${esc(a.member || "")}</span>
+            </div>`).join("")}</div>`
+          : '<div class="mini text-3">暂无动作记录</div>';
+      } catch (err) {
+        box.innerHTML = `<div class="mini" style="color:var(--mech-warn-red)">读取历史失败：${esc(err)}</div>`;
+      }
+    }
+    box.hidden = !open;
+    histBtn.setAttribute("aria-expanded", String(open));
+    return;
+  }
+});
+
+/* 数字框提交：只在「离开整个编辑区」时提交。
+   为什么不监听 change：change 在失焦时先于 click 触发，用户手打 42 再点「50」档位
+   会先后写两次（42→50），历史里多一条谁也解释不清的中间值。改为看 focusout 的
+   relatedTarget——焦点还在同一个 .item-edit 里就交给那个控件处理，让最后一次操作生效。 */
+/** 回车已提交过的输入框：让随之而来的 blur/focusout 不再重复写一次。
+ *  用 WeakSet 而不是 dataset 标记——重渲染后元素会换，标记会残留到新元素上。 */
+const alreadyCommitted = new WeakSet();
+
+$("#main").addEventListener("focusout", async (e) => {
+  const input = e.target.closest?.("[data-pct-input]");
+  if (!input) return;
+  if (alreadyCommitted.has(input)) { alreadyCommitted.delete(input); return; }
+  const ed = input.closest(".item-edit");
+  if (e.relatedTarget && ed && ed.contains(e.relatedTarget)) return;
+  const id = input.dataset.pctInput;
+  const raw = input.value.trim();
+  if (raw === "") { editMsg(id, "进度不能为空（归零请点 0）。", true); return; }
+  const v = Number(raw);
+  if (!Number.isInteger(v)) { editMsg(id, "进度需为整数。", true); return; }
+  const cur = state.items.find((it) => it.id === id);
+  if (cur && v === cur.progress_pct) { editMsg(id, ""); return; }
+  await submitPatch(id, { pct: v });
+});
+
+/* 进度框回车：立即提交，并登记「这次已提交」避免 blur 重复写 */
+$("#main").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  const input = e.target.closest?.("[data-pct-input]");
+  if (!input) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const id = input.dataset.pctInput;
+  const raw = input.value.trim();
+  const v = Number(raw);
+  if (raw === "" || !Number.isInteger(v)) { editMsg(id, "进度需为 0–100 的整数。", true); return; }
+  const cur = state.items.find((it) => it.id === id);
+  if (cur && v === cur.progress_pct) { editMsg(id, ""); return; }
+  alreadyCommitted.add(input);
+  input.blur();
+  await submitPatch(id, { pct: v });
+});
+
+/* 备注框回车：等同点「记一条」 */
+$("#main").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  const input = e.target.closest?.("[data-note-input]");
+  if (!input) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const id = input.dataset.noteInput;
+  const btn = document.querySelector(`[data-note-add="${CSS.escape(id)}"]`);
+  if (btn) btn.click();
 });
 
 // ── 导航与筛选绑定 ──
