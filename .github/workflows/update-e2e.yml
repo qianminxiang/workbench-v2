@@ -493,7 +493,18 @@ jobs:
           # 必须走这条，才验得到「/UPDATE 不卸载旧版」这个根因是否已被钩子修复。
           Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
-          $p = Start-Process -FilePath "new-setup.exe" -ArgumentList "/P","/UPDATE","/R" -Wait -PassThru
+          # 不能对安装器用 Start-Process -Wait：PS7 的 -Wait 会等「进程及其全部子进程」，
+          # 而 /R 会让安装器在 .onInstSuccess 里把 wb-desktop.exe 拉起来（常驻 GUI），
+          # -Wait 于是永不返回（实测卡死 25 分钟无输出，2026-10-29）。
+          # 这里只等安装器本身退出，退出码断言一字不改。
+          $p = Start-Process -FilePath "new-setup.exe" -ArgumentList "/P","/UPDATE","/R" -PassThru
+          $deadline = (Get-Date).AddMinutes(10)
+          while ((-not $p.HasExited) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 500 }
+          if (-not $p.HasExited) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "新包安装器未在 10 分钟内退出（pid=$($p.Id)）"
+          }
+          $p.WaitForExit()  # 只回收安装器进程自身，不牵连它 /R 拉起的应用
           Write-Host "新包安装器退出码=$($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "新包安装失败：$($p.ExitCode)" }
           Start-Sleep -Seconds 5
