@@ -1235,7 +1235,10 @@ function synthOnce(ctx, spec, gainDb, dur, delayMs) {
   }
   // L3 主体层：三角 + 锯齿 80-220Hz，音高 -3~-8 半音沉降，decay 60-150ms
   if (layers.includes("L3")) {
-    const base = ctx.currentTime;
+    // 音高包络必须锚在本层自己的起始时刻 t0，不能用 ctx.currentTime：
+    // 警报类第二声要延后 450ms 才开始，用 currentTime 会让整段沉降落在过去，
+    // 第二声实际是「没有走向的定音」（规范⑧要求每个事件都带音高走向）。
+    const base = t0;
     const f0 = isGate ? 120 : 180;
     [ctx.createOscillator(), ctx.createOscillator()].forEach((osc, k) => {
       osc.type = k === 0 ? "triangle" : "sawtooth";
