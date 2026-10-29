@@ -90,9 +90,43 @@ for (const plat of placeholderPlatforms) {
   };
 }
 
+// ── 发布说明：单一事实源 ────────────────────────────────────────────────
+// 2026-10-29 修复：此前 notes 是**硬编码字符串**，而 GitHub Release 正文
+// 由 windows-release.yml 的 `gh release create --notes` 单独写一份。
+// 两处各说各话：v2.2.4 发布时 Release 正文（568 字）写了机甲/抓取/诊断/进度
+// 四块，而线上 latest.json 的 notes 仍是只讲机甲界面的旧文案（138 字）。
+// 实测对比见发布后核验：清单 notes 与 Release 正文不一致。
+//
+// 现在改为：仓库根的 RELEASE_NOTES.md 是**唯一**撰写处。发布步同时把这份文件
+// 交给 `gh release create --notes-file`，并通过 WB_RELEASE_NOTES 传给本脚本，
+// 清单 notes 直接取用；两份内容由同一份文件派生，结构上不可能再对不上。
+// 未提供时不阻断构建（清单 notes 允许为空，客户端的 parse_manifest 把 notes
+// 当 Option），只留痕提示。
+//
+// 用法：发布步在调用本脚本前设置 $env:WB_RELEASE_NOTES = <RELEASE_NOTES.md 路径>；
+// 传文件路径比传文本更稳（说明可能很长，命令行长度有限）；直接给文本也支持。
+const notesEnv = (process.env.WB_RELEASE_NOTES || "").trim();
+let notes = "";
+if (notesEnv) {
+  // 既支持直接给文本，也支持给一个文件路径（长文本放文件更稳）
+  // 判据只用「这个路径是否真实存在」，不掺长度猜测：文件路径可能很长，
+  // 而说明文本可能很短，用长度当判据两条都会误判。
+  if (fs.existsSync(notesEnv)) {
+    notes = fs.readFileSync(notesEnv, "utf8").trim();
+    console.log(`[make-manifest] notes 取自文件：${notesEnv}（${notes.length} 字）`);
+  } else {
+    notes = notesEnv;
+    console.log(`[make-manifest] notes 取自 WB_RELEASE_NOTES（${notes.length} 字）`);
+  }
+} else {
+  console.warn("[make-manifest] 未提供 WB_RELEASE_NOTES：清单 notes 留空。");
+  console.warn("[make-manifest] 说明：Release 正文才是撰写处，清单应与它同源，");
+  console.warn("[make-manifest] 空 notes 不影响更新判断（客户端只按 version 比较）。");
+}
+
 const manifest = {
   version,
-  notes: "综合工作台 v2.2.4（机甲界面定稿落地）：暗色机甲指挥舱（五层表面栈/装甲渐变/双切角/HUD 角码）、液压气闸切页四阶段 400ms（含 40ms 泄压静止帧）、9 条冻结音效随包离线播放（四层 WebAudio 兜底）、亮色办公态同构。含 v2.2.3 时区偏移修复。",
+  notes,
   pub_date: new Date().toISOString(),
   platforms,
 };

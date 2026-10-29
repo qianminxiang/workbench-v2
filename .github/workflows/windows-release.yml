@@ -566,6 +566,14 @@ jobs:
 
           Write-Host "① 发布二进制资产："
           $bins | ForEach-Object { Write-Host "   $_" }
+          # 发布说明只认仓库根这一份文件：Release 正文与更新清单的 notes 都读它。
+          # 原先两处各写一段（Release 用 --notes 硬编码、清单里另有一段），
+          # 改一处漏另一处就会出现「Release 说得全、清单只留半截」这类不一致。
+          $noteFile = Join-Path (Get-Location).Path "RELEASE_NOTES.md"
+          if (-not (Test-Path $noteFile)) { throw "缺少发布说明文件 RELEASE_NOTES.md（仓库根）" }
+          $noteText = (Get-Content $noteFile -Raw).Trim()
+          if ($noteText.Length -lt 20) { throw "RELEASE_NOTES.md 内容过短（$($noteText.Length) 字），请补全发布说明" }
+          Write-Host "   发布说明取自 RELEASE_NOTES.md（$($noteText.Length) 字）"
           # 重跑同一 tag 时 gh release create 会因 Release 已存在而失败（exit 1）。
           # 先删旧 Release（保留 tag），保证「清单与资产」每次都从同一次构建重新派生；
           # 旧 Release 的资产是上一次构建的产物，留着只会让资产表出现同名多份。
@@ -577,7 +585,7 @@ jobs:
           }
           $global:LASTEXITCODE = 0
           gh release create $tag --title $tag `
-            --notes "综合工作台 v2.2.4。一、机甲界面定稿：暗色机甲指挥舱五层表面栈与装甲渐变材质、8 类结构装饰件、10 枚内联图标；液压气闸切页四阶段 400ms（闭合 160 / 泄压静止 40 / 展开 150 / 锁定 50）；9 条冻结音效随包离线播放（四层 WebAudio 兜底、气闸双音合并、告警重复 450ms）；面板扫描线单活跃调度；亮色办公态与暗色同构；雷达扫描图标移至顶栏「安徽省」之后。二、抓取方式改造（提升成功率）：TLS 栈切到系统原生（Windows SChannel）、网络类失败重试 2 次（5s/15s 递增，拦截页不重试）、超时 20s→40s、请求头补全 Accept / Accept-Language / Referer / Origin、逐次采集落诊断记录（时间 / URL / HTTP 状态 / 错误分类 / 正文前 300 字，滚动保留最近 3 条）并可在站点状态里复制、省主站改为先取会话 cookie 再提交查询表单。三、进度与动作管理：明细表与看板卡片内联改进度（百分比或 0/25/50/75/100 快捷档）与状态（未启/进行/闭环），每个项目可追加动作记录形成历史并在明细页查看，写前沿用既有快照备份，进度到 100% 自动闭环、退下来自动回到进行中。含 v2.2.3 时区偏移修复。" `
+            --notes-file $noteFile `
             @bins
           if ($LASTEXITCODE -ne 0) { throw "gh release create 失败（exit $LASTEXITCODE）" }
 
@@ -599,6 +607,8 @@ jobs:
           # 而变量其实已经算出来了，只是写错了地方。
           $env:WB_SIGNATURE     = $sigBody
           $env:WB_RELEASE_ASSET = $exe[0]
+          # 清单里的 notes 与 Release 正文同源：都读上面那份 RELEASE_NOTES.md
+          $env:WB_RELEASE_NOTES = $noteFile
 
           Write-Host "③ 按真实资产名重新生成清单"
           node scripts/make-manifest.cjs
@@ -648,6 +658,18 @@ jobs:
             throw "资产大小与构建产物不一致：Release=$($hit[0].size) / 本地=$($local.Length)"
           }
           Write-Host "清单 URL 与 Release 资产一致：$name（$($hit[0].size) 字节）"
+
+          # 发布说明一致性（实证，不靠结构推断）：清单 notes 必须与 Release 正文逐字相同。
+          # 这两处原本各写一段硬编码，v2.2.4 就是这样漂移成「Release 568 字 / 清单 138 字」；
+          # 现在都从 RELEASE_NOTES.md 派生，这里回读一次确认真的同源。
+          $relBody = (gh release view "$env:GITHUB_REF_NAME" --json body | ConvertFrom-Json).body
+          $relNorm = ($relBody -replace "`r`n", "`n").Trim()
+          $mNorm = ($m.notes -replace "`r`n", "`n").Trim()
+          if ($mNorm.Length -lt 20) { throw "清单 notes 过短（$($mNorm.Length) 字），发布说明可能没写" }
+          if ($mNorm -ne $relNorm) {
+            throw "清单 notes 与 Release 正文不一致（清单 $($mNorm.Length) 字 / Release $($relNorm.Length) 字）——发布说明又分叉了"
+          }
+          Write-Host "清单 notes 与 Release 正文逐字一致（$($mNorm.Length) 字）"
 
           $anon = 0
           try {
