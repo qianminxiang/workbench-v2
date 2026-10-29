@@ -773,8 +773,10 @@ function bindView() {
     $("#intel-refresh")?.addEventListener("click", async (e) => {
       // 时长不能写死一个乐观值：单请求最坏 140s（40s 超时 ×3 次 + 5s/15s 退避），
       // 地市站还要翻页（MAX_PAGES_PER_SITE = 5），单站最坏 300s。整轮绝对上限经实算
-      // 为 5254s ≈ 87.6 分钟（16 地市站 ×300s + 省级主站双请求 2×140s + 徽采云 140s
-      // + 站间 17×2s）。不写总时长承诺，只写「逐站推进」——中途失败即止步，
+      // 为 4654s ≈ 77.6 分钟（14 个 Epoint 站 ×300s + 省级主站双请求 2×140s
+      // + 徽采云 140s + 站间 17×2s）。注意不是 16 个：芜湖/池州 epoint=None，
+      // 解析期即返回 ParseError、不发请求，不占网络时长。
+      // 不写总时长承诺，只写「逐站推进」——中途失败即止步，
       // 真实耗时跨度极大，写任何一个固定数字都会在某种输入下变成谎话。
       e.target.textContent = "采集中…（逐站推进）";
       e.target.disabled = true;
@@ -1678,7 +1680,7 @@ async function bindShellEvents() {
     b.disabled = true;
   });
 
-  // FR-2 情报采集逐站进度：整轮绝对上限 87.6 分钟（单站最坏 300s，地市站翻页 5 页），
+  // FR-2 情报采集逐站进度：整轮绝对上限 77.6 分钟（4654s；单站最坏 300s，翻页 5 页，14 个 Epoint 站），
   // 没有进度就只能靠按钮上那行字干等。后端每站完成即 emit 一次，这里把它变成「N/18 站」。
   await listen("intel-progress", (e) => {
     const d = e.payload || {};
