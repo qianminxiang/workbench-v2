@@ -798,7 +798,7 @@ fn dealer_tree(snapshot: &[wb_core::intel::DealerNode]) -> serde_json::Value {
         ordered.push("待归类");
     }
     for city in ordered {
-        let districts = &tree[*city];
+        let districts = &tree[city];
         let total: usize = districts.values().map(|v| v.len()).sum();
         cities.push(serde_json::json!({
             "city": city,
