@@ -650,6 +650,13 @@ fn intel_state_file(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("intel_state.json")
 }
 
+/// 诊断记录用的本地时刻（`YYYY-MM-DDTHH:MM` 本地）。用户拿它对照自己机器上的时间，
+/// 所以必须是本机时区，不能是 UTC——UTC 记录会让用户对不上"到底几点崩的"。
+fn now_stamp_local() -> String {
+    let (d, m) = now_local();
+    format!("{}T{}", d.to_iso(), wb_core::local_time::fmt_hhmm(m))
+}
+
 fn load_intel(paths: &AppPaths) -> intel::IntelState {
     intel::IntelState::load(&paths.data_dir)
 }
@@ -681,7 +688,10 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                 std::thread::sleep(Duration::from_secs(2));
             }
             first = false;
-            let r = intel::fetch_site(spec, &fetcher, intel::KEYWORD, &start_iso, &end_iso, &today_iso);
+            let r = intel::fetch_site_with_retry(
+                spec, &fetcher, &intel::RealSleeper, intel::KEYWORD, &start_iso, &end_iso, &today_iso,
+            );
+            let mut fail: Option<intel::FetchFail> = None;
             let sr = match r {
                 Ok(items) => {
                     let (new_n, _) = intel::merge_items(&mut state, items, &today_iso);
@@ -695,9 +705,17 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                         new_items: new_n,
                     }
                 }
-                Err((st, detail)) => {
+                Err(f) => {
                     failed += 1;
-                    intel::SiteResult { site_id: spec.id.to_string(), status: st, detail, items: 0, new_items: 0 }
+                    let sr = intel::SiteResult {
+                        site_id: spec.id.to_string(),
+                        status: f.status.clone(),
+                        detail: f.detail.clone(),
+                        items: 0,
+                        new_items: 0,
+                    };
+                    fail = Some(f);
+                    sr
                 }
             };
             // 站点状态行（含失败原因，界面可见 AC-2-5）
@@ -716,6 +734,21 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                     row.fail_streak += 1;
                 }
             }
+            // 诊断滚动落库（每源最近 3 条）。纯内存操作，落盘在 IntelState::save 里,
+            // 写失败不会中断采集（需求：诊断写入失败不得中断采集流程）。
+            row.push_diag(intel::DiagEntry {
+                ts: now_stamp_local(),
+                url: fail.as_ref().map(|f| f.url.clone()).unwrap_or_default(),
+                http_status: fail.as_ref().and_then(|f| f.http_status),
+                kind: sr.status.label().to_string(),
+                detail: if matches!(sr.status, intel::FetchStatus::Ok) {
+                    if sr.items == 0 { "请求成功，结果 0 条".into() } else { format!("请求成功，本站在库 {} 条", sr.items) }
+                } else {
+                    sr.detail.clone()
+                },
+                body_head: fail.as_ref().map(|f| f.body_head.clone()).unwrap_or_default(),
+                attempts: fail.as_ref().map(|f| f.attempts).unwrap_or(1),
+            });
             results.push(sr);
         }
         state.last_run_date = Some(today_iso.clone());
@@ -752,11 +785,15 @@ fn spawn_dealer_run(app: tauri::AppHandle, manual: bool) {
                 state.save(&data_dir);
                 let _ = app.emit("dealer-updated", serde_json::json!({ "manual": manual, "ok": true }));
             }
-            Err((st, detail)) => {
+            Err(f) => {
                 // 失败不改快照，只发事件让界面可见（AC-1-4 口径）
                 let _ = app.emit(
                     "dealer-updated",
-                    serde_json::json!({ "manual": manual, "ok": false, "status": format!("{:?}", st), "detail": detail }),
+                    serde_json::json!({
+                        "manual": manual, "ok": false,
+                        "status": format!("{:?}", f.status), "detail": f.detail,
+                        "url": f.url, "http_status": f.http_status, "attempts": f.attempts,
+                    }),
                 );
             }
         }

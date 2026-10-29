@@ -253,6 +253,22 @@
 
 /* 减少动效（DS-02 第五节降级矩阵）：80ms 交叉淡入，零位移零 clip-path；
    循环动效（扫描线/雷达/呼吸）全停在下方对应区块，音效视为静音态（JS 判定）。 */
+/* ── v2.2.4 源站诊断（需求：诊断内容直接在界面可见 + 一键复制）── */
+.diag summary { cursor: pointer; color: var(--muted, #8b98a5); }
+.diag summary:hover { color: var(--fg, #e8edf2); }
+.diag-body { margin: 6px 0 4px; }
+.diag-item { border-left: 2px solid var(--line, #2a333d); padding: 4px 0 4px 8px; margin-bottom: 6px; }
+.diag-item--latest { border-left-color: var(--accent, #4ea3ff); }
+.diag-item pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+  font: 12px/1.6 var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  color: var(--fg, #e8edf2);
+}
+[data-theme="light"] .diag summary { color: #5a6675; }
+[data-theme="light"] .diag summary:hover { color: #1c2530; }
+[data-theme="light"] .diag-item { border-left-color: #c9d2dc; }
+[data-theme="light"] .diag-item pre { color: #1c2530; }
+
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-morph: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
 }

@@ -147,6 +147,18 @@ function relBadge(r) {
   if (r === "suspect") return '<span class="lamp lamp--amber">疑似不相关</span>';
   return "";
 }
+// 诊断块文本（与后端 DiagEntry::to_block 同口径，缺项显式标出，不留空白）。
+// 放在模块作用域：站点表渲染与「复制诊断」两处都要用，同一口径才能对得上。
+const diagText = (g) => [
+  `时间：${g.ts || "（未取到）"}`,
+  `请求：${g.url || "（未发出请求）"}`,
+  `HTTP 状态：${g.http_status == null ? "（无）" : g.http_status}`,
+  `分类：${g.kind || "（未知）"}`,
+  `尝试次数：${g.attempts || 1}`,
+  `说明：${g.detail || "（无）"}`,
+  ...(g.body_head ? [`响应体前 300 字符：\n${g.body_head}`] : []),
+].join("\n");
+
 function tierZh(t) {
   return { provincial_main: "省级主通道", provincial_fallback: "省级兜底", city_batch1: "一批",
     city_batch2: "二批", city_weekly: "周频观察", manual_only: "人工通道", infeasible: "不可行" }[t] || t;
@@ -160,16 +172,27 @@ function viewIntel() {
   const cov = d.coverage || {};
   const sites = d.sites || {};
   const reg = d.registry || [];
+  const statusZh = (s) => ({ blocked: "被拦截", network: "网络失败", parse_error: "解析失败" }[s] || "未知");
   const siteRows = reg.map((r) => {
     const st = sites[r.id] || {};
+    const diags = st.diags || [];
+    const latest = diags[diags.length - 1];
     const status = !r.scheduled
       ? '<span class="mini">不进自动调度</span>'
       : st.last_status === "ok"
         ? `<span class="mini">✅ 成功（${st.last_success || ""}）</span>`
         : st.last_status
-          ? `<span class="mini" style="color:var(--warn,#c0392b)">${st.last_status === "blocked" ? "被拦截" : st.last_status === "network" ? "网络失败" : "解析失败"}：${esc(st.last_detail || "")}</span>`
+          ? `<span class="mini" style="color:var(--warn,#c0392b)">${statusZh(st.last_status)}：${esc(st.last_detail || "")}</span>`
           : '<span class="mini">未采集</span>';
-    return `<tr><td>${r.name}</td><td>${r.city}</td><td>${tierZh(r.tier)}</td><td>${status}</td><td class="mini">${esc(r.note)}</td></tr>`;
+    // 最近一次诊断直接展开（用户不用点开就知道卡在哪），历史 3 条折在 details 里
+    const diagCell = latest
+      ? `<details class="diag"><summary class="mini">诊断（保留最近 ${diags.length} 次）</summary>
+           <div class="diag-body mini">${diags.map((g, i) => `<div class="diag-item${i === diags.length - 1 ? " diag-item--latest" : ""}"><pre>${esc(diagText(g))}</pre></div>`).join("")}</div>
+           <button class="btn btn--sm" data-diag-copy="${esc(r.id)}">${ICO("export")}复制诊断</button>
+         </details>`
+      : '<span class="mini">暂无诊断记录</span>';
+    return `<tr><td>${r.name}</td><td>${r.city}</td><td>${tierZh(r.tier)}</td><td>${status}</td>
+      <td class="mini">${diagCell}</td><td class="mini">${esc(r.note)}</td></tr>`;
   }).join("");
   const items = (d.items || []).map((it) => {
     const verdictBtns = it.manual_verdict
@@ -193,7 +216,7 @@ function viewIntel() {
   </div>
   <div class="panel">
     <div><b>源站状态</b>（${reg.length} 源）</div>
-    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>依据</th></tr>${siteRows}</table>
+    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>诊断</th><th>依据</th></tr>${siteRows}</table>
   </div>
   <div class="panel">
     <div><b>相关项目</b>（${(d.items || []).length} 条，按发布日期倒序；「疑似不相关」可人工改判）</div>
@@ -689,6 +712,28 @@ function bindView() {
           await loadIntel();
           render("reflow");
         } catch (err) { alert("改判失败：" + err); }
+      });
+    });
+    // 「复制诊断」：整段（最近 3 次）一次带走，用户直接贴回群里，
+    // 不必让他截图或描述——用户机器是唯一能连通政务站的环境，这段文本就是全部证据。
+    document.querySelectorAll("[data-diag-copy]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const st = (state.intel?.sites || {})[b.dataset.diagCopy] || {};
+        const reg = (state.intel?.registry || []).find((r) => r.id === b.dataset.diagCopy) || {};
+        const head = `站点：${reg.name || b.dataset.diagCopy}（${b.dataset.diagCopy}）`;
+        const body = (st.diags || []).map((g, i, a) => (i === a.length - 1 ? "【最近一次】\n" : "【历史】\n") + diagText(g)).join("\n");
+        const text = `${head}\n${body || "（暂无诊断记录）"}`;
+        try {
+          await navigator.clipboard.writeText(text);
+          const old = b.textContent;
+          b.textContent = "已复制";
+          setTimeout(() => { b.textContent = old; }, 1600);
+        } catch (err) {
+          // 剪贴板不可用时退化成弹窗让用户手动复制，不静默失败
+          const w = window.open("", "_blank");
+          if (w) { w.document.write(`<pre style="white-space:pre-wrap;font:13px/1.6 monospace">${esc(text)}</pre>`); }
+          else { alert(text); }
+        }
       });
     });
     return;

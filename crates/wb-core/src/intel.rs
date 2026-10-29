@@ -7,6 +7,7 @@
 //! - 网络走 [`Http`] trait，生产实现为 ureq，测试用 mock。
 
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -210,59 +211,244 @@ pub fn coverage_counts() -> (usize, usize) {
 // ─────────────────────────────────────────────────────────────────────────
 // HTTP 抽象（测试 mock / 生产 ureq）
 // ─────────────────────────────────────────────────────────────────────────
+/// v2.2.4 抓取改造：单请求超时 20s → 40s。
+/// 政府站普遍慢，20s 在弱网或长响应下会被截断，表现为「网络失败」而实际是读超时。
+pub const FETCH_TIMEOUT_SECS: u64 = 40;
+/// 网络类失败的重试间隔（秒）：5s、15s 递增，最多重试 2 次。
+pub const RETRY_DELAYS_SECS: &[u64] = &[5, 15];
+/// 诊断里保留的响应体前 N 字符（自带上报用，不落全量）。
+pub const DIAG_BODY_CHARS: usize = 300;
+/// 每源滚动保留的诊断条数。
+pub const DIAG_KEEP: usize = 3;
+
+pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpErr {
-    /// 网络不可达 / DNS / 超时（AC-2-11 离线场景）
-    Network,
-    /// HTTP 非成功状态（418/429/5xx…）
-    Status(u16),
+    /// 网络不可达 / DNS / 连接被 reset（政府站 WAF 常见「连不上」多为此类）
+    Network(String),
+    /// 超时（连接超时 / 读超时 / 整体超时）
+    Timeout(String),
+    /// TLS 握手失败（证书、协议版本、指纹被拒）
+    Tls(String),
+    /// HTTP 非成功状态（状态码 + 响应体前 300 字符）
+    Status(u16, String),
     /// 命中反爬/验证页特征（418 拦截页 /「频繁访问」/NEED_CAPTCHA）
     Blocked(&'static str),
+}
+
+impl HttpErr {
+    /// 是否值得重试。Blocked 明确不重试——验证码/拦截越重试封得越久。
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, HttpErr::Network(_) | HttpErr::Timeout(_) | HttpErr::Tls(_))
+    }
+
+    /// 诊断分类标签（界面直接展示，用户可整段贴回）
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            HttpErr::Network(_) => "网络",
+            HttpErr::Timeout(_) => "超时",
+            HttpErr::Tls(_) => "TLS",
+            HttpErr::Status(..) => "状态码",
+            HttpErr::Blocked(_) => "验证码/拦截",
+        }
+    }
+
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            HttpErr::Status(c, _) => Some(*c),
+            _ => None,
+        }
+    }
+
+    pub fn body_head(&self) -> &str {
+        match self {
+            HttpErr::Status(_, b) => b.as_str(),
+            _ => "",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            HttpErr::Network(m) | HttpErr::Timeout(m) | HttpErr::Tls(m) => m.clone(),
+            HttpErr::Status(c, _) => format!("HTTP {}", c),
+            HttpErr::Blocked(f) => format!("命中拦截特征 {}", f),
+        }
+    }
 }
 
 pub trait Http {
     fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr>;
     fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr>;
+
+    /// 表单 POST。与 post_json 的区别只在 Content-Type——
+    /// 省级主站 ggzy.ah.gov.cn 的 /souSuo 收的是 `param=…&currentPage=1` 表单，
+    /// 此前复用 post_json 会把 Content-Type 写成 application/json，
+    /// 服务端按 JSON 解析失败、返回错误页而非记录列表（表现为「解析失败」）。
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.post_json(url, body, timeout)
+    }
 }
 
 /// 生产实现：ureq（v2.1 曾随单机化移除，v2.2 经用户拍板恢复）。
+///
+/// v2.2.4 改造要点（都只为「提高成功率」这一件事）：
+/// - **native-tls**：ureq 的 native-tls 是"适配器"，`ureq::get/post` 这类便捷函数永远不会
+///   采用它，必须在 Agent 上 `tls_connector` 显式配置——只加 feature 不改代码等于没改。
+///   Windows 走 SChannel，与浏览器同一套栈；政府站 WAF 对 rustls 的 ClientHello 指纹
+///   常见做法是直接 reset，这正是「浏览器/curl 通、程序全挂」的主因。
+/// - **共享 Agent**：连接池复用 + 共享 cookie store（省级站要先 GET 首页拿会话再 POST）。
+/// - **请求头补全**：Accept / Accept-Language / Referer / Origin。Epoint 的 POST 常校验 Referer。
 pub struct UreqFetcher;
+
+impl UreqFetcher {
+    /// 实际生效的 TLS 后端（界面上可核对，避免「以为切了其实没切」）。
+    pub fn tls_backend(&self) -> &'static str {
+        let _ = shared_agent(); // 触发一次初始化，保证读到真实结果
+        tls_backend_label()
+    }
+}
+
+fn origin_of(url: &str) -> String {
+    match url.find("://") {
+        Some(p) => {
+            let rest = &url[p + 3..];
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            format!("{}{}", &url[..p + 3], &rest[..end])
+        }
+        None => url.to_string(),
+    }
+}
+
+/// 统一补齐浏览器常规请求头。缺 Referer/Origin 时 Epoint 系接口常返回空或错误页。
+fn apply_common(req: ureq::Request, url: &str) -> ureq::Request {
+    let origin = origin_of(url);
+    req.set("User-Agent", UA)
+        .set("Accept", "text/html,application/json,application/xhtml+xml,*/*;q=0.8")
+        .set("Accept-Language", "zh-CN,zh;q=0.9")
+        .set("Referer", &format!("{}/", origin))
+        .set("Origin", &origin)
+}
+
+fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(build_agent)
+}
+
+fn tls_backend_label() -> &'static str {
+    if *NATIVE_TLS_OK.get().unwrap_or(&false) {
+        if cfg!(target_os = "windows") {
+            "native-tls/schannel"
+        } else if cfg!(target_os = "macos") {
+            "native-tls/security-framework"
+        } else {
+            "native-tls/openssl"
+        }
+    } else {
+        "rustls（native-tls 初始化失败，已回落）"
+    }
+}
+
+static NATIVE_TLS_OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn build_agent() -> ureq::Agent {
+    let base = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .redirects(3)
+        .user_agent(UA);
+    // 不设 min_protocol_version：部分政府站只到 TLS1.0/1.1，收紧协议反而会砍掉可用站点。
+    // 系统栈的默认协议集合与浏览器一致，这正是要的效果。
+    match ureq::native_tls::TlsConnector::new() {
+        Ok(connector) => {
+            NATIVE_TLS_OK.set(true).ok();
+            base.tls_connector(std::sync::Arc::new(connector)).build()
+        }
+        Err(_) => {
+            NATIVE_TLS_OK.set(false).ok();
+            base.build()
+        }
+    }
+}
 
 impl Http for UreqFetcher {
     fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
-        let resp = ureq::post(url)
+        let resp = apply_common(shared_agent().post(url), url)
             .timeout(timeout)
-            .set("Content-Type", "application/json")
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .set("Content-Type", "application/json; charset=UTF-8")
             .send_string(body)
             .map_err(map_ureq_err)?;
         read_resp(resp)
     }
-    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
-        let resp = ureq::get(url)
+
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        let resp = apply_common(shared_agent().post(url), url)
             .timeout(timeout)
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            .send_string(body)
+            .map_err(map_ureq_err)?;
+        read_resp(resp)
+    }
+
+    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
+        let resp = apply_common(shared_agent().get(url), url)
+            .timeout(timeout)
             .call()
             .map_err(map_ureq_err)?;
         read_resp(resp)
     }
 }
 
+/// 响应体前 N 字符（按字符切，避免把 UTF-8 断在半个汉字上）。
+fn head_chars(body: &str, n: usize) -> String {
+    let s: String = body.chars().take(n).collect();
+    if body.chars().count() > n {
+        format!("{}…（截断）", s)
+    } else {
+        s
+    }
+}
+
 fn map_ureq_err(e: ureq::Error) -> HttpErr {
     match e {
-        ureq::Error::Status(code, _) => {
-            if code == 418 || code == 429 { HttpErr::Blocked("http_418_429") } else { HttpErr::Status(code) }
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            if code == 418 || code == 429 {
+                HttpErr::Blocked("http_418_429")
+            } else {
+                HttpErr::Status(code, head_chars(&body, DIAG_BODY_CHARS))
+            }
         }
-        _ => HttpErr::Network,
+        ureq::Error::Transport(t) => {
+            let msg = t.to_string();
+            let lower = msg.to_lowercase();
+            // 超时在 ureq 里落在 Io 里，只能按消息文本区分——所以保留原文便于远程核对
+            if lower.contains("timed out") || lower.contains("timeout") || lower.contains("超时") {
+                HttpErr::Timeout(msg)
+            } else if lower.contains("tls")
+                || lower.contains("certificate")
+                || lower.contains("handshake")
+                || lower.contains("ssl")
+            {
+                HttpErr::Tls(msg)
+            } else {
+                HttpErr::Network(msg)
+            }
+        }
     }
 }
 
 fn read_resp(resp: ureq::Response) -> Result<String, HttpErr> {
-    let body = resp.into_string().map_err(|_| HttpErr::Network)?;
+    let status = resp.status();
+    let body = resp.into_string().map_err(|e| HttpErr::Network(e.to_string()))?;
     // 验证页特征检测：返回内容是拦截页时即使 HTTP 200 也算被拦（AC-2-5）
     if body.contains("频繁访问") || body.contains("NEED_CAPTCHA") || body.contains("访问被拦截") {
         return Err(HttpErr::Blocked("captcha_page"));
+    }
+    // 5xx 但 ureq 未当错误抛出的边缘情况，统一按状态码归类
+    if status >= 500 {
+        return Err(HttpErr::Status(status, head_chars(&body, DIAG_BODY_CHARS)));
     }
     Ok(body)
 }
@@ -552,6 +738,141 @@ fn resolve_link(spec: &SiteSpec, rec: &serde_json::Value) -> String {
 // ─────────────────────────────────────────────────────────────────────────
 // 各源抓取
 // ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+// v2.2.4 抓取改造：失败诊断 + 可注入重试
+// ─────────────────────────────────────────────────────────────────────────
+/// 单站采集失败的结构化载荷。
+/// 相比原来的 `(FetchStatus, String)` 元组，多带三项诊断必需信息：
+/// **实际请求的 URL**、**HTTP 状态码**、**响应体前 300 字符**。
+/// 用户真实机器是唯一的验证环境（沙箱出口 502、CI 在海外都到不了这些政务站），
+/// 所以诊断必须自报，让用户能把整段贴回来定位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchFail {
+    pub status: FetchStatus,
+    /// 人读摘要（列表页直接展示）
+    pub detail: String,
+    /// 失败时正在请求的 URL（含分页序号，能判断卡在第几页）
+    pub url: String,
+    pub http_status: Option<u16>,
+    pub body_head: String,
+    /// 实际尝试次数（1 = 没重试；3 = 重试两次仍失败）
+    pub attempts: u32,
+}
+
+impl FetchFail {
+    /// 本地产生的失败（解析不到记录、适配器未实现等），没有 HTTP 层信息。
+    pub fn local(status: FetchStatus, detail: impl Into<String>) -> Self {
+        FetchFail {
+            status,
+            detail: detail.into(),
+            url: String::new(),
+            http_status: None,
+            body_head: String::new(),
+            attempts: 1,
+        }
+    }
+
+    /// 从 HTTP 层错误转出来：状态码/响应体原文都留着。
+    pub fn from_http(e: &HttpErr, url: &str, attempts: u32) -> Self {
+        let status = match e {
+            HttpErr::Network(_) | HttpErr::Timeout(_) | HttpErr::Tls(_) => FetchStatus::Network,
+            HttpErr::Status(..) | HttpErr::Blocked(_) => FetchStatus::Blocked,
+        };
+        FetchFail {
+            status,
+            detail: e.message(),
+            url: url.to_string(),
+            http_status: e.http_status(),
+            body_head: e.body_head().to_string(),
+            attempts,
+        }
+    }
+}
+
+/// 重试等待的注入点。领域层不直接 sleep：生产用 [`RealSleeper`]，
+/// 测试用 [`NoSleep`]，否则单测会为每次模拟网络失败白等 20 秒。
+pub trait RetrySleeper {
+    fn sleep_secs(&self, secs: u64);
+}
+
+/// 生产实现：真等。重试间隔按需求固定为 5s / 15s 递增。
+pub struct RealSleeper;
+impl RetrySleeper for RealSleeper {
+    fn sleep_secs(&self, secs: u64) {
+        std::thread::sleep(Duration::from_secs(secs));
+    }
+}
+
+/// 测试实现：不等待。
+pub struct NoSleep;
+impl RetrySleeper for NoSleep {
+    fn sleep_secs(&self, _secs: u64) {}
+}
+
+/// 包一层重试：网络类失败最多再试 [`RETRY_DELAYS_SECS`] 次（5s、15s），
+/// **Blocked（验证码/拦截）一律不重试**——越重试封得越久，直接降级。
+///
+/// 做成 `Http` 的装饰器，是为了让上面 15 个地市站的适配器代码一行都不用改，
+/// 重试语义集中在一处，也就不会出现「这个站重试了那个站没重试」。
+pub struct RetryingHttp<'a> {
+    inner: &'a dyn Http,
+    sleeper: &'a dyn RetrySleeper,
+    /// 最近一次请求的 URL，失败时用来落诊断
+    last_url: RefCell<String>,
+    /// 最近一次请求的尝试次数
+    attempts: Cell<u32>,
+}
+
+impl<'a> RetryingHttp<'a> {
+    pub fn new(inner: &'a dyn Http, sleeper: &'a dyn RetrySleeper) -> Self {
+        RetryingHttp { inner, sleeper, last_url: RefCell::new(String::new()), attempts: Cell::new(0) }
+    }
+
+    pub fn attempts(&self) -> u32 {
+        self.attempts.get().max(1)
+    }
+
+    pub fn last_url(&self) -> String {
+        self.last_url.borrow().clone()
+    }
+
+    fn run(&self, url: &str, mut call: impl FnMut() -> Result<String, HttpErr>) -> Result<String, HttpErr> {
+        *self.last_url.borrow_mut() = url.to_string();
+        let mut tried = 0usize;
+        loop {
+            match call() {
+                Ok(v) => {
+                    self.attempts.set(tried as u32 + 1);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    if e.is_retryable() && tried < RETRY_DELAYS_SECS.len() {
+                        let d = RETRY_DELAYS_SECS[tried];
+                        tried += 1;
+                        self.sleeper.sleep_secs(d);
+                        continue;
+                    }
+                    self.attempts.set(tried as u32 + 1);
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Http for RetryingHttp<'a> {
+    fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.post_json(url, body, timeout))
+    }
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.post_form(url, body, timeout))
+    }
+    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.get(url, timeout))
+    }
+}
+
 pub fn fetch_site(
     spec: &SiteSpec,
     http: &dyn Http,
@@ -559,12 +880,38 @@ pub fn fetch_site(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
+) -> Result<Vec<IntelItem>, FetchFail> {
     match spec.tier {
         Tier::CityBatch1 | Tier::CityBatch2 | Tier::CityWeekly => fetch_epoint(spec, http, wd, start, end, today),
         Tier::ProvincialFallback => fetch_huicaiyun(spec, http, wd, start, end, today),
         Tier::ProvincialMain => fetch_ggzy_ah(spec, http, wd, start, end, today),
-        _ => Err((FetchStatus::ParseError, "该源不在自动调度范围".into())),
+        _ => Err(FetchFail::local(FetchStatus::ParseError, "该源不在自动调度范围")),
+    }
+}
+
+/// 带重试的单站抓取（生产路径入口）。诊断所需的 URL / 状态码 / 响应体
+/// 全从 [`RetryingHttp`] 与 [`FetchFail::from_http`] 带出，不用各适配器自己拼。
+pub fn fetch_site_with_retry(
+    spec: &SiteSpec,
+    http: &dyn Http,
+    sleeper: &dyn RetrySleeper,
+    wd: &str,
+    start: &str,
+    end: &str,
+    today: &str,
+) -> Result<Vec<IntelItem>, FetchFail> {
+    let r = RetryingHttp::new(http, sleeper);
+    let out = fetch_site(spec, &r, wd, start, end, today);
+    match out {
+        Ok(v) => Ok(v),
+        Err(mut f) => {
+            // 适配器已带出 HTTP 层信息就不覆盖（那是更精确的一手信息）
+            if f.url.is_empty() {
+                f.url = r.last_url();
+            }
+            f.attempts = r.attempts();
+            Err(f)
+        }
     }
 }
 
@@ -575,18 +922,23 @@ fn fetch_epoint(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
+) -> Result<Vec<IntelItem>, FetchFail> {
     // 芜湖（.NET API）/ 池州（自有 JSON API）为非 Epoint 站，接口参数未逐站验证，
     // 按「未验证不冒充已实现」如实返回，待第二批逐站接入（AC-2-9）
-    spec.epoint.as_ref().ok_or_else(|| {
-        (FetchStatus::ParseError, "非 Epoint 站，适配器待第二批逐站验证实现".to_string())
-    })?;
+    spec.epoint
+        .as_ref()
+        .ok_or_else(|| FetchFail::local(FetchStatus::ParseError, "非 Epoint 站，适配器待第二批逐站验证实现"))?;
     let mut items = Vec::new();
     for page in 0..MAX_PAGES_PER_SITE as usize {
         let (url, body) = build_epoint_request(spec, wd, start, end, page);
-        let resp = http.post_json(&url, &body, Duration::from_secs(20)).map_err(map_http)?;
-        ensure_not_blocked(&resp)?;
-        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
+        let resp = http
+            .post_json(&url, &body, Duration::from_secs(FETCH_TIMEOUT_SECS))
+            .map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+        ensure_not_blocked(&resp, &url)?;
+        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| {
+            FetchFail { body_head: head_chars(&resp, DIAG_BODY_CHARS), ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON") }
+                .with_url(&url)
+        })?;
         let v = if spec.epoint.as_ref().map(|c| c.double_wrap).unwrap_or(false) {
             // 淮南：双层 JSON 包装（外层字符串再包一层 JSON）
             if let Some(inner) = v.as_str() {
@@ -605,7 +957,10 @@ fn fetch_epoint(
         };
         if records.is_empty() {
             if page == 0 && v.pointer("/result/results").is_none() && find_record_arrays(&v, 0).is_empty() {
-                return Err((FetchStatus::ParseError, "未在响应中定位到记录数组".into()));
+                return Err(FetchFail {
+                    body_head: head_chars(&resp, DIAG_BODY_CHARS),
+                    ..FetchFail::local(FetchStatus::ParseError, "未在响应中定位到记录数组").with_url(&url)
+                });
             }
             break;
         }
@@ -621,6 +976,13 @@ fn fetch_epoint(
     Ok(items)
 }
 
+impl FetchFail {
+    fn with_url(mut self, url: &str) -> Self {
+        self.url = url.to_string();
+        self
+    }
+}
+
 fn fetch_huicaiyun(
     spec: &SiteSpec,
     http: &dyn Http,
@@ -628,13 +990,10 @@ fn fetch_huicaiyun(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    let (s_ms, e_ms) = match (
-        date_str_to_ms(start),
-        date_str_to_ms(end),
-    ) {
+) -> Result<Vec<IntelItem>, FetchFail> {
+    let (s_ms, e_ms) = match (date_str_to_ms(start), date_str_to_ms(end)) {
         (Some(s), Some(e)) => (s, e + 86_399_000),
-        _ => return Err((FetchStatus::ParseError, "日期参数非法".into())),
+        _ => return Err(FetchFail::local(FetchStatus::ParseError, "日期参数非法")),
     };
     let url = format!("{}/portal/all", spec.base);
     let body = serde_json::json!({
@@ -642,15 +1001,24 @@ fn fetch_huicaiyun(
         "publishDateBegin": s_ms, "publishDateEnd": e_ms,
         "pageNo": 1, "pageSize": 15, "isTitleSearch": 1, "order": "desc", "leaf": "0",
     });
-    let resp = http.post_json(&url, &body.to_string(), Duration::from_secs(20)).map_err(map_http)?;
-    ensure_not_blocked(&resp)?;
-    let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
+    let resp = http
+        .post_json(&url, &body.to_string(), Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+    ensure_not_blocked(&resp, &url)?;
+    let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| FetchFail {
+        body_head: head_chars(&resp, DIAG_BODY_CHARS),
+        ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON").with_url(&url)
+    })?;
     let records = v
         .pointer("/result/data/data")
-        .and_then(|x| x.as_array()).cloned()
+        .and_then(|x| x.as_array())
+        .cloned()
         .unwrap_or_default();
     if records.is_empty() && v.pointer("/result/data/total").and_then(|t| t.as_i64()) != Some(0) {
-        return Err((FetchStatus::ParseError, "未定位到徽采云结果数组".into()));
+        return Err(FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "未定位到徽采云结果数组").with_url(&url)
+        });
     }
     Ok(records.iter().map(|rec| record_to_item(spec, rec, today)).collect())
 }
@@ -679,17 +1047,27 @@ fn fetch_ggzy_ah(
     _start: &str,
     _end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    // POST /souSuo 表单（param 域），服务端渲染 HTML；解析 newDetail 链接 + 标题
+) -> Result<Vec<IntelItem>, FetchFail> {
+    // 省级主站要求「先有会话再检索」：直接 POST /souSuo 会被当成无会话裸请求拦掉。
+    // 改造⑥：先 GET 首页把会话 cookie 拿到共享 cookie store（UreqFetcher 的 Agent 带 cookies
+    // feature），再 POST /souSuo 表单。首页预热失败不算致命——继续试检索，让服务端自己说话，
+    // 失败的真相会落进诊断里，比在这里猜更可靠。
+    let home = format!("{}/", spec.base);
+    let prime = http.get(&home, Duration::from_secs(FETCH_TIMEOUT_SECS));
     let url = format!("{}/souSuo", spec.base);
-    let form = format!(
-        "param={}&currentPage=1&pageNo=1",
-        urlencoding_min(wd)
-    );
-    let resp = http
-        .post_json(&url, &form, Duration::from_secs(20))
-        .map_err(map_http)?;
-    ensure_not_blocked(&resp)?;
+    let form = format!("param={}&currentPage=1&pageNo=1", urlencoding_min(wd));
+    let resp = match http.post_form(&url, &form, Duration::from_secs(FETCH_TIMEOUT_SECS)) {
+        Ok(r) => r,
+        Err(e) => {
+            // 检索本身失败：优先报检索（那才是拿不到数据的原因），首页失败只作补充说明
+            let mut f = FetchFail::from_http(&e, &url, 1);
+            if prime.is_err() {
+                f.detail = format!("{}（首页会话预热也失败，可能是整站不可达）", f.detail);
+            }
+            return Err(f);
+        }
+    };
+    ensure_not_blocked(&resp, &url)?;
     let mut items = Vec::new();
     let mut rest = resp.as_str();
     while let Some(i) = rest.find("newDetail?guid=") {
@@ -721,7 +1099,10 @@ fn fetch_ggzy_ah(
         rest = after;
     }
     if items.is_empty() {
-        return Err((FetchStatus::ParseError, "HTML 未解析到 newDetail 链接".into()));
+        return Err(FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "HTML 未解析到 newDetail 链接").with_url(&url)
+        });
     }
     Ok(items)
 }
@@ -750,19 +1131,14 @@ fn urlencoding_min(s: &str) -> String {
 
 /// 拦截页特征检测（AC-2-5）：HTTP 200 但内容是验证/拦截页也算 Blocked。
 /// 放在 fetch 层而非仅生产 HTTP 实现里，保证 mock 测试与生产行为一致。
-fn ensure_not_blocked(body: &str) -> Result<(), (FetchStatus, String)> {
+fn ensure_not_blocked(body: &str, url: &str) -> Result<(), FetchFail> {
     if body.contains("频繁访问") || body.contains("NEED_CAPTCHA") || body.contains("访问被拦截") {
-        Err((FetchStatus::Blocked, "命中拦截特征 captcha_page".into()))
+        Err(FetchFail {
+            body_head: head_chars(body, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::Blocked, "命中拦截特征 captcha_page").with_url(url)
+        })
     } else {
         Ok(())
-    }
-}
-
-fn map_http(e: HttpErr) -> (FetchStatus, String) {
-    match e {
-        HttpErr::Network => (FetchStatus::Network, "网络不可达或超时".into()),
-        HttpErr::Status(c) => (FetchStatus::Blocked, format!("HTTP {}", c)),
-        HttpErr::Blocked(f) => (FetchStatus::Blocked, format!("命中拦截特征 {}", f)),
     }
 }
 
@@ -797,6 +1173,60 @@ pub struct SiteStateRow {
     pub last_status: Option<FetchStatus>,
     pub last_detail: String,
     pub fail_streak: u32,
+    /// v2.2.4 诊断日志：每源滚动保留最近 [`DIAG_KEEP`] 次采集记录，不无限增长。
+    /// 用户机器是唯一能连通政务站的环境，这份记录是唯一的事后证据。
+    #[serde(default)]
+    pub diags: Vec<DiagEntry>,
+}
+
+/// 单次采集的诊断记录（一次一条，成功也留——成功记录能证明「刚才还通」，
+/// 一旦转为失败，与上一条成功记录对比就能分辨是站点变了还是本地网络变了）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DiagEntry {
+    /// 采集时刻（本地时区 `YYYY-MM-DDTHH:MM:SSZ` 口径随 store::now_iso_pub）
+    pub ts: String,
+    /// 本次实际请求的 URL（空表示本地失败，未发出请求）
+    pub url: String,
+    pub http_status: Option<u16>,
+    /// 分类：成功 / 网络 / 超时 / TLS / 状态码 / 验证码/拦截 / 解析
+    pub kind: String,
+    /// 一句话摘要
+    pub detail: String,
+    /// 响应体前 300 字符（解析失败时是判断源站结构变更的唯一线索）
+    pub body_head: String,
+    /// 尝试次数（>1 说明重试过）
+    pub attempts: u32,
+}
+
+impl DiagEntry {
+    /// 给人看的整段诊断文本——用户点「复制诊断」直接贴回来就是这个。
+    pub fn to_block(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("时间：{}\n", if self.ts.is_empty() { "（未取到）" } else { &self.ts }));
+        out.push_str(&format!("请求：{}\n", if self.url.is_empty() { "（未发出请求）" } else { &self.url }));
+        out.push_str(&format!(
+            "HTTP 状态：{}\n",
+            self.http_status.map(|c| c.to_string()).unwrap_or_else(|| "（无）".into())
+        ));
+        out.push_str(&format!("分类：{}\n", self.kind));
+        out.push_str(&format!("尝试次数：{}\n", self.attempts));
+        out.push_str(&format!("说明：{}\n", self.detail));
+        if !self.body_head.is_empty() {
+            out.push_str(&format!("响应体前 300 字符：\n{}\n", self.body_head));
+        }
+        out
+    }
+}
+
+impl SiteStateRow {
+    /// 追加一条诊断，只留最近 [`DIAG_KEEP`] 条。
+    pub fn push_diag(&mut self, entry: DiagEntry) {
+        self.diags.push(entry);
+        let n = self.diags.len();
+        if n > DIAG_KEEP {
+            self.diags.drain(0..n - DIAG_KEEP);
+        }
+    }
 }
 
 impl IntelState {
@@ -900,11 +1330,27 @@ pub fn run_daily(
     start: &str,
     end: &str,
 ) -> (Vec<SiteResult>, String) {
+    run_daily_at(state, http, &RealSleeper, today, start, end, &crate::store::now_iso_pub())
+}
+
+/// 与 [`run_daily`] 同语义，但可注入等待实现与采集时刻——
+/// 单测要断言「重试了 2 次」「诊断滚到第 4 条时最早那条被挤掉」，
+/// 既不能真等 20 秒，也不能依赖真实时钟。
+pub fn run_daily_at(
+    state: &mut IntelState,
+    http: &dyn Http,
+    sleeper: &dyn RetrySleeper,
+    today: &str,
+    start: &str,
+    end: &str,
+    ts: &str,
+) -> (Vec<SiteResult>, String) {
     let mut results = Vec::new();
     let mut new_total = 0usize;
     let mut failed = 0usize;
     for spec in SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
-        let r = fetch_site(spec, http, KEYWORD, start, end, today);
+        let r = fetch_site_with_retry(spec, http, sleeper, KEYWORD, start, end, today);
+        let mut fail: Option<FetchFail> = None;
         let sr = match r {
             Ok(items) => {
                 let (new_n, _) = merge_items(state, items, today);
@@ -912,10 +1358,45 @@ pub fn run_daily(
                 new_total += new_n;
                 SiteResult { site_id: spec.id.to_string(), status: FetchStatus::Ok, detail: String::new(), items: n, new_items: new_n }
             }
-            Err((st, detail)) => {
+            Err(f) => {
                 failed += 1;
-                SiteResult { site_id: spec.id.to_string(), status: st.clone(), detail: detail.clone(), items: 0, new_items: 0 }
+                let sr = SiteResult {
+                    site_id: spec.id.to_string(),
+                    status: f.status.clone(),
+                    detail: f.detail.clone(),
+                    items: 0,
+                    new_items: 0,
+                };
+                fail = Some(f);
+                sr
             }
+        };
+        // 诊断记录先组装好，再与状态行一起落库。关键：**诊断写入失败绝不能中断采集**——
+        // 这里全是不可能失败的纯内存操作，落盘那一步在 IntelState::save 里已被 `if let Ok` 包住；
+        // 若某天真失败，也只会在该源 diags 里少一条，不会把整轮采集带崩。
+        let diag = match fail.as_ref() {
+            None => DiagEntry {
+                ts: ts.to_string(),
+                url: String::new(),
+                http_status: Some(200),
+                kind: "成功".into(),
+                detail: if sr.items == 0 {
+                    "请求成功，结果 0 条".into()
+                } else {
+                    format!("请求成功，本站在库 {} 条", sr.items)
+                },
+                body_head: String::new(),
+                attempts: 1,
+            },
+            Some(f) => DiagEntry {
+                ts: ts.to_string(),
+                url: f.url.clone(),
+                http_status: f.http_status,
+                kind: sr.status.label().to_string(),
+                detail: f.detail.clone(),
+                body_head: f.body_head.clone(),
+                attempts: f.attempts,
+            },
         };
         let row = state.sites.entry(spec.id.to_string()).or_default();
         row.last_attempt = Some(today.to_string());
@@ -932,6 +1413,7 @@ pub fn run_daily(
                 row.fail_streak += 1;
             }
         }
+        row.push_diag(diag);
         results.push(sr);
     }
     state.last_run_date = Some(today.to_string());
@@ -980,7 +1462,7 @@ impl DealerNode {
     }
 }
 
-pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, (FetchStatus, String)> {
+pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, FetchFail> {
     let mut nodes = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for tag in DEALER_TAGS {
@@ -988,8 +1470,11 @@ pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, (FetchStatus, S
             "https://www.xa.com/service/dealer-address?province={}&tag={}",
             urlencoding_min(DEALER_PROVINCE), tag
         );
-        let resp = http.get(&url, Duration::from_secs(20)).map_err(map_http)?;
-        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
+        let resp = http.get(&url, Duration::from_secs(FETCH_TIMEOUT_SECS)).map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON").with_url(&url)
+        })?;
         let arr = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
         for d in arr {
             let node = DealerNode {
@@ -1081,18 +1566,33 @@ mod tests {
 
     struct MockHttp {
         responses: BTreeMap<String, Result<String, HttpErr>>,
+        /// 记录被调用次数，用于断言重试确实发生
+        calls: std::cell::Cell<usize>,
     }
     impl MockHttp {
         fn ok(url_frag: &str, body: &str) -> Self {
-            MockHttp { responses: BTreeMap::from([(url_frag.to_string(), Ok(body.to_string()))]) }
+            MockHttp { responses: BTreeMap::from([(url_frag.to_string(), Ok(body.to_string()))]), calls: Default::default() }
+        }
+    }
+    impl MockHttp {
+        /// 最长匹配优先：`host/` 不能把 `host/souSuo` 抢走（BTreeMap 顺序恰好是先短后长）
+        fn pick(&self, url: &str) -> Result<String, HttpErr> {
+            self.calls.set(self.calls.get() + 1);
+            let best = self.responses.iter()
+                .filter(|(k, _)| url.contains(k.as_str()))
+                .max_by_key(|(k, _)| k.len());
+            match best {
+                Some((_, v)) => v.clone(),
+                None => Err(HttpErr::Network("mock: no route".into())),
+            }
         }
     }
     impl Http for MockHttp {
         fn post_json(&self, url: &str, _body: &str, _t: Duration) -> Result<String, HttpErr> {
-            self.responses.iter().find(|(k, _)| url.contains(k.as_str())).map(|(_, v)| v.clone()).unwrap_or(Err(HttpErr::Network))
+            self.pick(url)
         }
         fn get(&self, url: &str, _t: Duration) -> Result<String, HttpErr> {
-            self.responses.iter().find(|(k, _)| url.contains(k.as_str())).map(|(_, v)| v.clone()).unwrap_or(Err(HttpErr::Network))
+            self.pick(url)
         }
     }
 
@@ -1147,6 +1647,246 @@ mod tests {
         assert_eq!(r3, Relevance::Excluded);
     }
 
+    /// 记录重试间隔的假等待器：断言"5s/15s 递增"而不是"随便等一下"。
+    struct SpySleeper { waits: std::cell::RefCell<Vec<u64>> }
+    impl SpySleeper { fn new() -> Self { SpySleeper { waits: Default::default() } } }
+    impl RetrySleeper for SpySleeper {
+        fn sleep_secs(&self, secs: u64) { self.waits.borrow_mut().push(secs); }
+    }
+
+    /// 前 N 次失败、之后成功的假 Http：用来验证"重试真的发生了"。
+    struct FlakyHttp {
+        fail_first: usize,
+        seen: std::cell::Cell<usize>,
+        err: HttpErr,
+        body: String,
+    }
+    impl FlakyHttp {
+        fn new(fail_first: usize, err: HttpErr, body: &str) -> Self {
+            FlakyHttp { fail_first, seen: Default::default(), err, body: body.to_string() }
+        }
+    }
+    impl Http for FlakyHttp {
+        fn post_json(&self, _u: &str, _b: &str, _t: Duration) -> Result<String, HttpErr> {
+            let n = self.seen.get();
+            self.seen.set(n + 1);
+            if n < self.fail_first { Err(self.err.clone()) } else { Ok(self.body.clone()) }
+        }
+        fn get(&self, _u: &str, _t: Duration) -> Result<String, HttpErr> {
+            self.post_json(_u, "", _t)
+        }
+    }
+
+    #[test]
+    fn network_failure_retried_twice_with_5s_then_15s() {
+        // 需求②：网络类失败重试 2 次，间隔 5s / 15s 递增
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        let http = FlakyHttp::new(2, HttpErr::Network("reset by peer".into()), &epoint_body());
+        let sleeper = SpySleeper::new();
+        let out = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28");
+        assert!(out.is_ok(), "两次失败后第三次应成功");
+        assert_eq!(http.seen.get(), 3, "共 3 次尝试（首试 + 2 次重试）");
+        assert_eq!(*sleeper.waits.borrow(), vec![5u64, 15u64], "重试间隔必须是 5s、15s");
+    }
+
+    #[test]
+    fn blocked_is_never_retried() {
+        // 需求②后半：Blocked（验证码/拦截）不重试，立即降级——越重试封得越久
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        let http = FlakyHttp::new(99, HttpErr::Blocked("captcha_page"), "");
+        let sleeper = SpySleeper::new();
+        let e = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http.seen.get(), 1, "被拦截只能试 1 次");
+        assert!(sleeper.waits.borrow().is_empty(), "被拦截不得等待重试");
+        assert_eq!(e.status, FetchStatus::Blocked);
+        assert_eq!(e.attempts, 1);
+    }
+
+    #[test]
+    fn retry_exhausted_reports_three_attempts_and_status_code() {
+        // 三次全失败：诊断要能说清「试了几次」「服务端给了什么码」「回了什么」
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        // 网络类错误连试 3 次仍不行 → attempts=3，URL 落到诊断里
+        let http = FlakyHttp::new(99, HttpErr::Network("connection reset".into()), "");
+        let sleeper = SpySleeper::new();
+        let e = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http.seen.get(), 3);
+        assert_eq!(e.attempts, 3);
+        assert!(e.url.contains("luan.gov.cn"), "诊断要带实际请求 URL，实际：{}", e.url);
+
+        // 状态码类（非网络类）一次即止，但状态码与响应体原文必须保住
+        let http2 = FlakyHttp::new(99, HttpErr::Status(503, "服务暂不可用".into()), "");
+        let e2 = fetch_site_with_retry(spec, &http2, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http2.seen.get(), 1, "HTTP 状态码不属网络类，按需求不重试");
+        assert_eq!(e2.http_status, Some(503));
+        assert_eq!(e2.body_head, "服务暂不可用");
+    }
+
+    #[test]
+    fn timeout_class_is_retryable_and_tls_too() {
+        // 分类边界：超时/TLS 属网络类→重试；HTTP 状态码不属网络类→不重试
+        assert!(HttpErr::Timeout("timed out".into()).is_retryable());
+        assert!(HttpErr::Tls("handshake".into()).is_retryable());
+        assert!(HttpErr::Network("reset".into()).is_retryable());
+        assert!(!HttpErr::Status(404, String::new()).is_retryable());
+        assert!(!HttpErr::Blocked("captcha_page").is_retryable());
+    }
+
+    #[test]
+    fn diag_keeps_only_last_three() {
+        // 需求：每源滚动保留最近 3 次诊断，不无限增长
+        let mut row = SiteStateRow::default();
+        for i in 1..=5 {
+            row.push_diag(DiagEntry { ts: format!("2026-10-2{}T09:00:00Z", i), kind: format!("第{}次", i), ..Default::default() });
+        }
+        assert_eq!(row.diags.len(), 3);
+        assert_eq!(row.diags[0].kind, "第3次", "最早的两条应被挤掉");
+        assert_eq!(row.diags[2].kind, "第5次");
+    }
+
+    #[test]
+    fn diag_block_text_is_paste_back_ready() {
+        // 「复制诊断」贴回来的那段文本：六项要素齐全，缺项要写清（不能留空白让人猜）
+        let d = DiagEntry {
+            ts: "2026-10-29T10:30:00Z".into(),
+            url: "https://ggzy.luan.gov.cn/rest/esinteligentsearch/getFullTextDataNew".into(),
+            http_status: Some(403),
+            kind: "被拦截".into(),
+            detail: "命中拦截特征 captcha_page".into(),
+            body_head: "<html>频繁访问，请稍后再试".into(),
+            attempts: 1,
+        };
+        let t = d.to_block();
+        assert!(t.contains("2026-10-29T10:30:00Z"));
+        assert!(t.contains("getFullTextDataNew"));
+        assert!(t.contains("HTTP 状态：403"));
+        assert!(t.contains("尝试次数：1"));
+        assert!(t.contains("频繁访问"));
+
+        let empty = DiagEntry::default().to_block();
+        assert!(empty.contains("（未取到）"), "时间缺失要显式标出");
+        assert!(empty.contains("（未发出请求）"), "未发请求要显式标出");
+        assert!(empty.contains("（无）"), "无状态码要显式标出");
+    }
+
+    #[test]
+    fn run_daily_writes_diag_for_success_and_failure() {
+        // 诊断落库：成功也留一条（成功记录能证明"刚才还通"）
+        let mut st = IntelState::default();
+        let empty = serde_json::json!({ "result": { "results": [] } }).to_string();
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
+        let sleeper = NoSleep;
+        let (results, _) = run_daily_at(&mut st, &http, &sleeper, "2026-10-28", "2026-07-28", "2026-10-28", "2026-10-29T02:00:00Z");
+        let ok = results.iter().find(|r| r.site_id == "luan").unwrap();
+        assert_eq!(ok.status, FetchStatus::Ok);
+        let row = &st.sites["luan"];
+        assert_eq!(row.diags.len(), 1);
+        assert_eq!(row.diags[0].kind, "成功");
+        assert_eq!(row.diags[0].ts, "2026-10-29T02:00:00Z");
+        // 未匹配 mock 的源（徽采云 / 省级主站）记为失败，且诊断带上分类
+        let bad = results.iter().find(|r| r.status != FetchStatus::Ok).unwrap();
+        let bad_row = &st.sites[&bad.site_id];
+        assert_eq!(bad_row.diags[0].kind, bad.status.label());
+        assert!(!bad_row.diags[0].detail.is_empty(), "失败诊断必须有说明");
+    }
+
+    #[test]
+    fn run_daily_keeps_diags_bounded_across_runs() {
+        // 连跑 5 轮 → 每源仍只有 3 条，且是最近 3 条
+        let mut st = IntelState::default();
+        let empty = serde_json::json!({ "result": { "results": [] } }).to_string();
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
+        let sleeper = NoSleep;
+        for i in 0..5 {
+            run_daily_at(&mut st, &http, &sleeper, "2026-10-28", "2026-07-28", "2026-10-28", &format!("2026-10-29T0{}:00:00Z", i));
+        }
+        let row = &st.sites["luan"];
+        assert_eq!(row.diags.len(), DIAG_KEEP);
+        assert_eq!(row.diags[2].ts, "2026-10-29T04:00:00Z", "最后一条应是最近那轮");
+    }
+
+    #[test]
+    fn ggzy_ah_primes_session_then_posts_form() {
+        // 需求⑥：先 GET 首页拿会话 cookie，再 POST /souSuo 表单
+        let spec = SITE_REGISTRY.iter().find(|s| s.tier == Tier::ProvincialMain).unwrap();
+        let html = "<html>…<a href=\"newDetail?guid=abc123\">XX县植保无人机采购项目</a>…</html>";
+        let http = MockHttp { responses: BTreeMap::from([
+            ("ggzy.ah.gov.cn/souSuo".to_string(), Ok(html.to_string())),
+            ("ggzy.ah.gov.cn/".to_string(), Ok("<html>首页</html>".to_string())),
+        ]), calls: Default::default() };
+        let items = fetch_site(spec, &http, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].url.contains("newDetail?guid=abc123"));
+        // 首页 + 检索各一次
+        assert_eq!(http.calls.get(), 2, "必须先是首页、再是检索");
+    }
+
+    #[test]
+    fn ggzy_ah_homepage_failure_does_not_mask_search_failure() {
+        // 首页预热失败不该掩盖检索失败的真相：报检索，附一句"可能整站不可达"
+        let spec = SITE_REGISTRY.iter().find(|s| s.tier == Tier::ProvincialMain).unwrap();
+        let http = MockHttp { responses: BTreeMap::new(), calls: Default::default() };
+        let e = fetch_site(spec, &http, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(e.status, FetchStatus::Network);
+        assert!(e.url.ends_with("/souSuo"), "诊断 URL 应是检索地址（不是首页），实际：{}", e.url);
+        assert!(e.detail.contains("整站不可达"), "首页也失败时应点明整站不可达的可能");
+    }
+
+    #[test]
+    fn tls_backend_reports_what_actually_took_effect() {
+        // 防"以为切了其实没切"：feature 只加不改代码时后端仍会是 rustls，
+        // 所以这里断言的是一个**可读的具体后端名**，而不是"配置了一个 feature"。
+        let label = UreqFetcher.tls_backend();
+        assert!(!label.is_empty());
+        // 本机（Linux 且 native-tls 可用）应为 openssl；若初始化失败会明确写"回落"
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                label.contains("openssl") || label.contains("回落"),
+                "Linux 上 native-tls 后端应为 openssl 或明确回落，实际：{}",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn form_post_and_json_post_use_different_content_types() {
+        // 需求⑥的根因验证：省级主站收表单，之前复用 post_json 发 application/json。
+        // 用 127.0.0.1 上一次性 TCP 回声服务端抓请求头，直接看发出去的到底是什么。
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn capture_once(trigger: impl FnOnce(u16)) -> String {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let h = std::thread::spawn(move || {
+                let (mut s, _) = l.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                String::from_utf8_lossy(&buf[..n]).to_string()
+            });
+            trigger(port);
+            h.join().unwrap()
+        }
+
+        let req1 = capture_once(|port| {
+            let url = format!("http://127.0.0.1:{}/souSuo", port);
+            let r = UreqFetcher.post_form(&url, "param=%E6%97%A0%E4%BA%BA%E6%9C%BA&currentPage=1", Duration::from_secs(5));
+            assert!(r.is_ok(), "本地表单 POST 应成功：{:?}", r.err());
+        });
+        assert!(req1.contains("application/x-www-form-urlencoded"), "表单请求的 Content-Type 不对：\n{}", req1);
+        assert!(req1.to_lowercase().contains("accept-language: zh-cn"), "缺 Accept-Language：\n{}", req1);
+        assert!(req1.contains("Referer: http://127.0.0.1:"), "缺 Referer（Epoint 常校验）：\n{}", req1);
+
+        let req2 = capture_once(|port| {
+            let url = format!("http://127.0.0.1:{}/rest", port);
+            let r = UreqFetcher.post_json(&url, "{}", Duration::from_secs(5));
+            assert!(r.is_ok(), "本地 JSON POST 应成功：{:?}", r.err());
+        });
+        assert!(req2.contains("application/json"), "JSON 请求的 Content-Type 不对：\n{}", req2);
+    }
+
     #[test]
     fn dedup_same_url_across_pagination() {
         // AC-2-4：分页重复只留一条
@@ -1165,16 +1905,16 @@ mod tests {
     fn blocked_and_network_failures_are_distinguishable() {
         // AC-2-5：拦截 / 网络失败 / 解析失败三种状态可区分
         let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
-        let blocked = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("<html>频繁访问!</html>".to_string()))]) };
+        let blocked = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("<html>频繁访问!</html>".to_string()))]), calls: Default::default() };
         let e = fetch_site(spec, &blocked, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e.0, FetchStatus::Blocked);
-        assert!(e.1.contains("拦截特征"));
-        let offline = MockHttp { responses: BTreeMap::new() };
+        assert_eq!(e.status, FetchStatus::Blocked);
+        assert!(e.detail.contains("拦截特征"));
+        let offline = MockHttp { responses: BTreeMap::new(), calls: Default::default() };
         let e2 = fetch_site(spec, &offline, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e2.0, FetchStatus::Network);
-        let bad = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("not json".to_string()))]) };
+        assert_eq!(e2.status, FetchStatus::Network);
+        let bad = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("not json".to_string()))]), calls: Default::default() };
         let e3 = fetch_site(spec, &bad, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e3.0, FetchStatus::ParseError);
+        assert_eq!(e3.status, FetchStatus::ParseError);
     }
 
     #[test]
@@ -1220,7 +1960,7 @@ mod tests {
         let mut st = IntelState::default();
         // 用一个全部源返回空数组的 mock：epoint 站解析到空 results 数组
         let empty = serde_json::json!({ "result": { "results": [] } }).to_string();
-        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]) };
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
         let (results, summary) = run_daily(&mut st, &http, "2026-10-28", "2026-07-28", "2026-10-28");
         assert!(!summary.is_empty());
         assert!(summary.contains("今日新增相关项目 0 条"));
@@ -1291,7 +2031,7 @@ mod tests {
             "data": [{ "guid": "G1", "company_name": "凤台县丰沃农机技术服务有限公司",
                 "area": "安徽省/淮南市/凤台县", "address": "刘集乡", "contact_phone": "13800000000" }]
         }).to_string();
-        let http = MockHttp { responses: BTreeMap::from([("dealer-address".to_string(), Ok(body))]) };
+        let http = MockHttp { responses: BTreeMap::from([("dealer-address".to_string(), Ok(body))]), calls: Default::default() };
         let nodes = fetch_dealers(&http).unwrap();
         // 去重口径 = 公司名+area 归一化：四个 tag 返回同一家公司时只留一条
         assert_eq!(nodes.len(), 1);

@@ -17,7 +17,12 @@ semver = "1"
 # xlsx 读取：calamine 0.31（zip ^4.2，与 bundled 构建链兼容的较新版本）
 calamine = "0.31"
 # v2.2 应用内直连（用户 2026-10-28 拍板放开单机化红线，恢复 v2.1 移除的网络传输层）
-ureq = "2"
+# v2.2.4 抓取改造①：TLS 栈从 rustls 切到 native-tls（Windows 走 SChannel，即系统/浏览器同一栈）。
+# 政府站 WAF 常见做法是直接 reset 非浏览器 TLS 指纹，rustls 的 ClientHello 与之差异明显。
+# 注意：native-tls 不会被 ureq 的便捷函数（ureq::get / ureq::post）采用，必须显式
+# 在 AgentBuilder::tls_connector 上配置——只加 feature 不改代码等于没改（见 intel::UreqFetcher）。
+# 保留默认 tls feature 不动：关掉它会让 ureq 失去 HTTPS 抽象层，native-tls 是"适配器"而非替代。
+ureq = { version = "2", features = ["native-tls", "cookies"] }
 
 [dev-dependencies]
 tempfile = "3"
