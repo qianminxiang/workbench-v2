@@ -84,6 +84,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "图标质量门禁未通过（见上方逐项 FAIL）" }
           Write-Host "图标质量门禁通过：7 档与已签署基线逐像素一致（掩膜交并比 >=99.5% + 逐档摘要相等）、托盘图标与 ICO 256 档字节一致"
           Write-Host "注：本条只证明「和签署的那张一模一样」，不证明「那张图本身没有水印」——后者由签署人负责。"
+      # ── 桌面适配层单测（v2.2.3 P0 新增）───────────────────────────
+      # test-core 只跑 wb-core/wbd（ubuntu 无 GTK 编不了 wb-desktop），
+      # 而 P0 时区偏移修复点恰在 wb-desktop 的 lib.rs：秒→分钟换算必须在这里被
+      # 真实执行到，否则「补了测试」只是口头声明。Windows runner 编 app crate
+      # 无额外依赖（WebView2 自带），代价是一次额外编译，值得。
+      - name: 桌面适配层单测（wb-desktop，含时区偏移回归）
+        shell: pwsh
+        run: |
+          cargo test -p wb-desktop --locked
+          if ($LASTEXITCODE -ne 0) { throw "wb-desktop 单测失败（含 v2.2.3 时区偏移回归）" }
       - name: 构建 NSIS 安装包（签名私钥走环境变量，绝不进仓库）
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -567,7 +577,7 @@ jobs:
           }
           $global:LASTEXITCODE = 0
           gh release create $tag --title $tag `
-            --notes "综合工作台 v2.2.2：修复详情面板遮挡筛选行、机甲语义色接入、音效独立开关；产品名全面对齐综合工作台（窗口/快捷方式/安装包/界面/描述）、存量迁移钩子（旧名卸载项与旧目录清理+MSI 清理+更新模式补建快捷方式）、更新验证脚本去硬编码、升级真机实测纳入 CI：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正、免打扰可编辑。" `
+            --notes "综合工作台 v2.2.3（P0 热修复）：修复时区偏移换算——此前本机 UTC 偏移的秒被当作分钟使用，UTC+8 下所有日期 +20 天（如 2026-10-29 显示为 2026-11-18）；本版本仅含该修复及其回归测试（适配层单测 + CI 中国标准时间端到端断言），不包含其他功能变更。" `
             @bins
           if ($LASTEXITCODE -ne 0) { throw "gh release create 失败（exit $LASTEXITCODE）" }
 

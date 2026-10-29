@@ -92,7 +92,7 @@ for (const plat of placeholderPlatforms) {
 
 const manifest = {
   version,
-  notes: "综合工作台 v2.2.2：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
+  notes: "综合工作台 v2.2.3（P0 热修复）：修复时区偏移换算——此前本机 UTC 偏移的秒被当作分钟使用，UTC+8 下所有日期 +20 天（如 2026-10-29 显示为 2026-11-18）；本版本仅含该修复及其回归测试（适配层单测 + CI 中国标准时间端到端断言），不包含其他功能变更。",
   pub_date: new Date().toISOString(),
   platforms,
 };

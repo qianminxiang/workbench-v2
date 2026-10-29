@@ -193,6 +193,42 @@ jobs:
             if (Test-Path $k) { Write-Host "注册表 $k DisplayVersion=$((Get-ItemProperty $k).DisplayVersion)" }
           }
 
+      # ── P0 时区回归（v2.2.3）：UTC+8 下本地日期必须 == 真实日期 ──
+      # 修复点：lib.rs local_offset_minutes() 此前把 chrono 偏移秒当分钟用，
+      # UTC+8 下所有日期 +20 天（2026-10-29 显示成 2026-11-18）。runner 默认 UTC
+      # （偏移 0）不会显形，必须先切中国标准时间再断言；期望值由 .NET 独立推算，
+      # 不经过被测代码，构成真断言。
+      - name: "时区回归：UTC+8 下本地日期 == 真实日期（v2.2.3 P0）"
+        shell: pwsh
+        run: |
+          $tz = "China Standard Time"
+          Set-TimeZone -Id $tz
+          Write-Host "当前时区：$([System.TimeZoneInfo]::Local.Id)（偏移 $([System.TimeZoneInfo]::Local.BaseUtcOffset)）"
+          $expected = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, $tz).ToString("yyyy-MM-dd")
+          Write-Host "期望本地日期（.NET 独立推算）=$expected"
+
+          $exe = Join-Path $env:LOCALAPPDATA "$env:WB_NEW_PRODUCT\wb-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "未找到被测主程序：$exe" }
+          New-Item -ItemType Directory -Force -Path "evidence" | Out-Null
+          $result = Join-Path $PWD "evidence/tz-check.json"
+          Remove-Item $result -ErrorAction SilentlyContinue
+          $env:WB_E2E_RESULT = $result
+          $env:WB_E2E_EXPECT_LOCAL_DATE = $expected
+          $p = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddMinutes(3)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $result)) { Start-Sleep -Seconds 2 }
+          Get-Process -Id $p.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not (Test-Path $result)) { throw "tz_check 未产出结果文件（3 分钟超时）" }
+          Get-Content $result -Raw | Write-Host
+          $j = Get-Content $result -Raw | ConvertFrom-Json
+          if ($j.stage -ne "tz_check") { throw "tz_check stage 异常：$($j.stage)" }
+          if ($j.ok -ne $true) {
+            throw "UTC+8 本地日期校验失败：local_date=$($j.local_date) expected=$($j.expected_local_date) offset_minutes=$($j.offset_minutes)（修复前 offset_minutes 会是 28800 而非 480，日期 +20 天）"
+          }
+          Write-Host "✅ UTC+8 时区回归通过：local_date=$($j.local_date) offset_minutes=$($j.offset_minutes)"
+          # 恢复 UTC：后续步骤的时区环境与既有基线保持一致
+          Set-TimeZone -Id "UTC"
+
       # ── 夹具：真实副本 + 4 个负例（本地 http，不碰 Release）──
       - name: 构造负例夹具（副本，不改发布物）
         shell: pwsh

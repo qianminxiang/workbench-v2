@@ -48,8 +48,16 @@ fn err_string(e: StoreError) -> String {
 }
 
 /// 本机时区相对 UTC 的偏移分钟（东八区 = +480）。时间只由系统层提供（架构 §4.11-4）。
+/// P0 修复（v2.2.3）：`chrono` 的 `local_minus_utc()` 返回的是**秒**（UTC+8 = 28800），
+/// 此前未换算直接当分钟传给 `civil_and_minutes`，28800 分钟 = 整 20 天，
+/// 导致 UTC+8 机器上所有日期 +20 天（2026-10-29 显示成 2026-11-18）。
 fn local_offset_minutes() -> i32 {
-    chrono::Local::now().offset().local_minus_utc()
+    offset_seconds_to_minutes(chrono::Local::now().offset().local_minus_utc())
+}
+
+/// 适配层换算：chrono 偏移秒 → 偏移分钟。独立纯函数，供注入非零偏移做回归单测。
+fn offset_seconds_to_minutes(seconds: i32) -> i32 {
+    seconds / 60
 }
 
 /// 现在（本地时区）：自然日 + 当日分钟数，一次性换算保持二者一致。
@@ -1144,4 +1152,40 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("综合工作台启动失败");
+}
+
+
+#[cfg(test)]
+mod tz_tests {
+    use super::*;
+
+    /// P0 回归（v2.2.3）：chrono 偏移是**秒**，适配层必须换算成分钟再进 `civil_and_minutes`。
+    /// 换算缺失时 28800 分钟 = 整 20 天，2026-10-29 会被算成 2026-11-18。
+    #[test]
+    fn offset_seconds_converted_to_minutes() {
+        assert_eq!(offset_seconds_to_minutes(28800), 480); // UTC+8
+        assert_eq!(offset_seconds_to_minutes(0), 0); // UTC
+        assert_eq!(offset_seconds_to_minutes(-25200), -420); // UTC-7
+        // 半小时时区（UTC+5:30，印度）：19800 秒 → 330 分钟（整除截断正确）
+        assert_eq!(offset_seconds_to_minutes(19800), 330);
+    }
+
+    /// 注入非零偏移走完整链路：`civil_and_minutes` 必须拿到分钟口径的偏移，
+    /// UTC 2026-10-29 01:00 + 480 分钟 = 本地 2026-10-29 09:00。
+    #[test]
+    fn civil_and_minutes_with_utc_plus_8_minute_offset() {
+        let (d, m) = wb_core::local_time::civil_and_minutes("2026-10-29T01:00:00Z", 480)
+            .expect("valid iso");
+        assert_eq!((d.year, d.month, d.day), (2026, 10, 29));
+        assert_eq!(m, 9 * 60);
+    }
+
+    /// 反证用例：若把秒当分钟传进去（修复前的实际行为），日期会 +20 天——
+    /// 该断言锁死"偏移必须是分钟"这一契约，防止回归。
+    #[test]
+    fn seconds_fed_as_minutes_shifts_date_by_20_days() {
+        let (d, _) = wb_core::local_time::civil_and_minutes("2026-10-29T01:00:00Z", 28800)
+            .expect("valid iso");
+        assert_eq!((d.year, d.month, d.day), (2026, 11, 18)); // 2026-10-29 + 20 天
+    }
 }
