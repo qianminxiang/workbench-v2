@@ -197,13 +197,24 @@ jobs:
       - name: 构造负例夹具（副本，不改发布物）
         shell: pwsh
         run: |
+          # n3 的伪造版本必须与「真实签名里的版本」不同（通常取基线次补丁号，
+          # 如基线 2.2.1 → 伪造 2.2.2）。理由：n3 只翻清单 version 字段，
+          # 其余 url/signature 仍是真实的；若伪造值 == 基线版本，
+          # 「signed for X but announced X」这段判定不会触发，更新插件既不报错
+          # 也不终止，负例就永远等不到终态（2026-10-29 run 40829502144 实测卡死）。
+          # 曾一度把这里写成 $env:WB_BASE_VERSION，正是上述自相矛盾的情形。
+          $parts = $env:WB_BASE_VERSION.Split('.')
+          if ($parts.Count -lt 3) { throw "WB_BASE_VERSION 不是三段式：$env:WB_BASE_VERSION" }
+          $n3Version = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+          if ($n3Version -eq $env:WB_BASE_VERSION) { throw "n3 伪造版本与基线相同（$n3Version），负例不成立" }
+          Write-Host "n3 伪造清单版本：$n3Version（真实签名版本 $env:WB_BASE_VERSION）"
           python scripts/e2e-make-fixtures.py `
             --manifest "assets/latest.json" `
             --installer "assets/$env:WB_BASE_ASSET" `
             --sig "assets/$env:WB_BASE_ASSET.sig" `
             --out "fixtures" `
             --port 8123 `
-            --n3-version $env:WB_BASE_VERSION
+            --n3-version $n3Version
           if ($LASTEXITCODE -ne 0) { throw "夹具构造失败" }
           Get-ChildItem -Recurse fixtures | ForEach-Object { Write-Host "  $($_.FullName.Replace($PWD.Path,''))  $($_.Length)B" }
 

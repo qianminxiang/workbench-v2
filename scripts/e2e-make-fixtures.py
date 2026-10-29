@@ -77,6 +77,17 @@ def main() -> None:
     out.mkdir(parents=True)
 
     real = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+
+    # n3 只翻清单的 version 字段，url/signature 仍是真实的。
+    # 若伪造值与清单真实版本相同，更新插件不会发出
+    # 「signed for X but announced X」判定，既不报错也不终止，负例永远等不到终态
+    # （2026-10-29 run 40829502144 实测：n3 卡死 → 未产出终态结果文件）。
+    # 在夹具侧直接拦下，避免调用方再传成基线版本。
+    if args.n3_version == real["version"]:
+        raise SystemExit(
+            "n3 伪造版本与清单真实版本相同（{}），负例不成立："
+            "n3 必须给出与真实签名版本不同的伪造版本".format(real["version"])
+        )
     win_real = real["platforms"]["windows-x86_64"]
     base = f"http://127.0.0.1:{args.port}"
 
