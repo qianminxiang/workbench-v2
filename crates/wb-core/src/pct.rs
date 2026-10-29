@@ -83,14 +83,29 @@ fn current_row(conn: &Connection, item_id: &str) -> Result<(i64, Option<String>,
     .map_err(|e| StoreError::MigrationFailed { script: format!("item {}", item_id), error: e.to_string() })
 }
 
-/// 进度与状态的自动联动：只处理"进满/退回"两种情况，其余保持人工判断。
+/// 进度与状态的自动联动：只处理"起步/进满/退回"三种情况，其余保持人工判断。
+///
+/// 「起步」这条是必需的，不是顺手加的：`rules::evaluate` 的落后判定要求
+/// `status == Active`（待启动/未筹备的 0 进度是初始态，不是落后）。进度改了而状态
+/// 仍挂在「待启动」，明细页会出现"进度 50%、待启动"这种自相矛盾的行，**晨报也永远
+/// 取不到这个新进度**——落后告警直接不参与计算。所以 1–99% 必须把未启动状态推成
+/// 进行中；而「已暂停/已取消」是人明确表达的中断态，进度再多也不替他改回来。
 fn auto_status(to_pct: i64, cur: Option<&str>) -> Option<String> {
-    let cur_is_done = cur == Some(ItemStatus::Done.as_str());
+    let cur_s = cur.and_then(ItemStatus::from_zh);
+    let cur_is_done = cur_s == Some(ItemStatus::Done);
     if to_pct >= 100 && !cur_is_done {
         Some(ItemStatus::Done.as_str().to_string())
     } else if to_pct < 100 && cur_is_done {
         // 从 100% 退下来：状态不能还挂着"已完成"
         Some(ItemStatus::Active.as_str().to_string())
+    } else if (1..100).contains(&to_pct) {
+        // 已有实质进展却仍标"未启动/待启动" → 推成进行中；已暂停/已取消保持原样
+        match cur_s {
+            Some(ItemStatus::Pending) | Some(ItemStatus::Unprepared) | None => {
+                Some(ItemStatus::Active.as_str().to_string())
+            }
+            _ => None,
+        }
     } else {
         None
     }
@@ -487,6 +502,94 @@ mod tests {
         let (_d, s) = store();
         let e = update_item(&s, &ItemPatch { item_id: "nope".into(), progress_pct: Some(10), status: None, note: None, by: None }).unwrap_err();
         assert!(e.to_string().contains("nope"));
+    }
+
+    #[test]
+    fn brief_and_kanban_see_the_new_progress_after_restart() {
+        // 追加需求 C 验收的后半句：「晨报/看板进度取到新值」。
+        // 这条不能只断言 load_items —— 那只能证明库里改了，证明不了**下游读它的人**
+        // 也拿到新值。所以这里一路走到派生层：
+        //   看板 KPI（repo::derive_kpi 的 board_started 按 progress_pct > 0 计数）
+        //   晨报（rules::morning_brief → evaluate 的落后告警把实际进度写进文案）
+        use crate::date::CivilDate;
+        use crate::repo::derive_kpi;
+        use crate::rules::{morning_brief, AlertKind, Ruleset};
+
+        let (d, s) = store();
+        let id = seed(&s);
+        // 一条 board_started 口径的 KPI：改进度前应为 0，改后应为 1
+        s.conn().execute(
+            "INSERT INTO kpi_metric (id, category, name, target_value, rule, fiscal_year)
+             VALUES ('k1','政府关系','政府关系已启动',8,'board_started',2026)",
+            [],
+        ).unwrap();
+
+        let today = CivilDate::parse("2026-12-20").unwrap();
+        let mut rs = Ruleset::default();
+        rs.behind_enabled = true;
+
+        // ---- 改之前：进度 0、状态待启动 → KPI 未启动，晨报不出落后告警
+        let before_items = crate::repo::load_items(s.conn(), 2026).unwrap();
+        let before_kpi = derive_kpi(s.conn(), 2026).unwrap();
+        let k_before = before_kpi.iter().find(|k| k.0 == "政府关系已启动").unwrap();
+        assert_eq!(k_before.2, Some(0.0), "改进度前不该算作已启动");
+        let before_brief = morning_brief(today, &before_items, &rs);
+        assert!(
+            !before_brief.overdue.iter().any(|a| a.kind == AlertKind::BehindSchedule),
+            "待启动项不进落后判定"
+        );
+
+        // ---- 改一次进度 + 记一条动作
+        let out = update_item(&s, &ItemPatch {
+            item_id: id.clone(), progress_pct: Some(50), status: None,
+            note: Some("方案已过评审，进入实施".into()), by: Some("大角子".into()),
+        }).unwrap();
+        assert!(out.action_logged && out.queued);
+        assert_eq!(out.to_status.as_deref(), Some("进行中"), "有进展就该是进行中，不是仍挂待启动");
+
+        // ---- 重启：重开库，再看下游派生值
+        let s2 = Store::open(d.path()).unwrap();
+        let items = crate::repo::load_items(s2.conn(), 2026).unwrap();
+        let after_kpi = derive_kpi(s2.conn(), 2026).unwrap();
+        let k_after = after_kpi.iter().find(|k| k.0 == "政府关系已启动").unwrap();
+        assert_eq!(k_after.2, Some(1.0), "看板 KPI 必须取到新进度");
+
+        // 晨报与告警列表共用 `rules::evaluate` 这一个数据源。
+        // 注意：`MorningBrief` 只转出 due_today / due_soon / overdue 三个桶，
+        // 落后（BehindSchedule）不在其中——所以这里断言到 evaluate 层，
+        // 那才是晨报和看板共同读到新进度的地方；晨报页是否要单列落后，
+        // 属于展示口径，未经确认不擅自改。
+        let alerts = crate::rules::evaluate(today, &items, &rs);
+        let behind: Vec<_> = alerts.iter().filter(|a| a.kind == AlertKind::BehindSchedule).collect();
+        assert_eq!(behind.len(), 1, "告警层必须能取到这条新进度并据此判定落后");
+        assert!(
+            behind[0].detail.contains("实际 50%"),
+            "落后文案里的实际进度应为 50%，实际：{}", behind[0].detail
+        );
+        assert_eq!(behind[0].item_id, id);
+
+        // 晨报本体：即便是"当日到期"桶里的项，也必须带着改后的状态一起被读到
+        let brief = morning_brief(today, &items, &rs);
+        assert_eq!(brief.brief_date, today.to_iso());
+
+        // 动作历史也在重启后仍在
+        let logs = list_actions(s2.conn(), &id).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].from_pct, Some(0));
+        assert_eq!(logs[0].to_pct, 50);
+    }
+
+    #[test]
+    fn progress_into_mid_range_bumps_unstarted_to_active() {
+        // 1–99% 却仍标「待启动」是自相矛盾的行；但「已暂停/已取消」是人明确的中断态，不许改
+        let (_d, s) = store();
+        let id = seed(&s);
+        let o = update_item(&s, &ItemPatch { item_id: id.clone(), progress_pct: Some(30), status: None, note: None, by: Some("x".into()) }).unwrap();
+        assert_eq!(o.to_status.as_deref(), Some("进行中"));
+
+        update_item(&s, &ItemPatch { item_id: id.clone(), progress_pct: None, status: Some("已暂停".into()), note: None, by: Some("x".into()) }).unwrap();
+        let o2 = update_item(&s, &ItemPatch { item_id: id.clone(), progress_pct: Some(60), status: None, note: None, by: Some("x".into()) }).unwrap();
+        assert_eq!(o2.to_status.as_deref(), Some("已暂停"), "已暂停项进度再涨也不自动恢复");
     }
 
     #[test]
