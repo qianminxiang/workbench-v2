@@ -80,10 +80,15 @@ jobs:
           Write-Host "基线 tag 目标：$tag"
           New-Item -ItemType Directory -Force -Path assets | Out-Null
           # 先取 latest.json（匿名），拿到真实版本号与真实资产 URL
-          curl.exe -sS -L --max-time 120 -o "assets/latest.json" `
-            -w "HTTP %{http_code} %{size_download}B  latest.json`n" `
-            "https://github.com/$env:GITHUB_REPOSITORY/releases/$tag/download/latest.json"
-          if ($LASTEXITCODE -ne 0) { throw "下载 latest.json 失败（tag=$tag）" }
+          # 注意 URL 形式：必须是 /releases/download/<tag>/<asset>。
+          # 早先写成 /releases/<tag>/download/latest.json（少了一层 download）——
+          # 该形式对 github.com 抛 502、对部分 tag 抛 404，curl --fail 在某些 404 上
+          # 仍会拿到错误页正文而不非零退出，于是失败点被误报成"latest.json 缺 version 字段"，
+          # 看起来像清单内容坏，实际是地址拼错。这里同时补上显式状态码断言。
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/latest.json"
+          $code = curl.exe -sS -L --max-time 120 -o "assets/latest.json" -w "%{http_code}" $url
+          Write-Host "latest.json 下载：HTTP $code  $url"
+          if ([int]$code -ne 200) { throw "下载 latest.json 失败：HTTP $code（tag=$tag，地址=$url）" }
           $j = Get-Content "assets/latest.json" -Raw | ConvertFrom-Json
           $baseVer = $j.version
           if ([string]::IsNullOrWhiteSpace($baseVer)) { throw "latest.json 缺 version 字段" }
