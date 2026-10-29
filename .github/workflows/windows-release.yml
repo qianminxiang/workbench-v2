@@ -20,6 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ── 入包音频头完整性门禁（纯标准库，秒级）──────────────────────────
+      # 拦「流式写入器把 RIFF / data 长度字段留成 0xFFFFFFFF」。这类坏头在
+      # Chromium 上照样能播（宽容解析），只有在严格 RIFF 解析器（Windows
+      # Media Foundation、Python wave）上才会暴露成 26843.5 秒的假时长，
+      # 所以播放自测抓不到它——必须靠字节级检查。实测反例：9 条语音播报
+      # 在分支头上全部不合规，修复只需每个文件改 8 个字节、payload 不动。
+      - name: 校验入包 WAV 头（RIFF / data 长度字段）
+        run: python3 scripts/check-wav-headers.py
       - uses: dtolnay/rust-toolchain@stable
       # 这里不再装 libwebkit2gtk-4.1-dev / libgtk-3-dev：实测 `cargo test -p wb-core -p wbd`
       # 在没有 gtk+-3.0 的容器里同样 75/75 通过，说明这两个 crate 编译期不碰 GTK。
