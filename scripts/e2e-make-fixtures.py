@@ -112,6 +112,13 @@ def main() -> None:
 
     (out / "real").mkdir()
     shutil.copyfile(args.installer, out / "real" / "win.exe")
+    # 正例清单：原样复刻本次运行开始时钉死的那份最新清单（版本号与资产 URL 是同一 tag 的一对）。
+    # 存在的理由（2026-10-29 run 40836620836）：正例此前打真实 GitHub 端点，
+    # 而 WB_BASE_VERSION 是 step6 按 tag 取到的；若两者之间又发了新版，
+    # 插件公告的是新版本、env 里仍是旧版本，断言「未检测到基线版本 X：Y」必炸。
+    # 这是夹具时序问题，不是升级链路坏——断言口径不变，只是让被宣告的版本
+    # 回到本次运行钉死的那一版。
+    write_manifest(out / "real" / "latest.json", real)
 
     # ── n1：篡改安装包内容 ──
     blob = bytearray(Path(args.installer).read_bytes())
@@ -162,6 +169,7 @@ def main() -> None:
         "tampered_new_byte": "0x{:02x}".format(blob[mid]),
         "sig_is_base64_of_minisign_text": True,
         "base_version": base_version,
+        "pinned_manifest_url": f"{base}/real/latest.json",
         "n3_version": m3["version"],
         # 断言串在脚本侧拼好（唯一来源），工作流不再自己写版本字面量
         "n3_expect": (
