@@ -9,30 +9,35 @@
    - 警示块文字取色必须按底色定：亮色琥珀底深字（8.43）、亮色红底白字（5.26）、暗色红底深字（6.75）。
    - 板块色仅作色条与行程块，不作正文文字色（与 v2.0 完全一致，一个值都没改）。 */
 
-/* 亮色（办公态，默认跟随系统） */
+/* 亮色（白昼迷彩 · v2.2.2 DS-04 定稿）：结构与暗色档同构，材质换为阳极氧化铝 + 浅灰涂层。
+   原则：结构零删减（双切角/六角螺栓/舱段标头/警示胶带/灯带/HUD 角码/扫描线/雷达全部保留），
+         材质反转（渐变幅度更小、高光更弱、阴影更轻），背景做减法（噪点与暗角取消），语义色亮底加深。 */
 :root {
-  /* ── 五层表面栈（2.1）── */
-  --mech-canvas: #E8ECF1;
-  --mech-panel: #F9FBFC;
-  --mech-plate: #FFFFFF;
-  --mech-inset: #DBE2E9;
-  --mech-groove: #D1D9E1;
-  --mech-seam: #AEBAC8;          /* 结构缝：亮色卡片边界感的主力（对 plate 1.97） */
-  --mech-seam-hover: #829CCC;    /* 派生值：seam 与 brand 30% 混色（hover 态，4.1） */
-  --mech-ctl: #7B8694;           /* 控件描边（2.5 --w-ctl 用色，对 plate ≥3:1） */
-  /* ── 文字三级（2.2）── */
-  --mech-text-1: #151A20;
-  --mech-text-2: #48525C;
-  --mech-text-3: #585D62;        /* v2.1 修正：原 #646E79 在凹陷底仅 4.42，现对 5 表面最低 4.66 */
-  /* ── 交互与语义色（2.3）── */
-  --mech-brand: #1B5BD6;
-  --mech-brand-hover: #1749AE;   /* 悬停纯色（不用 filter） */
-  --mech-brand-pressed: #123C8F;  /* v2.1 新增：按下纯色 */
+  /* ── 五层表面栈（DS-04 2.1）── */
+  --mech-canvas: #EEF1F4;
+  --mech-panel: #FFFFFF;
+  --mech-plate-solid: #FFFFFF;   /* 纯色回退/派生色用：color-mix 与首列吸附底不能吃渐变 */
+  --mech-inset: #E7EBEF;
+  --mech-groove: #CBD3DA;
+  --mech-seam: #A0ACB6;          /* 结构缝：亮色卡片边界感的主力 */
+  --mech-seam-hover: #8299A8;    /* 派生值：seam 与 brand 混色（hover 态） */
+  --mech-ctl: #7B8694;           /* 控件描边（对 plate ≥3:1） */
+  /* ── 文字三级（DS-04 2.4）── */
+  --mech-text-1: #1A2128;
+  --mech-text-2: #45525D;
+  --mech-text-3: #5D6B76;
+  /* ── 交互与语义色（DS-04 2.4，亮底加深）── */
+  --mech-brand: #3266B0;
+  --mech-brand-hover: #28538F;   /* 悬停纯色（不用 filter） */
+  --mech-brand-pressed: #1F4478;  /* 按下纯色 */
   --mech-warn-amber: #854F00;     /* 仅临期（≤3 天） */
   --mech-warn-red: #B22C24;      /* 仅逾期 */
-  --mech-ok: #0D6F63;            /* 已闭环 / 数据源正常 */
-  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;  /* 亮琥珀底必须深字（白字仅 2.16） */
-  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;     /* 亮红底必须白字（深字仅 3.46） */
+  --mech-ok: #157A66;            /* 已闭环 / 数据源正常 / 雷达扫线 */
+  --hud-amber: #A66E12;          /* HUD 线条/角码/标线（文字级琥珀，亮底加深） */
+  --hud-amber-fill: #F0B24A;     /* 琥珀填充底仍用亮琥珀 */
+  --hud-amber-fill-fg: #20180A;  /* 填充底上一律深字 */
+  --mech-amber-bg: #E09A2E; --mech-amber-fg: #20180A;   /* 临期：亮琥珀底 + 深字 */
+  --mech-red-bg: #C74438; --mech-red-fg: #FFFFFF;       /* 逾期：按对比复测结论取白字 */
   /* ── 板块识别色（2.4，仅色条与行程块）── */
   --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
   --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
@@ -43,34 +48,75 @@
   --fs-card-title: 12.5px;
   --fs-th: 12px;
   --fs-mini: 11px;
-  --fs-kpi: 28px;
-  /* ── 间距 / 圆角 / 切角（2.5）── */
+  --fs-kpi: 30px;                /* DS-01 4.4：28px→30px，放大一档强化仪表感 */
+  /* ── 间距 / 圆角 / 切角（DS-01 3.1）── */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
   --radius-panel: 4px;
-  --radius-card: 4px;             /* v2.0 是 6px；v2.1 收紧，配合切角更「硬」 */
+  --radius-card: 4px;
   --radius-badge: 2px;
-  --chamfer-panel: 8px;
-  --chamfer-card: 6px;            /* 仅临期/逾期卡右上 */
-  /* ── 描边与条纹（2.5 / L6 / L7）── */
+  --chamfer-panel: 20px;         /* 面板级双切角：右上 + 左下对角（原 8px 单切已废弃） */
+  --chamfer-card: 12px;          /* 仅临期/逾期卡右上单切 */
+  /* ── 描边与条纹（DS-01 2.5 / L7）── */
   --w-seam: 1px;
   --w-rule: 1px;
   --w-ctl: 1px;
+  --w-frame: 1.5px;              /* 面板外框（原 1px → 1.5px） */
+  --w-panel-inner: 1px;          /* 面板内框（双层框的内线） */
+  --edge-hi-rgb: 255, 255, 255;  /* 内框高光色分量（暗/亮两档各自给 alpha） */
+  --edge-hi-alpha: 0.7;          /* 亮色档内框：rgba(255,255,255,.7) */
   --w-board-strip: 4px;
   --w-alert-strip: 3px;
   --card-h: 82px;                /* L2 标准档卡高（紧凑 70 / 展开 98 由 data-density 切换） */
   --card-h-compact: 70px;
   --card-h-expanded: 98px;
-  /* ── 阴影（2.5：1 层、模糊 ≤8px、禁止双层）── */
-  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
+  /* ── 舱段标头 / 灯带 / 螺栓 / 角码 / 扫描线（DS-01 3.2–3.7，亮色值）── */
+  --cabin-h: 34px;
+  --cabin-bg: #E9EDF1;
+  --cabin-rule: #FFFFFF;         /* 标头底部分隔（亮色档取亮线，暗色档为 #06090B） */
+  --cabin-title-size: 13px;
+  --cabin-tape-a: #E09A2E;       /* 警示胶带：亮底用琥珀 + 深灰 */
+  --cabin-tape-b: #2A2E33;
+  --strip-h: 3px;                /* 灯带 3px（原 2px） */
+  --strip-glow: 3px;             /* 亮色档 glow 减半（暗色档 6px） */
+  --bolt-color: #8B98A3;
+  --bolt-hi: rgba(255, 255, 255, 0.65);
+  --hud-corner-size: 18px;
+  --hud-corner-weight: 2px;
+  --scanline-color: rgba(60, 90, 120, 0.08);
+  --scanline-h: 2px;
+  /* ── 背景层（DS-04 2.3：亮色档噪点与暗角取消，仅留战术网格）── */
+  --canvas-grid: rgba(60, 90, 120, 0.06);
+  --canvas-grid-size: 40px;
+  --canvas-vignette: none;
+  --canvas-noise: none;
+  /* ── 图标系统（DS-01 第五章：2px 描边 + 关键部位填充双色）── */
+  --icon-size: 16px;
+  --icon-stroke: 2px;
+  --icon-line: #45525D;
+  --icon-fill: #3266B0;
+  /* ── 装甲材质（DS-04 2.2 亮色版：亚光浅涂层，渐变幅度收窄约一半）── */
+  --armor-plate-grad:
+    linear-gradient(180deg, #FFFFFF 0%, #F5F7F9 35%, #EDF0F3 75%, #E4E8EC 100%);
+  --armor-edge-hi: rgba(255, 255, 255, 0.75);
+  --armor-edge-lo: #C9D1D8;
+  --armor-btn-hi: rgba(255, 255, 255, 0.5);
+  --armor-btn-lo: #B8C2CB;
+  --mech-plate: var(--armor-plate-grad);  /* 卡片/条面一律走装甲渐变 */
+  /* ── 阴影（亮色：更轻）── */
+  --shadow-lift: 0 1px 2px rgba(24, 40, 58, 0.10);
+  --shadow-armor-lift:
+    0 2px 6px rgba(24, 40, 58, 0.16),
+    inset 0 1px 0 var(--armor-edge-hi),
+    inset 0 -1px 0 var(--armor-edge-lo);
   --shadow-focus: 0 0 0 2px var(--mech-brand);  /* 实色环，非 glow */
-  /* ── 动效（2.5）── */
-  --motion-morph: 240ms;      /* 形态切换硬上限 */
+  /* ── 动效（DS-02 档1：两档共用，亮色不降档）── */
+  --motion-morph: 400ms;      /* 旧四阶段总时长，兼容别名 */
   --motion-item: 140ms;      /* 卡片位移 */
-  --motion-reflow: 120ms;    /* 列表重排（沿用 v2.0） */
+  --motion-reflow: 120ms;    /* 列表重排 */
   --motion-micro: 60ms;      /* hover */
   --motion-press: 40ms;      /* 按下（必须 ≤100ms 出首个反馈） */
   --motion-gauge: 200ms;     /* 进度填充（5 段 × 40ms 顺序点亮） */
-  --motion-lock: 180ms;      /* 完成锁定 */
+  --motion-lock: 180ms;      /* 完成锁定（切角张收） */
   --motion-degraded: 80ms;   /* 降级：交叉淡入，零位移零 clip-path */
   --ease-morph-in: cubic-bezier(0.16, 0.84, 0.24, 1);    /* decelerate 前快后慢 */
   --ease-morph-out: cubic-bezier(0.4, 0, 0.84, 0.32);    /* accelerate 前慢后快 */
@@ -81,73 +127,154 @@
   --ease-in-quad: var(--ease-standard);
 }
 
-/* 暗色（机甲态）：层级靠明度阶梯（panel→plate 必须 ≥1.10 才可感知） */
+/* 暗色（档B 指挥舱 · v2.2.2 DS-01 定稿）：机甲感来自材质与结构，不靠字号。
+   单一顶光源（左上 30°）：所有高光在顶边、暗缝在底边，方向全局一致。 */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --mech-canvas: #0C1015;
-    --mech-panel: #181E25;
-    --mech-plate: #222A32;
-    --mech-inset: #14191E;
-    --mech-groove: #0A0E12;
-    --mech-seam: #303A45;
-    --mech-seam-hover: #475B7A;  /* 派生值：seam 与暗色 brand 30% 混色 */
+    --mech-canvas: #090D12;
+    --mech-panel: #171E25;
+    --mech-plate-solid: #222A32;
+    --mech-inset: #10151A;
+    --mech-groove: #06080B;
+    --mech-seam: #4A5663;
+    --mech-seam-hover: #5E6C7B;  /* 派生值：seam 与暗色 brand 混色 */
     --mech-ctl: #4A5560;
-    --mech-text-1: #E8ECEF;
-    --mech-text-2: #A9B3BC;
-    --mech-text-3: #93A0AA;
-    --mech-brand: #7CA9F5;
-    --mech-brand-hover: #A6C6FF;
-    --mech-brand-pressed: #5F8FE0;
-    --mech-warn-amber: #E0A13A;
-    --mech-warn-red: #F27A72;
+    --mech-text-1: #F2F6F9;
+    --mech-text-2: #B4BEC7;
+    --mech-text-3: #97A4AE;
+    --mech-brand: #5B8FD6;
+    --mech-brand-hover: #7FAAF3;
+    --mech-brand-pressed: #46709F;
+    --mech-warn-amber: #F0B24A;
+    --mech-warn-red: #F0796F;
     --mech-ok: #4FC3AE;
-    --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
-    --mech-red-bg: #F27A72; --mech-red-fg: #12161A;      /* 暗红底必须深字（白字仅 2.69）——与亮色红底白字相反，最易统一错 */
+    --hud-amber: #F0B24A;
+    --hud-amber-fill: #F0B24A;
+    --hud-amber-fill-fg: #12161A;   /* 琥珀填充底上一律深字（白字对比不足） */
+    --mech-amber-bg: #F0B24A; --mech-amber-fg: #12161A;
+    --mech-red-bg: #F0796F; --mech-red-fg: #12161A;      /* 暗红底必须深字（白字仅 2.69）——与亮色红底白字相反，最易统一错 */
     --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
     --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
     --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
+    /* ── 结构组件（DS-01 第三章，暗色值）── */
+    --w-frame: 1.5px;
+    --edge-hi-alpha: 0.08;
+    --cabin-bg: #1E252C;
+    --cabin-rule: #06090B;
+    --cabin-tape-a: #F0B24A;
+    --cabin-tape-b: #12161A;
+    --strip-glow: 6px;
+    --bolt-color: #566270;
+    --bolt-hi: rgba(255, 255, 255, 0.18);
+    --scanline-color: rgba(140, 180, 220, 0.10);
+    /* ── 背景层（DS-01 2.3：战术网格 + 中心暗角 + 噪点）── */
+    --canvas-grid: rgba(120, 160, 200, 0.045);
+    --canvas-vignette: radial-gradient(ellipse at 50% 40%, transparent 0%, rgba(0, 0, 0, 0.45) 100%);
+    --canvas-noise: url("noise.svg");
+    /* ── 图标系统（线 #B4BEC7 + 填充 #5B8FD6）── */
+    --icon-line: #B4BEC7;
+    --icon-fill: #5B8FD6;
+    /* ── 装甲材质（DS-01 2.2）── */
+    --armor-plate-grad:
+      linear-gradient(180deg, #39434D 0%, #2B343D 35%, #222A32 75%, #1A2128 100%);
+    --armor-edge-hi: rgba(255, 255, 255, 0.08);
+    --armor-edge-lo: #06090C;
+    --armor-btn-hi: rgba(255, 255, 255, 0.14);
+    --armor-btn-lo: #0A0E12;
+    --mech-plate: var(--armor-plate-grad);
+    --shadow-armor-lift:
+      0 4px 10px rgba(0, 0, 0, 0.55),
+      inset 0 1px 0 var(--armor-edge-hi),
+      inset 0 -1px 0 var(--armor-edge-lo);
   }
 }
 
 /* 手动锁定（设置页） */
 :root[data-theme="light"] {
-  --mech-canvas: #E8ECF1; --mech-panel: #F9FBFC; --mech-plate: #FFFFFF;
-  --mech-inset: #DBE2E9; --mech-groove: #D1D9E1;
-  --mech-seam: #AEBAC8; --mech-seam-hover: #829CCC; --mech-ctl: #7B8694;
-  --mech-text-1: #151A20; --mech-text-2: #48525C; --mech-text-3: #585D62;
-  --mech-brand: #1B5BD6; --mech-brand-hover: #1749AE; --mech-brand-pressed: #123C8F;
-  --mech-warn-amber: #854F00; --mech-warn-red: #B22C24; --mech-ok: #0D6F63;
-  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;
-  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;
+  --mech-canvas: #EEF1F4; --mech-panel: #FFFFFF; --mech-plate-solid: #FFFFFF;
+  --mech-inset: #E7EBEF; --mech-groove: #CBD3DA;
+  --mech-seam: #A0ACB6; --mech-seam-hover: #8299A8; --mech-ctl: #7B8694;
+  --mech-text-1: #1A2128; --mech-text-2: #45525D; --mech-text-3: #5D6B76;
+  --mech-brand: #3266B0; --mech-brand-hover: #28538F; --mech-brand-pressed: #1F4478;
+  --mech-warn-amber: #854F00; --mech-warn-red: #B22C24; --mech-ok: #157A66;
+  --hud-amber: #A66E12; --hud-amber-fill: #F0B24A; --hud-amber-fill-fg: #20180A;
+  --mech-amber-bg: #E09A2E; --mech-amber-fg: #20180A;
+  --mech-red-bg: #C74438; --mech-red-fg: #FFFFFF;
   --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
   --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
-  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-lift: 0 1px 2px rgba(24, 40, 58, 0.10);
+  --w-frame: 1.5px; --edge-hi-alpha: 0.7;
+  --cabin-bg: #E9EDF1; --cabin-rule: #FFFFFF;
+  --cabin-tape-a: #E09A2E; --cabin-tape-b: #2A2E33;
+  --strip-glow: 3px; --bolt-color: #8B98A3; --bolt-hi: rgba(255, 255, 255, 0.65);
+  --scanline-color: rgba(60, 90, 120, 0.08);
+  --canvas-grid: rgba(60, 90, 120, 0.06); --canvas-vignette: none; --canvas-noise: none;
+  --icon-line: #45525D; --icon-fill: #3266B0;
+  --armor-plate-grad: linear-gradient(180deg, #FFFFFF 0%, #F5F7F9 35%, #EDF0F3 75%, #E4E8EC 100%);
+  --armor-edge-hi: rgba(255, 255, 255, 0.75); --armor-edge-lo: #C9D1D8;
+  --armor-btn-hi: rgba(255, 255, 255, 0.5); --armor-btn-lo: #B8C2CB;
+  --mech-plate: var(--armor-plate-grad);
+  --shadow-armor-lift:
+    0 2px 6px rgba(24, 40, 58, 0.16),
+    inset 0 1px 0 var(--armor-edge-hi),
+    inset 0 -1px 0 var(--armor-edge-lo);
 }
 :root[data-theme="dark"] {
-  --mech-canvas: #0C1015; --mech-panel: #181E25; --mech-plate: #222A32;
-  --mech-inset: #14191E; --mech-groove: #0A0E12;
-  --mech-seam: #303A45; --mech-seam-hover: #475B7A; --mech-ctl: #4A5560;
-  --mech-text-1: #E8ECEF; --mech-text-2: #A9B3BC; --mech-text-3: #93A0AA;
-  --mech-brand: #7CA9F5; --mech-brand-hover: #A6C6FF; --mech-brand-pressed: #5F8FE0;
-  --mech-warn-amber: #E0A13A; --mech-warn-red: #F27A72; --mech-ok: #4FC3AE;
-  --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
-  --mech-red-bg: #F27A72; --mech-red-fg: #12161A;
+  --mech-canvas: #090D12; --mech-panel: #171E25; --mech-plate-solid: #222A32;
+  --mech-inset: #10151A; --mech-groove: #06080B;
+  --mech-seam: #4A5663; --mech-seam-hover: #5E6C7B; --mech-ctl: #4A5560;
+  --mech-text-1: #F2F6F9; --mech-text-2: #B4BEC7; --mech-text-3: #97A4AE;
+  --mech-brand: #5B8FD6; --mech-brand-hover: #7FAAF3; --mech-brand-pressed: #46709F;
+  --mech-warn-amber: #F0B24A; --mech-warn-red: #F0796F; --mech-ok: #4FC3AE;
+  --hud-amber: #F0B24A; --hud-amber-fill: #F0B24A; --hud-amber-fill-fg: #12161A;
+  --mech-amber-bg: #F0B24A; --mech-amber-fg: #12161A;
+  --mech-red-bg: #F0796F; --mech-red-fg: #12161A;
   --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
   --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
   --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --w-frame: 1.5px; --edge-hi-alpha: 0.08;
+  --cabin-bg: #1E252C; --cabin-rule: #06090B;
+  --cabin-tape-a: #F0B24A; --cabin-tape-b: #12161A;
+  --strip-glow: 6px; --bolt-color: #566270; --bolt-hi: rgba(255, 255, 255, 0.18);
+  --scanline-color: rgba(140, 180, 220, 0.10);
+  --canvas-grid: rgba(120, 160, 200, 0.045);
+  --canvas-vignette: radial-gradient(ellipse at 50% 40%, transparent 0%, rgba(0, 0, 0, 0.45) 100%);
+  --canvas-noise: url("noise.svg");
+  --icon-line: #B4BEC7; --icon-fill: #5B8FD6;
+  --armor-plate-grad: linear-gradient(180deg, #39434D 0%, #2B343D 35%, #222A32 75%, #1A2128 100%);
+  --armor-edge-hi: rgba(255, 255, 255, 0.08); --armor-edge-lo: #06090C;
+  --armor-btn-hi: rgba(255, 255, 255, 0.14); --armor-btn-lo: #0A0E12;
+  --mech-plate: var(--armor-plate-grad);
+  --shadow-armor-lift:
+    0 4px 10px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 var(--armor-edge-hi),
+    inset 0 -1px 0 var(--armor-edge-lo);
 }
 
-/* 减少动效：降级 80ms 交叉淡入，零位移零 clip-path（规范 2.5 --motion-degraded） */
+/* 减少动效（DS-02 第五节降级矩阵）：80ms 交叉淡入，零位移零 clip-path；
+   循环动效（扫描线/雷达/呼吸）全停在下方对应区块，音效视为静音态（JS 判定）。 */
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-morph: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
 }
 
 * { box-sizing: border-box; }
+/* 背景层（DS-01 2.3 / DS-04 2.3）：40px 战术网格 + 中心暗角（亮色档取消）+ 微噪点（亮色档取消）。
+   纹理层全部低于文字层，网格 alpha 4.5%（亮色 6% 上限内）。 */
 html, body {
   margin: 0; padding: 0;
-  background: var(--mech-canvas);
   color: var(--mech-text-1);
   font: var(--fs-body)/var(--lh-body) var(--font-ui);
+}
+body {
+  background-color: var(--mech-canvas);
+  background-image:
+    var(--canvas-noise),
+    var(--canvas-vignette),
+    linear-gradient(var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid) 1px, transparent 1px);
+  background-size: 64px 64px, cover, var(--canvas-grid-size) var(--canvas-grid-size), var(--canvas-grid-size) var(--canvas-grid-size);
+  background-attachment: fixed;
+  min-height: 100vh;
 }
 
 /* ── 五层表面栈（2.1）：panel 容器 / plate 卡片 / inset 凹陷 / groove 深槽 ── */
@@ -158,25 +285,69 @@ html, body {
   position: relative;
   margin-bottom: var(--sp-4);
 }
-/* 面板右上 8px 切角（L6：单屏切角总数 ≤8 处） */
+/* 面板级双切角（DS-01 3.1）：20px 右上 + 20px 左下**对角**双切（规范给出的 polygon 原文）。
+   旧「单切角 8px」已废弃。切角总数 ≤6 处/屏。 */
 .panel--chamfer {
-  clip-path: polygon(0 0, calc(100% - var(--chamfer-panel)) 0, 100% var(--chamfer-panel), 100% 100%, 0 100%);
+  clip-path: polygon(
+    20px 0,
+    100% 0,
+    100% calc(100% - var(--chamfer-panel)),
+    calc(100% - var(--chamfer-panel)) 100%,
+    0 100%,
+    0 20px);
 }
-/* 顶部 2px 状态灯带：用板块色，仅作识别、不表现异常（P6） */
+/* 切角面板上的螺栓：两颗角部螺栓落在切角区外，须沿切面内移（结构意图不变，
+   仍保持 8 颗/面板；只是避开被 clip 掉的三角）。 */
+.panel--chamfer .rivet[data-pos="tl"] { top: 4px; left: 12px; }
+.panel--chamfer .rivet[data-pos="br"] { bottom: 4px; right: 12px; }
+/* 灯带（DS-01 3.7 升级）：舱段标头下沿 3px，色随面板语义，叠加单层 glow。
+   取代旧 panel 顶部 2px 灯带。文字层 z-index 永远高于此层。 */
 .panel::before {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 2px;
+  height: var(--strip-h);
   background: var(--panel-strip, var(--mech-brand));
+  box-shadow: 0 0 var(--strip-glow) var(--panel-strip, var(--mech-brand));
   opacity: 0.9;
-  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  pointer-events: none;
+  z-index: 0;
+}
+/* 面板内框（DS-01 2.5 新增双层框的内线）：1px 内高光，与 1.5px 外框成对 */
+.panel--frame::after {
+  content: "";
+  position: absolute; inset: 0;
+  border: var(--w-panel-inner) solid rgba(var(--edge-hi-rgb), var(--edge-hi-alpha));
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+/* 面板扫描线（DS-01 3.6）：2px 横线，每 7s 从顶扫到底，仅 transform 路径。
+   同屏同时只允许 1 条在扫（JS 调度）；本层 z-index 低于文字层。 */
+.panel > .scanline {
+  position: absolute; left: 0; right: 0; top: 0;
+  height: var(--scanline-h);
+  background: var(--scanline-color);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+}
+.panel > .scanline.scan-run {
+  animation: panel-scan var(--motion-scan-pass) linear;
+}
+/* DS-02 三、扫描线关键帧：仅 transform + opacity 合成器路径；扫过 2.4s，
+   首末帧 opacity 0（起扫与收尾不硬切），中段 .55 峰值（alpha 合计不超 6% 上限）。 */
+@keyframes panel-scan {
+  from { transform: translateY(0); opacity: 0; }
+  12%  { opacity: 0.55; }
+  88%  { opacity: 0.55; }
+  to   { transform: translateY(var(--scan-distance, 100%)); opacity: 0; }
 }
 
-/* 卡片（装甲板）：plate 抬起。亮色边界感来自 seam 描边、暗色来自 plate/panel 明度差——两者都要（2.1 callout）。
-   hover 只改颜色与描边（4.1 硬规则），唯一允许的尺寸变化是板块条 4→5px。 */
+/* 卡片（装甲板，DS-01 4.1）：背景换 --armor-plate-grad（4 档竖向金属渐变 + 顶内高光 + 底暗缝）。
+   描边 1px seam；hover translateY(-2px) + 装甲抬升阴影 + 板块条 4→5px。 */
 .card {
-  background: var(--mech-plate);
+  background: var(--armor-plate-grad);
   border: var(--w-seam) solid var(--mech-seam);
   border-radius: var(--radius-card);
   padding: var(--sp-3) var(--sp-4) var(--sp-3) 18px;  /* L7：板块条4+gap2+警示条3=9px 共享左内边距 → 18px */
@@ -290,9 +461,29 @@ html, body {
 }
 .nav button:hover { color: var(--mech-text-1); }
 .nav button[aria-current="true"] {
-  background: var(--mech-panel);
+  /* DS-01 4.2：激活页签底色换装甲渐变 + 底部 2px 琥珀标线（字距 .5px、字重 700） */
+  background: var(--armor-plate-grad);
   color: var(--mech-text-1);
-  box-shadow: inset 0 0 0 var(--w-rule) solid var(--mech-seam);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: inset 0 0 0 var(--w-rule) var(--mech-seam), inset 0 -2px 0 var(--hud-amber);
+  position: relative;
+}
+
+/* DS-02 2.4：激活页签底部 2px 琥珀标线从左划入 140ms（scaleX 0→1，origin left）。
+   标线用伪元素承载，与气闸切页并行触发（JS 先加 .tab-underline 再走气闸序列）。 */
+.nav button[aria-current="true"]::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--hud-amber);
+  transform-origin: left center;
+  transform: scaleX(1);
+}
+.nav button.tab-underline[aria-current="true"]::after {
+  animation: tab-underline var(--motion-tab-underline) var(--ease-hydraulic-out) both;
+}
+@keyframes tab-underline {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
 }
 .nav button:active { background: var(--mech-inset); }
 
@@ -347,8 +538,8 @@ th, td { text-align: left; padding: 6px 10px; border-bottom: var(--w-rule) solid
 th { background: var(--mech-inset); color: var(--mech-text-2); font-weight: 600; font-size: var(--fs-th); position: sticky; top: 0; }
 th.mono, td.mono { font-family: var(--font-mono); }
 /* L10：表格首列吸附（横向滚动不丢「这行是哪一项」） */
-td:first-child, th:first-child { position: sticky; left: 0; background: var(--mech-plate); }
-tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-seam)); }
+td:first-child, th:first-child { position: sticky; left: 0; background: var(--mech-plate-solid); }
+tr:hover td { background: color-mix(in srgb, var(--mech-plate-solid) 92%, var(--mech-seam)); }
 
 .chip {
   all: unset; cursor: pointer;
@@ -436,16 +627,24 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-s
    作为回退路径，本版本不删。
    ══════════════════════════════════════════════════════════════════════ */
 :root {
-  /* ── 阶段2：气闸开合切换（规范第四章）── */
-  --motion-airlock: 360ms;        /* 容器切换硬上限：160+140+60 */
-  --motion-airlock-close: 160ms;  /* ① 合盖 */
-  --motion-airlock-open: 140ms;   /* ② 弹出 */
-  --motion-airlock-lock: 60ms;    /* ③ 锁定脉冲（v2.1 morph-lock 24ms 的升级值） */
+  /* ── 阶段2：气闸开合切换（DS-02 2.1 档1 液压标准，总 400ms）── */
+  --motion-airlock: 400ms;        /* 容器切换硬上限：160+40+150+50（含泄压帧） */
+  --motion-airlock-close: 160ms;  /* ① 合盖（ease-in，加速下落） */
+  --motion-airlock-dwell: 40ms;   /* ② 泄压静止帧（**新增**：完全静止 opacity 0，液压到位前的顿挫） */
+  --motion-airlock-open: 150ms;   /* ③ 弹出（ease-out-back，过冲 1.02） */
+  --motion-airlock-lock: 50ms;    /* ④ 锁定脉冲（琥珀） */
   --stagger-card: 12ms;           /* 全量逐卡交错步长（交错窗封顶 180ms，JS 控制） */
   /* ── 阶段3：交互细节 ── */
-  --lock-corner: 12px;            /* 锁定框四角 L 形角码边长 */
+  --lock-corner: 24px;            /* 锁定框四角 L 形角码**初始**边长（收缩前） */
+  --lock-corner-settled: 18px;    /* 锁定框角码收缩终值（**新增**） */
   --lock-corner-weight: 2px;      /* 角码线宽（沿用 v2.1 括号线宽基准） */
+  --motion-lock-corner: 160ms;    /* **新增** 角码收缩 24px→18px（液压夹紧感） */
+  --motion-hydraulic-release: 120ms; /* **新增** 按钮释放回弹（ease-hydraulic-out，轻微上冲 0.5px） */
   --motion-breathe: 2s;           /* 选中呼吸描边循环 */
+  --motion-scan-cycle: 7s;        /* **新增** 扫描线周期（2.4s 扫过 + 4.6s 静止） */
+  --motion-scan-pass: 2.4s;       /* **新增** 扫描线单次扫过时长 */
+  --motion-radar: 2.4s;           /* **新增** 雷达扫掠周期 */
+  --motion-tab-underline: 140ms;  /* **新增** 页签琥珀标线划入（scaleX 0→1，origin left） */
   --plate-bar-hover: 5px;         /* 悬停板块条高度（常态沿用 --w-board-strip: 4px） */
   --bar-height: 44px;             /* 底部指令条高 */
   --motion-bar-in: 160ms;         /* 指令条升起 */
@@ -453,6 +652,9 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-s
   --bar-timeout: 8s;              /* 指令条超时自动取消 */
   /* ── 阶段7（终稿）：面板结构框 ── */
   --frame-weight: 1.5px;          /* 面板外框描边（卡片层沿用旧 1px，不改值） */
+  /* ── 液压缓动（DS-02 第一节新增）── */
+  --ease-hydraulic-in: cubic-bezier(0.55, 0, 0.9, 0.6);   /* 合盖·重物下落 */
+  --ease-hydraulic-out: cubic-bezier(0.2, 1.4, 0.4, 1);   /* 弹出/回弹·带过冲 */
   /* ── 阶段4：首行滚动字幕 ── */
   --marquee-height: 32px;
   --marquee-speed: 40px;          /* px/s；实际时长由 JS 按条目宽度换算写入 --mq-dur */
@@ -460,31 +662,31 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-s
   --motion-marquee-detail: 120ms; /* 详情条展开 */
   --marquee-detail-height: 88px;
   --marquee-queue-cap: 5;
-  /* ── 装甲板抬升阴影（5.1：外阴影 y+2/模糊+4 + inset 底缝线）── */
-  --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.09), inset 0 -1px 0 var(--mech-seam);
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
-}
-:root[data-theme="dark"] { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
 
-/* ── 气闸开合关键帧（4.1）──
+/* ── 气闸开合关键帧（4.1，v2.2.4 四阶段 400ms）──
    容器红线：只做 transform/opacity，严禁容器 clip-path（v2.1 3.3 延续）。
-   合盖 = scaleY 向中线收束；弹出 = 从中线展开带 2% 位移补偿。 */
-.airlock-close { animation: airlock-close var(--motion-airlock-close) var(--ease-morph-out) forwards; }
+   合盖 = scaleY 向中线收束（160ms，重物下落）；泄压帧 = 40ms 完全静止 opacity 0；
+   弹出 = 从中线展开（150ms，ease-out-back 过冲 scaleY 1.02 后回落）；
+   锁定 = 目标面板 HUD 角码琥珀脉冲一次（50ms）。 */
+.airlock-close { animation: airlock-close var(--motion-airlock-close) var(--ease-hydraulic-in) forwards; }
 @keyframes airlock-close {
   from { transform: scaleY(1); opacity: 1; }
   50%  { opacity: 0.4; }
   to   { transform: scaleY(0.04); opacity: 0; }
 }
-.airlock-open { animation: airlock-open var(--motion-airlock-open) var(--ease-morph-in) forwards; }
+/* ② 泄压静止帧：液压到位前的顿挫——完全静止、不透明度 0，不做任何位移与淡变。
+   这一帧是「液压感」的核心：没有它就是普通淡出淡入，有它才是门闩到位。 */
+.airlock-dwell { animation: none; transform: scaleY(0.04); opacity: 0; will-change: auto; }
+.airlock-open { animation: airlock-open var(--motion-airlock-open) var(--ease-hydraulic-out) forwards; }
 @keyframes airlock-open {
   from { transform: scaleY(0.04) translateY(-2%); opacity: 0; }
+  70%  { transform: scaleY(1.02) translateY(0); opacity: 1; }   /* 过冲 1.02 后回落 */
   to   { transform: scaleY(1) translateY(0); opacity: 1; }
 }
 .airlock-lock { animation: airlock-lock var(--motion-airlock-lock) var(--ease-standard); }
 @keyframes airlock-lock {
-  from { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
+  from { outline: 2px solid var(--hud-amber); outline-offset: -2px; }
   to   { outline: 2px solid transparent; outline-offset: -2px; }
 }
 /* 全量逐卡装甲翻入（4.2）：卡片自身 clip-path（小面积），交错延迟与 will-change
@@ -516,12 +718,18 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 /* 板块条悬停 4→5px 走新 Token（常态值不变） */
 .card:hover .board-strip { width: var(--plate-bar-hover); }
 
-/* ── 7.1 面板结构框：1.5px seam 描边 + 8 颗铆钉（JS decoratePanels 注入 span）── */
-.panel--frame { border-width: var(--frame-weight); }
+/* ── 7.1 面板结构框（v2.2.2 升级）：1.5px seam 外框 + 1px 内高光内框 + 8 颗六角螺栓 ── */
+.panel--frame { border-width: var(--w-frame); }
+/* 六角螺栓（DS-01 3.3）：6px 正六边形 clip-path，底色 + 顶部 1px 内高光。
+   **废弃**：现行 45° 旋转菱形方案（v2.2.1 .rivet 的 rotate(45deg)），本版本改六边形；
+   类名沿用 rivet 以保持 decoratePanels 注入机制不变。 */
 .rivet {
   position: absolute; width: 6px; height: 6px;
-  background: var(--mech-seam); transform: rotate(45deg);
+  background: var(--bolt-color);
+  box-shadow: inset 0 1px 0 var(--bolt-hi);
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   pointer-events: none;
+  z-index: 1;
 }
 .rivet[data-pos="tl"] { top: 3px; left: 3px; }
 .rivet[data-pos="tr"] { top: 3px; right: 3px; }
@@ -750,10 +958,139 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-/* ── v2.2 全线降级（prefers-reduced-motion）：80ms 淡入淡出 / 字幕停滚 /
-   呼吸停用 / 降级态静音（静音在 JS 判定）── */
+/* ── 视觉回归发现（DS-01 第七章「琥珀上文字一律深字」）：警示卡边框取 warn 琥珀时，
+   卡内正文仍压在装甲渐变上，文字对比度按实际底色（渐变最亮档 #39434D）复测：
+   正文二级字对最亮档 ≥4.5 保留，不因边框改色而降低要求。本节仅记录，不改值。 ── */
+
+/* ══════════════════════════════════════════════════════════════════════
+   DS-01 第三章 结构装饰组件（舱段标头 / HUD 角码 / 金属按钮）
+   纪律：全部为新增组件样式，不改动 v2.1 既有规则；色值一律走 Token（亮暗自动跟随）。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* 3.2 舱段标头（面板标题条）：34px / 底 --cabin-bg / 底部 1px --cabin-rule，
+   左端 6px 警示胶带（45° 琥珀+深黑），标题 13px·700·.5px，右端 mono 小字标注。 */
+.cabin-head {
+  display: flex; align-items: center; gap: 8px;
+  height: var(--cabin-h); padding: 0 10px 0 0;
+  background: var(--cabin-bg);
+  border-bottom: 1px solid var(--cabin-rule);
+  position: relative; z-index: 1;
+}
+.cabin-head__tape {
+  flex: none; width: 6px; align-self: stretch; margin-right: 10px;
+  background: repeating-linear-gradient(45deg,
+    var(--cabin-tape-a) 0 4px, var(--cabin-tape-b) 4px 8px);
+}
+.cabin-head__title {
+  font-size: var(--cabin-title-size); font-weight: 700; letter-spacing: 0.5px;
+  color: var(--mech-text-1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cabin-head__tag {
+  margin-left: auto; flex: none;
+  font-family: var(--font-mono); font-size: var(--fs-mini); letter-spacing: 0.5px;
+  color: var(--hud-amber);
+}
+
+/* 3.4 HUD 角码（四角 L 形琥珀括角）：18px / 2px，八段 background 渐变（零 DOM）。
+   常驻位置：看板列容器、KPI 侧栏、底部指令条。与卡片选中锁定框（绿）区分「区域 / 条目」两级。 */
+.hud-corners {
+  position: relative;
+}
+.hud-corners::before {
+  content: ""; position: absolute; inset: 4px; pointer-events: none; z-index: 1;
+  background:
+    linear-gradient(var(--hud-amber), var(--hud-amber)) left top / var(--hud-corner-size) var(--hud-corner-weight) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) left top / var(--hud-corner-weight) var(--hud-corner-size) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) right top / var(--hud-corner-size) var(--hud-corner-weight) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) right top / var(--hud-corner-weight) var(--hud-corner-size) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) left bottom / var(--hud-corner-size) var(--hud-corner-weight) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) left bottom / var(--hud-corner-weight) var(--hud-corner-size) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) right bottom / var(--hud-corner-size) var(--hud-corner-weight) no-repeat,
+    linear-gradient(var(--hud-amber), var(--hud-amber)) right bottom / var(--hud-corner-weight) var(--hud-corner-size) no-repeat;
+}
+/* 锁定脉冲（DS-02 2.1 ④ / 2.3「确认执行」）：目标区域角码琥珀脉冲一次 */
+.hud-corners.hud-pulse::before { animation: hud-corner-pulse var(--motion-airlock-lock) var(--ease-standard); }
+@keyframes hud-corner-pulse { 0%, 100% { opacity: 1; } 45% { opacity: 0.25; } }
+
+/* 3.8 金属渐变按钮：45° 双端切角（两端 6px 斜切）+ 顶 1px 高光 + 底 2px 暗边；
+   按下 translateY(1px) + 高光熄灭（液压下沉）；释放 120ms 回弹（上冲 0.5px）。 */
+.btn--armor {
+  clip-path: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+  box-shadow:
+    inset 0 1px 0 var(--armor-btn-hi),
+    inset 0 -2px 0 var(--armor-btn-lo);
+  transition: background-color var(--motion-micro) var(--ease-micro),
+              box-shadow var(--motion-micro) var(--ease-micro),
+              transform var(--motion-hydraulic-release) var(--ease-hydraulic-out);
+}
+.btn--armor:active,
+.btn--armor.btn--pressed {
+  transform: translateY(1px);
+  box-shadow: inset 0 0 0 var(--armor-btn-lo);
+  transition-duration: var(--motion-press);
+}
+/* 释放回弹：松手瞬间 120ms 上冲 0.5px 后归位（--ease-hydraulic-out 带过冲） */
+.btn--armor.btn--released { animation: btn-rebound var(--motion-hydraulic-release) var(--ease-hydraulic-out); }
+@keyframes btn-rebound {
+  from { transform: translateY(1px); }
+  55%  { transform: translateY(-0.5px); }
+  to   { transform: translateY(0); }
+}
+
+/* 4.4 表头行底色改 inset（暗 #10151A / 亮 #E7EBEF），首列吸附沿用 */
+th { background: var(--mech-inset); }
+
+/* 4.4 KPI 数字：mono · 30px · 字距 .5px（放大一档强化仪表感） */
+.kpi-num, .kpi b, .kpi-value {
+  font-family: var(--font-mono); font-size: var(--fs-kpi);
+  letter-spacing: 0.5px; font-weight: 600; line-height: 1.15;
+}
+
+/* 4.4 字幕条：左端 COMM 标注改琥珀 mono */
+.mq-channel { color: var(--hud-amber); }
+
+/* 五、图标系统：16px 网格 / 2px 描边 + 关键部位填充；stroke=currentColor，填充走变量。
+   内联 SVG 统一挂 .ico，线色取 --icon-line、填充色取 --icon-fill（主题自动跟随）。 */
+.ico {
+  width: var(--icon-size); height: var(--icon-size);
+  display: inline-block; vertical-align: -3px;
+  stroke: currentColor; stroke-width: var(--icon-stroke);
+  stroke-linecap: square; stroke-linejoin: miter;
+  fill: none; flex: none;
+}
+.ico .ic-fill { fill: var(--icon-fill); stroke: none; }
+.nav .ico, #nc-btn .ico { color: var(--icon-line); }
+
+/* DS-02 2.2 选中：锁定框角码从 24px 收缩至 18px（160ms，液压夹紧感） */
+.card--selected { animation: lock-breathe var(--motion-breathe) ease-in-out infinite, lock-corner-shrink var(--motion-lock-corner) var(--ease-hydraulic-out) both; }
+@keyframes lock-corner-shrink {
+  from { --lock-corner: 24px; }
+  to   { --lock-corner: 18px; }
+}
+
+/* DS-02 五、降级矩阵：循环动效全部停用，交互动效只留颜色变化 */
 @media (prefers-reduced-motion: reduce) {
+  .panel > .scanline.scan-run { animation: none !important; opacity: 0 !important; }
+  .panel > .scanline { display: none; }
+  .radar::after { animation: none; }
+  .radar { /* 静态外环保留 */ }
+  .card--selected {
+    animation: none !important;
+    --lock-corner: var(--lock-corner-settled);
+  }
+  .nav button.tab-underline[aria-current="true"]::after { animation: none; }
+  .btn--armor { transition: background-color var(--motion-degraded) linear, box-shadow var(--motion-degraded) linear; }
+  .btn--armor:active, .btn--armor.btn--pressed { transform: none; }
+  .btn--armor.btn--released { animation: none; }
+  .hud-corners.hud-pulse::before { animation: none; }
+  .panel--pulse::before { animation: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 气闸四阶段折叠为一次 80ms 交叉淡入：泄压帧与锁定帧取消，零位移零 clip-path */
   .airlock-close, .airlock-open { animation: reflow-fade var(--motion-degraded) linear forwards; }
+  .airlock-dwell { animation: none; transform: none; opacity: 0; }
   .airlock-lock { animation: none; }
   .armor-flip { animation: armor-flip-in var(--motion-degraded) linear both; animation-delay: 0ms !important; }
   #marquee-bar .mq-track { animation: none !important; transform: translateY(-50%); }

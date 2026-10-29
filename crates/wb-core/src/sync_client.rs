@@ -51,8 +51,10 @@ pub mod keys {
     // ── v2.2.2（需求15）：交互音效独立开关与采样选择 ──
     // 与 VOICE_ENABLED 完全解耦：关掉语音播报不影响点击/气闸反馈音，反之亦然。
     pub const SFX_ENABLED: &str = "sfx_enabled"; // "1" / "0"
-    /// 点击音采样 id（sfx/ 目录下的文件名，如 "tick-a"）；非法值回落默认。
+    /// 点击音采样 id（sfx/ 目录下的文件名，如 "ui-click"）；非法值回落默认。
     pub const SFX_SAMPLE: &str = "sfx_sample";
+    /// 音效音量档位（v2.2.4，规范第六节①两档）："quiet"（安静）/ "standard"（标准，默认）。
+    pub const SFX_VOLUME: &str = "sfx_volume";
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────

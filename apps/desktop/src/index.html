@@ -49,10 +49,7 @@
     <div class="top-right">
       <!-- v2.2 通知中心（UI 规范 7.5）：字幕队列溢出/历史通知入口 -->
       <button id="nc-btn" aria-label="通知中心" aria-expanded="false" title="通知中心">
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3l-1.5 2.5h12L12.5 9V6A4.5 4.5 0 0 0 8 1.5z"/>
-          <path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/>
-        </svg>
+        <svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>
         <span class="nc-badge" id="nc-badge" hidden>0</span>
         <div class="nc-panel" id="nc-panel" hidden></div>
       </button>
@@ -122,6 +119,61 @@
     <button class="btn--ghost btn" id="cmd-cancel">取消</button>
   </div>
 </div>
+<!-- v2.2.4 图标系统（DS-01 第五章）：9 枚内联 SVG，随包分发、无外部图标库。
+     16px 网格 / 2px 描边 / 直线 + 45° 切角端点，禁用圆形曲线主体与整块填充；
+     键位实心部分走 .ic-fill（填充色取 --icon-fill，线色取 --icon-line，主题自动跟随）。 -->
+<svg class="ico-sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <symbol id="ic-bell" viewBox="0 0 16 16">
+    <path d="M8 1.75 4.25 5.5V10L2.5 12.75h11L11.75 10V5.5L8 1.75Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M6.25 13.5h3.5L8 15.5Z"/>
+  </symbol>
+  <symbol id="ic-wave" viewBox="0 0 16 16">
+    <path d="M2.5 6.5v3"/><path d="M5 4v8"/>
+    <rect fill="var(--icon-fill)" stroke="none" x="7" y="2" width="2" height="12"/>
+    <path d="M11 4v8"/><path d="M13.5 6.5v3"/>
+  </symbol>
+  <symbol id="ic-gear" viewBox="0 0 16 16">
+    <path d="M5.5 2h5l3.5 3.5v5L10.5 14h-5L2 10.5v-5L5.5 2Z"/>
+    <path d="M8 .5v1.5"/><path d="M8 14v1.5"/><path d="M.5 8h1.5"/><path d="M14 8h1.5"/>
+    <rect fill="var(--icon-fill)" stroke="none" x="6.5" y="6.5" width="3" height="3"/>
+  </symbol>
+  <symbol id="ic-refresh" viewBox="0 0 16 16">
+    <path d="M2.5 8 2.5 5 5 2.5 10 2.5"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M10 2.5 8 .5 8 4.5Z"/>
+    <path d="M13.5 8 13.5 11 11 13.5 6 13.5"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M6 13.5 8 15.5 8 11.5Z"/>
+  </symbol>
+  <symbol id="ic-import" viewBox="0 0 16 16">
+    <path d="M8 1.5v7"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 11 4.75 7.5h6.5Z"/>
+    <path d="M2.5 11v2.5h11V11"/>
+  </symbol>
+  <symbol id="ic-export" viewBox="0 0 16 16">
+    <path d="M8 13v-7"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 3.5 4.75 7h6.5Z"/>
+    <path d="M2.5 10.5v2.5h11v-2.5"/>
+  </symbol>
+  <symbol id="ic-alert" viewBox="0 0 16 16">
+    <path d="M6.7 2.6h2.6l4.9 9.8-1.2 1.1H3l-1.2-1.1Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M7.25 5.5h1.5v4h-1.5Z"/>
+  </symbol>
+  <symbol id="ic-radar" viewBox="0 0 16 16">
+    <path d="M8 2 14 8 8 14 2 8Z"/>
+    <path d="M8 8 12.25 4.75"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 6.5 9.5 8 8 9.5 6.5 8Z"/>
+  </symbol>
+  <symbol id="ic-gate-open" viewBox="0 0 16 16">
+    <path d="M2.5 3.5v9"/><path d="M13.5 3.5v9"/>
+    <path d="M4.5 5h3v6h-3Z"/><path d="M8.5 5h3v6h-3Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M12.5 8 14.5 8 13.5 6.5Z"/>
+  </symbol>
+  <symbol id="ic-gate-close" viewBox="0 0 16 16">
+    <path d="M2.5 3.5v9"/><path d="M13.5 3.5v9"/>
+    <path d="M4 5h4v6h-4Z"/><path d="M8 5h4v6h-4Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 6.5 9.5 8 8 9.5 6.5 8Z"/>
+  </symbol>
+</svg>
+
 <script src="app.js"></script>
 </body>
 </html>

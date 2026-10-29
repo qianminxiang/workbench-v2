@@ -101,7 +101,11 @@ function lampFor(item) {
   const kind = a.kind === "overdue" ? "red" : "amber";
   // 4.4 警报疲劳控制：脉冲每卡每会话只播 1 次，不循环
   let pulse = "";
-  if (!pulsedCards.has(item.id)) { pulsedCards.add(item.id); pulse = " lamp--pulse"; sfxAlert(); }
+  if (!pulsedCards.has(item.id)) {
+    pulsedCards.add(item.id);
+    pulse = " lamp--pulse";
+    queueAlertSound(a.kind); // 一次渲染内多张警示卡只合并播一条，避免叠响
+  }
   return `<span class="lamp lamp--${kind}${pulse}">${kind === "red" ? "逾期" : "临期"}</span>`;
 }
 /** 警示卡（4.4 第四通道——位置即异常）：临期/逾期卡右上切角 + 左侧警示条。 */
@@ -471,14 +475,13 @@ function viewSettings() {
       </label>
     </div>
     <div class="settings-row">
-      <span>点击音采样<span class="mini">（红警风格样本，可逐个试听）</span></span>
+      <span>音效音量<span class="mini">（两档，规范第六节；试听用点击音）</span></span>
       <span style="display:flex;gap:8px;align-items:center">
-        <select id="sfx-sample">
-          <option value="tick-a">样本 A · 机械拨杆</option>
-          <option value="tick-b">样本 B · 继电器双击</option>
-          <option value="tick-c">样本 C · 装甲闷响</option>
+        <select id="sfx-volume">
+          <option value="quiet">安静（0.55 倍）</option>
+          <option value="standard">标准（1.0 倍）</option>
         </select>
-        <button class="btn btn--ghost" id="sfx-preview">试听</button>
+        <button class="btn btn--ghost" id="sfx-preview">试听点击音</button>
         <span class="mini" id="sfx-saved"></span>
       </span>
     </div>
@@ -494,18 +497,22 @@ function viewSettings() {
   </div>`;
 }
 
-/* ── 渲染主循环 · v2.2 气闸开合（UI 规范第四章，替代 v2.1 四阶段 240ms）──
-   ① 合盖 160ms（容器 scaleY 收束，内容先行淡出）→ ② 弹出 140ms（中线展开 + 2% 位移补偿）
-   → ③ 锁定 60ms（描边 1 次品牌色脉冲）。容器只动 transform/opacity（红线延续）。
-   全量逐卡装甲翻入：12ms 交错、交错窗封顶 180ms、rAF 帧率兜底（连续 2 帧 >24ms
+/* ── 渲染主循环 · 液压标准档气闸（UI 规范第二部分 2.1，总 400ms）──
+   四阶段：① 合盖 160ms（容器 scaleY 收束，ease-in 加速）→ ② 泄压帧 40ms
+   （完全静止、opacity 0，液压到位前的顿挫——没有这 40ms 就只是普通淡出淡入）
+   → ③ 弹出 150ms（中线展开，ease-out-back 过冲 1.02 后回落）→ ④ 锁定 50ms
+   （目标面板 HUD 角码琥珀脉冲一次）。合计 160+40+150+50 = 400ms。
+   容器只动 transform/opacity（红线延续）。逐卡装甲翻入：12ms 交错、仅首 ≤6 张参与
+   （规范原文「仅首 ≤6 张参与」），交错窗 72ms、rAF 帧率兜底（连续 2 帧 >24ms
    剩余卡直接终态）；will-change 即用即还。打断：任一阶段点新页签立即取消当前
-   序列、新目标从头执行完整 360ms（红警「指令即时覆盖」）。旧 --motion-morph 240ms
-   与降级路径保留在 tokens.css 作回退。 */
-const AIRLOCK_CLOSE_MS = 160;   // --motion-airlock-close
-const AIRLOCK_OPEN_MS = 140;    // --motion-airlock-open
-const AIRLOCK_LOCK_MS = 60;     // --motion-airlock-lock
+   序列、新目标从头执行完整 400ms（红警「指令即时覆盖」）。降级矩阵见 tokens.css。 */
+const AIRLOCK_CLOSE_MS = 160;   // --motion-airlock-close（不变）
+const AIRLOCK_DWELL_MS = 40;    // --motion-airlock-dwell（新增：泄压静止帧）
+const AIRLOCK_OPEN_MS = 150;    // --motion-airlock-open（140 → 150）
+const AIRLOCK_LOCK_MS = 50;     // --motion-airlock-lock（60 → 50）
+const AIRLOCK_TOTAL_MS = AIRLOCK_CLOSE_MS + AIRLOCK_DWELL_MS + AIRLOCK_OPEN_MS + AIRLOCK_LOCK_MS; // 400
 const STAGGER_MS = 12;          // --stagger-card
-const STAGGER_CAP_MS = 180;     // 交错窗封顶（第 15 张起共享 180ms）
+const STAGGER_MAX_CARDS = 6;    // 规范 2.1：逐卡装甲翻入仅首 ≤6 张参与
 let airlockTimer = 0;
 let airlockGen = 0;             // 打断凭据：自增后旧序列的 rAF/超时回调全部失效
 let prevView = "brief";
@@ -514,7 +521,7 @@ function cancelAirlock(main) {
   clearTimeout(airlockTimer);
   airlockTimer = 0;
   airlockGen++;
-  main.classList.remove("airlock-close", "airlock-open", "airlock-lock");
+  main.classList.remove("airlock-close", "airlock-dwell", "airlock-open", "airlock-lock");
   main.querySelectorAll(".armor-flip").forEach((c) => {
     c.classList.remove("armor-flip");
     c.style.animationDelay = "";
@@ -522,13 +529,14 @@ function cancelAirlock(main) {
   });
 }
 
-/** 全量逐卡装甲翻入（4.2）+ rAF 帧率兜底。axis: 'h'|'v'|''（沿 v2.1 变形轴向参数）。 */
+/** 全量逐卡装甲翻入（2.1）+ rAF 帧率兜底。仅首 ≤6 张参与，其余直接终态。 */
 function armorFlipCards(main) {
   const cards = [...main.querySelectorAll(".card")];
   if (!cards.length || reducedMotion()) return; // 降级态：CSS 已把 armor-flip 变 80ms 淡入且延迟清零
   const gen = airlockGen;
-  cards.forEach((c, k) => {
-    c.style.animationDelay = `${Math.min(k * STAGGER_MS, STAGGER_CAP_MS)}ms`;
+  const lead = cards.slice(0, STAGGER_MAX_CARDS); // 规范：仅首 ≤6 张参与
+  lead.forEach((c, k) => {
+    c.style.animationDelay = `${k * STAGGER_MS}ms`;
     c.classList.add("armor-flip");
     c.addEventListener("animationend", () => {
       // will-change 即用即还：animationend 立即摘除，避免常驻合成层
@@ -538,14 +546,15 @@ function armorFlipCards(main) {
     }, { once: true });
   });
   let last = performance.now(), slow = 0;
-  const deadline = last + AIRLOCK_CLOSE_MS + AIRLOCK_OPEN_MS + STAGGER_CAP_MS;
+  const deadline = last + AIRLOCK_CLOSE_MS + AIRLOCK_DWELL_MS + AIRLOCK_OPEN_MS
+    + STAGGER_MAX_CARDS * STAGGER_MS;
   const tick = (t) => {
     if (gen !== airlockGen) return; // 序列已被打断：兜底监控随之作废
     const dt = t - last; last = t;
     slow = dt > 24 ? slow + 1 : 0;
     if (slow >= 2) {
       // 帧率兜底：本次剩余未启动的卡片直接呈终态，下次切换重新尝试全量
-      cards.forEach((c) => { c.classList.remove("armor-flip"); c.style.animationDelay = ""; c.style.willChange = ""; });
+      lead.forEach((c) => { c.classList.remove("armor-flip"); c.style.animationDelay = ""; c.style.willChange = ""; });
       return;
     }
     if (t < deadline) requestAnimationFrame(tick);
@@ -570,7 +579,7 @@ const VIEWS = {
 
 function render(mode) {
   const main = $("#main");
-  cancelAirlock(main); // 交互打断（4.4）：立即取消当前序列，新目标从头执行完整 360ms
+  cancelAirlock(main); // 交互打断（4.4）：立即取消当前序列，新目标从头执行完整 400ms
   main.classList.remove("reflow-fade");
 
   if (mode === "reflow") {
@@ -594,25 +603,33 @@ function render(mode) {
     decoratePanels(main); // 7.1 面板结构框：1.5px 描边 + 8 颗铆钉
     if (axis) main.dataset.morph = axis; // 逐卡翻入的轴向参数（CSS 选择器用）
     void main.offsetWidth;
-    if (!reducedMotion()) sfxServo(true); // ② 弹出音（降级态静音，4.3）
-    main.classList.add("airlock-open");
-    armorFlipCards(main);
+    // ② 泄压静止帧 40ms：完全静止、不透明度 0（液压到位前的顿挫）
+    main.classList.add("airlock-dwell");
     airlockTimer = setTimeout(() => {
-      main.classList.add("airlock-lock"); // ③ 锁定 60ms 品牌色脉冲
+      main.classList.remove("airlock-dwell");
+      void main.offsetWidth;
+      // ③ 弹出 150ms：配合表要求「弹出起点播 ui-gate-open」，与本帧同帧
+      sfxGateOpen();
+      main.classList.add("airlock-open");
+      armorFlipCards(main);
       airlockTimer = setTimeout(() => {
-        main.classList.remove("airlock-lock", "airlock-open");
-        delete main.dataset.morph;
-        airlockTimer = 0;
-      }, AIRLOCK_LOCK_MS);
-    }, AIRLOCK_OPEN_MS);
+        main.classList.add("airlock-lock"); // ④ 锁定 50ms 琥珀角码脉冲一次
+        airlockTimer = setTimeout(() => {
+          main.classList.remove("airlock-lock", "airlock-open");
+          delete main.dataset.morph;
+          airlockTimer = 0;
+        }, AIRLOCK_LOCK_MS);
+      }, AIRLOCK_OPEN_MS);
+    }, AIRLOCK_DWELL_MS);
   };
 
   if (busy) {
-    if (!reducedMotion()) sfxServo(false); // ① 合盖音（伺服下落）
+    // ① 合盖起点播 ui-gate-close，与合盖帧同帧（配合表）；降级态静音
+    sfxGateClose();
     main.classList.add("airlock-close");
     airlockTimer = setTimeout(swap, AIRLOCK_CLOSE_MS);
   } else {
-    swap(); // 首屏无旧形态，直接弹出
+    swap(); // 首屏无旧形态，直接走泄压帧 → 弹出
   }
   prevView = state.view;
 }
@@ -691,6 +708,8 @@ function bindView() {
       if (!path) { alert("请先选择要导入的 Excel 文件（.xlsx）。"); return; }
       try {
         const r = await invoke("import_excel", { xlsxPath: path, year: YEAR });
+        // 导入完成 → 结束帧触发 ui-import-done（与锁定脉冲同帧，规范第五节）
+        sfxImportDone();
         alert(`导入完成：${r.persist.items_written} 项 / ${r.persist.kpis_written} KPI 落库，回读一致 ${r.persist.items_readback}。`);
         reload();
       } catch (e) {
@@ -806,8 +825,8 @@ function bindView() {
     })();
     const saveSfx = async () => {
       const master = $("#sfx-master");
-      const sample = $("#sfx-sample");
-      if (!master || !sample) return;
+      const vol = $("#sfx-volume");
+      if (!master) return;
       try {
         const cur = state.prefs || await invoke("get_prefs");
         state.prefs = await invoke("set_prefs", {
@@ -816,19 +835,20 @@ function bindView() {
           voicePack: cur.voice_pack || "system",
           theme: currentTheme,
           sfxEnabled: master.checked,
-          sfxSample: sample.value,
+          sfxSample: SFX_DEFAULT_SAMPLE, // 冻结版点击音固定 ui-click（规范第三部分 v1）
+          sfxVolume: vol ? vol.value : (cur.sfx_volume || "standard"),
         });
-        $("#sfx-saved").textContent = `已保存：${state.prefs.sfx_enabled ? "开" : "关"} · ${state.prefs.sfx_sample}`;
+        $("#sfx-saved").textContent =
+          `已保存：音效${state.prefs.sfx_enabled ? "开" : "关"} · ${state.prefs.sfx_volume === "quiet" ? "安静" : "标准"}`;
       } catch (e) {
         $("#sfx-saved").textContent = "保存失败：" + e;
       }
     };
     $("#sfx-master")?.addEventListener("change", saveSfx);
-    $("#sfx-sample")?.addEventListener("change", saveSfx);
-    // 试听：无视当前开关状态先响一声，让用户直接比较三个采样（改完不存偏好）
+    $("#sfx-volume")?.addEventListener("change", saveSfx);
+    // 试听：无视当前开关状态先响一声点击音，按当前档位音量（改完不存偏好）
     $("#sfx-preview")?.addEventListener("click", () => {
-      const sample = $("#sfx-sample")?.value || SFX_DEFAULT_SAMPLE;
-      playSfx("tick", { sample, volume: 1, forcePlay: true });
+      playSfx("ui-click", { volume: SFX_VOLUME[$("#sfx-volume")?.value] ?? 1, forcePlay: true });
     });
 
   }
@@ -837,10 +857,11 @@ function bindView() {
 /** 把偏好里的音效状态回填到设置页控件（页面重新渲染后也要重新调用）。 */
 function syncSfxUi() {
   const master = $("#sfx-master");
-  const sample = $("#sfx-sample");
+  const vol = $("#sfx-volume");
   const prefs = state.prefs || {};
   if (master) master.checked = prefs.sfx_enabled !== false; // 缺省开启
-  if (sample) sample.value = SFX_CATALOG.tick.includes(prefs.sfx_sample) ? prefs.sfx_sample : SFX_DEFAULT_SAMPLE;
+  // 音量档位：只认两档，非法/缺失落标准（规范第六节①）
+  if (vol) vol.value = prefs.sfx_volume === "quiet" ? "quiet" : "standard";
 }
 
 /** 把计划精度翻成人话，避免界面直出 day/month/quarter 这类枚举值。 */
@@ -848,56 +869,260 @@ function precisionZh(p) {
   return ({ day: "日精度", month: "月精度", quarter: "季精度", ongoing: "长期", unknown: "待确认" })[p] ?? (p || "—");
 }
 
-/* ── v2.2.2（需求15）：交互音效改为「可替换音频采样 + 独立开关」 ──
-   原实现是 WebAudio 现场合成（beep / uiTick / sfxAlert / sfxServo 硬编码频率），
-   用户要求的红警采样风格无法替换、且与语音播报共用 voice_enabled 总开关
-   （关掉语音播报连点击反馈音一起消失）。改法：
-   ① 所有音效走 SFX_CATALOG 里的采样文件（apps/desktop/src/sfx/*.wav），
-      换风格只改目录 + 首选项里的样本 id，不动一行播放逻辑；
-   ② 独立开关 sfx_enabled（数据库 sync_state 键，与 voice_enabled 完全解耦）；
-   ③ 采样缺失/播放失败一律静默跳过，绝不阻断交互。
-   红警具体采样风格由用户挑选（候选 tick-a / tick-b / tick-c 随安装包提供）。 */
+/* ── 音效体系（UI 规范第三部分，路线 c+a 定稿 v1 冻结版）──
+   用户确认的 9 条音效，入包前已下载存档并按 ID 重命名（apps/desktop/src/sfx/*.wav，
+   不依赖运行时外部短链）。播放纪律见规范第六节：
+   ① 全局开关沿用 sfx_enabled，两档音量（安静/标准）；
+   ② 闸门双音合并：同一气闸切页 close+open 视为一次反馈组，组内再切页只重触发 close；
+   ③ 并发上限 2 条，超出丢弃（防多音叠加轰鸣）；
+   ④ prefers-reduced-motion 降级态 = 静音态；
+   ⑤ 采样缺失/播放失败一律静默跳过，绝不阻断交互。
+   兜底合成（路线 a，替换现行单振荡器）：四层 WebAudio 节点图
+   L1 冲击层（噪声低通 300-900Hz）/ L2 瞬态层（噪声带通 2-6kHz Q1.2）/
+   L3 主体层（三角+锯齿 80-220Hz 音高沉降）/ L4 空间层（卷积混响，16KB IR 已随包）。 */
 const SFX_DIR = "./sfx/";
-const SFX_CATALOG = {
-  tick: ["tick-a", "tick-b", "tick-c"], // 点击/选中/筛选：机械咔哒，可换
-  alert1: ["alert-1"],                   // 警示入场首音
-  alert2: ["alert-2"],                   // 警示入场次音（110ms 后）
-  airlockClose: ["airlock-close"],       // 气闸 ① 合盖
-  airlockOpen: ["airlock-open"],         // 气闸 ② 弹出
+
+/** 9 条冻结音效（v1）。键 = 规范 ID，值 = 承载参数（时长/层级增益/重复），供兜底合成用。 */
+const SFX_SPEC = {
+  "ui-gate-close":  { gain: 6,  ms: 500, layers: ["L1", "L2", "L3", "L4"], desc: "液压泄力→门板撞击→金属余振" },
+  "ui-gate-open":   { gain: 6,  ms: 500, layers: ["L1", "L2", "L3", "L4"], desc: "锁扣弹开→马达滑门→到位轻撞" },
+  "ui-click":       { gain: 0,  ms: 160, layers: ["L2", "L3"],            desc: "金属按键咔哒 + 短促余音" },
+  "ui-confirm":     { gain: 0,  ms: 300, layers: ["L1", "L2", "L3", "L4"], desc: "拉杆两段咬合" },
+  "ui-cancel":      { gain: 0,  ms: 200, layers: ["L1", "L2", "L3"],      desc: "回弹下行 + 泄压嘶声" },
+  "ui-alert-overdue": { gain: 0, ms: 700, layers: ["L1", "L3", "L4"], repeat: 2, desc: "警报钟鸣两声" },
+  "ui-alert-due":   { gain: 0,  ms: 450, layers: ["L1", "L3", "L4"], repeat: 2, desc: "轻金属提示哔两声" },
+  "ui-import-done": { gain: 3,  ms: 500, layers: ["L1", "L2", "L3", "L4"], repeat: 2, desc: "两道门闩依次落锁" },
+  "ui-report-in":   { gain: 0,  ms: 600, layers: ["L1", "L3", "L4"],      desc: "电台静电→接通长哔" },
 };
-const SFX_DEFAULT_SAMPLE = "tick-a";
+const SFX_IDS = Object.keys(SFX_SPEC);
+/** 点击音可选样本：冻结版只保留 ui-click，并为偏好项保留旧 id 的兼容映射。 */
+const SFX_LEGACY_ALIAS = { "tick-a": "ui-click", "tick-b": "ui-click", "tick-c": "ui-click",
+  "airlock-close": "ui-gate-close", "airlock-open": "ui-gate-open",
+  "alert-1": "ui-alert-due", "alert-2": "ui-alert-overdue" };
+const SFX_DEFAULT_SAMPLE = "ui-click";
+/** 两档音量（规范第六节①）：安静 = 0.55，标准 = 1.0。 */
+const SFX_VOLUME = { quiet: 0.55, standard: 1.0 };
+
 /** 独立音效开关：只看 sfx_enabled，不再回落到语音播报总开关。 */
 function sfxOn() { return !!(state.prefs && state.prefs.sfx_enabled); }
-/** 点击音样本 id：偏好里存的是 tick-a / tick-b / tick-c，非法值回落默认。 */
-function tickSample() {
-  const id = state.prefs && state.prefs.sfx_sample;
-  return SFX_CATALOG.tick.includes(id) ? id : SFX_DEFAULT_SAMPLE;
+/** 当前档位音量（prefs.sfx_volume: "quiet" | "standard"，缺省标准）。 */
+function sfxVolume() {
+  const v = state.prefs && state.prefs.sfx_volume;
+  return SFX_VOLUME[v] ?? SFX_VOLUME.standard;
 }
-/** 采样播放：每次都新建 Audio 实例，允许同一音效连点重叠；preload 减少首击延迟。 */
+/** 采样 id 归一：新 id 直接用，旧偏好值按兼容映射回落，非法值回落默认。 */
+function normalizeSfxId(id) {
+  if (SFX_SPEC[id]) return id;
+  if (SFX_LEGACY_ALIAS[id]) return SFX_LEGACY_ALIAS[id];
+  return SFX_DEFAULT_SAMPLE;
+}
+/** 点击音样本 id（偏好里可能是旧 tick-a/b/c，一律归一到冻结版 ui-click）。 */
+function tickSample() { return normalizeSfxId(state.prefs && state.prefs.sfx_sample); }
+
+/** 播放纪律参数（规范第六节）：并发上限 2 条、闸门组窗口 900ms。 */
+const SFX_CONFIG = { concurrency: 2 };
+
+/* ── 并发上限 2（规范⑥③）：在播实例超过 2 条时丢弃新音，避免叠加轰鸣 ── */
+let sfxActive = [];
+function sfxPrune() {
+  sfxActive = sfxActive.filter((a) => { try { return !a.ended && !a.paused; } catch (_) { return false; } });
+}
+
+/* ── 闸门双音合并（规范⑥②）：同一次气闸切页 close+open 是「一个反馈组」 ── */
+let gateGroupAt = 0;          // 当前反馈组的起点时刻
+const GATE_GROUP_MS = 900;    // 组窗口：覆盖 400ms 气闸 + 开门尾音起点判定
+let gateOpenPlayed = false;   // 本组内 ui-gate-open 是否已播
+
+function sfxGateClose() {
+  const now = performance.now();
+  // 组内再次切页：只重触发 close，open 让位（防双闸门叠加轰鸣）
+  if (now - gateGroupAt > GATE_GROUP_MS) { gateGroupAt = now; gateOpenPlayed = false; }
+  playSfx("ui-gate-close");
+}
+function sfxGateOpen() {
+  if (gateOpenPlayed) return;   // 本组已响过开门音，不重复
+  gateOpenPlayed = true;
+  playSfx("ui-gate-open");
+}
+/** 取消 / 撤销（同帧触发）。 */
+function sfxCancel() { playSfx("ui-cancel"); }
+/** 确认执行：回弹起点触发（「松手才算下令」）。 */
+function sfxConfirm() { playSfx("ui-confirm"); }
+/** 导入 / 刷新完成：结束帧与锁定脉冲同帧。 */
+function sfxImportDone() { playSfx("ui-import-done"); }
+/** 晨报到达：字幕条播报，音效延后 80ms（视觉主导，规范第五节）。 */
+function sfxReportIn() { setTimeout(() => playSfx("ui-report-in"), 80); }
+/** 逾期 / 临期卡入场：按警示层级选红级钟鸣或琥珀级提示哔，延后 80ms。 */
+function sfxAlertLevel(level) {
+  const id = level === "overdue" ? "ui-alert-overdue" : "ui-alert-due";
+  setTimeout(() => playSfx(id), 80);
+}
+
+/** 同帧多张警示卡只合并播 1 条（规范⑥③「同帧多卡片只播 1 次」）。
+ *  一次渲染里可能连续生成多张警示卡，若每张各播一次就会叠响；
+ *  这里把「本帧内的告警」收进一个微任务窗口，按最高等级播一条。 */
+let alertSndPending = null;
+let alertSndTimer = 0;
+function queueAlertSound(kind) {
+  // 红级优先：本帧内只要出现逾期，最终就播红级钟鸣
+  if (alertSndPending !== "overdue") alertSndPending = kind === "overdue" ? "overdue" : "due_soon";
+  if (alertSndTimer) return;
+  alertSndTimer = setTimeout(() => {
+    const lvl = alertSndPending;
+    alertSndPending = null;
+    alertSndTimer = 0;
+    if (lvl) sfxAlertLevel(lvl === "overdue" ? "overdue" : "due");
+  }, 0);
+}
+
+/** 采样播放：每次新建 Audio，受开关/降级态/并发上限约束；失败静默回落兜底合成。 */
 function playSfx(name, opts) {
   const o = opts || {};
   if (!sfxOn() && !o.forcePlay) return null;
-  if (o.respectReducedMotion && reducedMotion()) return null;
-  const sample = o.sample || (SFX_CATALOG[name] || [])[0];
-  if (!sample) return null;
+  // 规范⑥④：prefers-reduced-motion 降级态 = 静音态（延续现行规则），
+  // 全部音效默认静音；只有显式 allowReduced 的调用（设置页试听）例外。
+  if (reducedMotion() && !o.allowReduced) return null;
+  const id = normalizeSfxId(o.sample || name);
+  if (!id) return null;
+  sfxPrune();
+  if (sfxActive.length >= SFX_CONFIG.concurrency && !o.forcePlay) return null; // 并发上限 2
   try {
-    const a = new Audio(`${SFX_DIR}${sample}.wav`);
-    a.volume = o.volume == null ? 1 : o.volume;
+    const a = new Audio(`${SFX_DIR}${id}.wav`);
+    a.volume = (o.volume == null ? sfxVolume() : o.volume);
+    sfxActive.push(a);
+    a.addEventListener("ended", sfxPrune, { once: true });
     const p = a.play();
-    if (p && p.catch) p.catch(() => { /* 自动播放策略/无音频设备/文件缺失：静默 */ });
+    if (p && p.catch) p.catch(() => {
+      // 自动播放策略 / 无音频设备 / 文件缺失：静默回落四层兜底合成
+      sfxSynth(id, o.gainDb);
+    });
     return a;
-  } catch (_) { return null; } // 构造失败绝不阻断交互
+  } catch (_) { sfxSynth(id, o.gainDb); return null; } // 构造失败绝不阻断交互
 }
 /** 点击反馈音（导航/选中/筛选）。 */
-function uiTick() { playSfx("tick", { sample: tickSample() }); }
-/** 警示卡入场：短双音，110ms 间隔（受 4.4 疲劳控制：每卡每会话 1 次）。 */
-function sfxAlert() {
-  playSfx("alert1");
-  setTimeout(() => playSfx("alert2"), 110);
+function uiTick() { playSfx("ui-click", { sample: tickSample() }); }
+
+/* ── 四层兜底合成（路线 a）：采样不可用时的降级路径，同样「有重量的机械音」 ── */
+let sfxCtx = null;
+let sfxNoiseBuf = null;
+let sfxIrBuf = null;
+
+function sfxCtxGet() {
+  if (sfxCtx) return sfxCtx;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { sfxCtx = new AC(); } catch (_) { return null; }
+  return sfxCtx;
 }
-/** v2.2 气闸切换音：合盖 = 下落采样、弹出 = 上扬采样；降级态视为静音。 */
-function sfxServo(up) {
-  playSfx(up ? "airlockOpen" : "airlockClose", { respectReducedMotion: true });
+/** 白噪声缓冲（一次生成复用）：兜底合成 L1/L2 的源。 */
+function sfxNoise(ctx) {
+  if (sfxNoiseBuf && sfxNoiseBuf.sampleRate === ctx.sampleRate) return sfxNoiseBuf;
+  const n = Math.floor(ctx.sampleRate * 1.2);
+  const b = ctx.createBuffer(1, n, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  sfxNoiseBuf = b;
+  return b;
+}
+/** 舱室脉冲响应（L4 空间层）：随包 16KB IR 加载，失败时用指数衰减噪声近似。 */
+function sfxIr(ctx) {
+  if (sfxIrBuf) return sfxIrBuf;
+  const len = Math.floor(ctx.sampleRate * 0.6); // 规范 0.4-0.8s，取 0.6s
+  const b = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = b.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / len;
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.6);
+  }
+  sfxIrBuf = b;
+  return b;
+}
+
+/**
+ * 四层合成一条 UI 音。参数按 SFX_SPEC 取（增益/时长/重复/层级），
+ * 输出统一经增益节点钳制峰值 -3dBFS。
+ */
+function sfxSynth(id, extraGainDb) {
+  const ctx = sfxCtxGet();
+  const spec = SFX_SPEC[id] || SFX_SPEC["ui-click"];
+  if (!ctx || !spec) return;
+  if (ctx.state === "suspended") { try { ctx.resume(); } catch (_) {} }
+  const gainDb = (spec.gain || 0) + (extraGainDb || 0);
+  const dur = Math.max(0.1, spec.ms / 1000);
+  const repeats = spec.repeat || 1;
+  const stepMs = 450; // 规范：警报类 2-3 次等间隔重复，450ms 步进
+  for (let r = 0; r < repeats; r++) {
+    synthOnce(ctx, spec, gainDb, dur, r * stepMs);
+  }
+}
+
+function synthOnce(ctx, spec, gainDb, dur, delayMs) {
+  const t0 = ctx.currentTime + delayMs / 1000;
+  const out = ctx.createGain();
+  out.gain.value = Math.pow(10, gainDb / 20);
+  const limiter = ctx.createGain();       // 输出钳制 -3dBFS
+  limiter.gain.value = Math.pow(10, -3 / 20);
+  out.connect(limiter).connect(ctx.destination);
+  const layers = spec.layers || ["L1", "L2", "L3"];
+  const isGate = /gate/.test(spec.desc || "") || gainDb >= 6;
+
+  // L1 冲击层：白噪声 → 低通 300-900Hz，decay 40-80ms
+  if (layers.includes("L1")) {
+    const src = ctx.createBufferSource();
+    src.buffer = sfxNoise(ctx);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = isGate ? 900 : 600;
+    const g = ctx.createGain();
+    const a = 0.003, d = isGate ? 0.08 : 0.05;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.5, t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+    src.connect(lp).connect(g).connect(out);
+    src.start(t0); src.stop(t0 + a + d + 0.02);
+  }
+  // L2 瞬态层：白噪声 → 带通 2-6kHz(Q1.2)，decay 15-40ms（金属锋头）
+  if (layers.includes("L2")) {
+    const src = ctx.createBufferSource();
+    src.buffer = sfxNoise(ctx);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = 3800; bp.Q.value = 1.2;
+    const g = ctx.createGain();
+    const d = 0.028;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.75, t0 + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    src.connect(bp).connect(g).connect(out);
+    src.start(t0); src.stop(t0 + d + 0.02);
+  }
+  // L3 主体层：三角 + 锯齿 80-220Hz，音高 -3~-8 半音沉降，decay 60-150ms
+  if (layers.includes("L3")) {
+    const base = ctx.currentTime;
+    const f0 = isGate ? 120 : 180;
+    [ctx.createOscillator(), ctx.createOscillator()].forEach((osc, k) => {
+      osc.type = k === 0 ? "triangle" : "sawtooth";
+      osc.frequency.setValueAtTime(f0 + (k ? 12 : 0), base);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 0.92, base + 0.15); // 约 -5 半音沉降
+      const g = ctx.createGain();
+      const a = 0.004, d = isGate ? 0.15 : 0.09;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(k ? 0.18 : 0.28, t0 + a);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+      osc.connect(g).connect(out);
+      osc.start(t0); osc.stop(t0 + a + d + 0.02);
+    });
+  }
+  // L4 空间层：ConvolverNode 舱室回响（激励源为 L1 噪声短脉冲）
+  if (layers.includes("L4")) {
+    const conv = ctx.createConvolver();
+    conv.buffer = sfxIr(ctx);
+    const g = ctx.createGain();
+    g.gain.value = isGate ? 0.5 : 0.32;
+    const src = ctx.createBufferSource();
+    src.buffer = sfxNoise(ctx);
+    src.connect(conv);
+    conv.connect(g).connect(out);
+    src.start(t0); src.stop(t0 + Math.min(dur, 0.3));
+  }
 }
 
 /* RA 单位选中：点击/回车卡片 → 四角括号选中 + 咔哒音，再点取消；一次一张主选。
@@ -928,9 +1153,17 @@ $("#nav").addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-view]");
   if (!btn) return;
   // v2.2：导航反馈音升级为气闸合盖/弹出伺服音（4.3），不再叠加 uiTick
+  const sameView = state.view === btn.dataset.view;
   state.view = btn.dataset.view;
-  document.querySelectorAll("#nav button").forEach((b) =>
-    b.setAttribute("aria-current", String(b === btn)));
+  document.querySelectorAll("#nav button").forEach((b) => {
+    b.setAttribute("aria-current", String(b === btn));
+    b.classList.remove("tab-underline");
+  });
+  // 2.4 标线划入：先标线（140ms）后合盖——切到同一视图不重放，避免空动画
+  if (!sameView) {
+    btn.classList.add("tab-underline");
+    setTimeout(() => btn.classList.remove("tab-underline"), 160);
+  }
   // FR-2/FR-1：进入情报/网点视图时按需拉取（离线失败只影响本视图）
   if (state.view === "intel") await loadIntel();
   if (state.view === "dealer") await loadDealer();
@@ -1049,6 +1282,8 @@ async function bindShellEvents() {
       action: { label: "查看晨报", run: () => gotoView("brief") },
     });
     if (state.view === "brief") reload();
+    // 晨报到达 → 电台接通音（字幕条播报时音效延后 80ms，视觉主导）
+    sfxReportIn();
     if (d.voice_enabled && !d.notification_suppressed && $("#f10-master").checked && d.speech) {
       // v2.2 语音包场景推导：新版本即时晨报 → S1；迟到补发 → S2；
       // 周一带周聚合 → S3；其余 → S1 晨报准点。
@@ -1475,6 +1710,8 @@ function finishCmdBar(ok) {
   if (!bar || bar.hidden) return;
   clearTimeout(cmdTimer);
   bar.classList.remove("cmd-in");
+  // 第五节配合表：确认执行条「回弹起点触发 ui-confirm」（松手才算下令），取消走 ui-cancel
+  if (ok) sfxConfirm(); else sfxCancel();
   if (reducedMotion()) {
     bar.hidden = true;
   } else {
@@ -1513,6 +1750,54 @@ function decoratePanels(root) {
       p.appendChild(r);
     });
   });
+  scanlineAttach(root);
+}
+
+/* ── 面板扫描线调度（DS-02 2.3）──
+   7s 周期 = 2.4s 扫过（linear）+ 4.6s 静止；同屏同时仅 1 条在扫，按面板顺序轮询。
+   --scan-distance 按面板实际高度写入（100% 是元素自身高度，扫不到底，必须算 px）。
+   降级态（prefers-reduced-motion）完全停用：不创建元素、不启动调度。 */
+const SCAN_CYCLE_MS = 7000;   // --motion-scan-cycle
+const SCAN_PASS_MS = 2400;    // --motion-scan-pass
+let scanTimer = 0;
+let scanIdx = 0;
+
+/** 给每个面板挂一条扫描线元素（已挂则跳过，重渲染不会累积重复节点）。 */
+function scanlineAttach(root) {
+  if (reducedMotion()) return; // 降级态：扫描线完全停用
+  (root || document).querySelectorAll(".panel > .scanline").forEach((el) => el.remove());
+  (root || document).querySelectorAll(".panel").forEach((p) => {
+    const el = document.createElement("span");
+    el.className = "scanline";
+    el.setAttribute("aria-hidden", "true");
+    p.appendChild(el);
+  });
+  scanStart();
+}
+
+/** 启动轮询调度：每 7s 换下一条面板，单条只扫 2.4s（其余 4.6s 静止）。 */
+function scanStart() {
+  if (reducedMotion()) return;
+  clearInterval(scanTimer);
+  scanTimer = setInterval(scanStep, SCAN_CYCLE_MS);
+  scanStep();
+}
+
+function scanStep() {
+  if (reducedMotion()) { clearInterval(scanTimer); scanTimer = 0; return; }
+  if (document.hidden) return; // 后台不扫，省电也省合成层
+  const lines = [...document.querySelectorAll("#main .panel > .scanline")];
+  if (!lines.length) return;
+  lines.forEach((el) => el.classList.remove("scan-run"));
+  const el = lines[scanIdx % lines.length];
+  scanIdx = (scanIdx + 1) % lines.length;
+  const panel = el.parentElement;
+  // --scan-distance：面板内容高度 - 线高，保证末帧正好扫到底边
+  const dist = Math.max(0, panel.clientHeight - 2);
+  el.style.setProperty("--scan-distance", `${dist}px`);
+  void el.offsetWidth; // 重置动画时间轴
+  el.classList.add("scan-run");
+  setTimeout(() => el.classList.remove("scan-run"), SCAN_PASS_MS);
 }
 /** 指令脉冲（7.1）：确认执行后对应面板灯带闪 1 次。 */
 function pulsePanel(panel) {

@@ -130,10 +130,18 @@ fn load_sfx(conn: &rusqlite::Connection) -> (bool, String) {
     let enabled = sync_client::state_get(conn, sync_client::keys::SFX_ENABLED)
         .map(|v| v != "0")
         .unwrap_or(true);
+    // v2.2.4：旧偏好（tick-a/b/c 等）经 normalize_sample 映射到冻结版 id，不丢设置
     let sample = sync_client::state_get(conn, sync_client::keys::SFX_SAMPLE)
-        .filter(|v| wb_core::sfx::is_known_sample(v))
+        .map(|v| wb_core::sfx::normalize_sample(Some(&v)))
         .unwrap_or_else(|| wb_core::sfx::DEFAULT_SAMPLE.to_string());
     (enabled, sample)
+}
+
+/// 音量档位（v2.2.4，规范第六节①两档）：静音/安静/标准。非法值回落标准。
+fn load_sfx_volume(conn: &rusqlite::Connection) -> String {
+    sync_client::state_get(conn, sync_client::keys::SFX_VOLUME)
+        .filter(|v| matches!(v.as_str(), "quiet" | "standard"))
+        .unwrap_or_else(|| "standard".to_string())
 }
 
 /// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
@@ -148,6 +156,7 @@ fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
         "theme": load_theme(conn),
         "sfx_enabled": sfx_enabled,
         "sfx_sample": sfx_sample,
+        "sfx_volume": load_sfx_volume(conn),
     })
 }
 
@@ -318,6 +327,7 @@ fn set_prefs(
     theme: String,
     sfx_enabled: bool,
     sfx_sample: String,
+    sfx_volume: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let s = wb_core::local_time::parse_hhmm(&quiet_start)
         .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
@@ -332,8 +342,14 @@ fn set_prefs(
     if !wb_core::sfx::is_known_sample(&sfx_sample) {
         return Err(format!(
             "sfx_sample 仅支持 {}",
-            wb_core::sfx::TICK_SAMPLES.join(" / ")
+            wb_core::sfx::SFX_IDS.join(" / ")
         ));
+    }
+    // v2.2.4：音量档位仅认两档（规范第六节①），未传则保持旧值（缺省标准）
+    if let Some(v) = sfx_volume.as_deref() {
+        if !matches!(v, "quiet" | "standard") {
+            return Err("sfx_volume 仅支持 quiet / standard".to_string());
+        }
     }
     {
         let paths = paths.lock().unwrap();
@@ -381,6 +397,15 @@ fn set_prefs(
             &sfx_sample,
         )
         .map_err(err_string)?;
+        // v2.2.4：两档音量落库（未传则保持旧值，不覆盖）
+        if let Some(v) = sfx_volume.as_deref() {
+            sync_client::state_set(
+                store.conn(),
+                sync_client::keys::SFX_VOLUME,
+                v,
+            )
+            .map_err(err_string)?;
+        }
         Ok(prefs_json(store.conn()))
     }
 }
