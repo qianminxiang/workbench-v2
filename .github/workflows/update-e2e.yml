@@ -275,7 +275,7 @@ jobs:
           if (-not $ok) { throw "本地清单服务未就绪（pid=$($srv.Id)，进程存活=$(-not $srv.HasExited)）" }
           Write-Host "本地服务就绪：http://127.0.0.1:8123（pid=$($srv.Id)）"
 
-      # ══ 正例：真实 GitHub 匿名端点，全链路 ══
+      # ══ 正例：真实 GitHub 匿名下载 + 钉死清单，全链路 ══
       - name: "正例：检测基线 → 下载 → 验签 → 安装 → 重启后版本确认"
         shell: pwsh
         run: |
@@ -284,7 +284,15 @@ jobs:
           $result = Join-Path $PWD "evidence/positive.json"
           New-Item -ItemType Directory -Force -Path "evidence" | Out-Null
           $env:WB_E2E_RESULT   = $result
-          $env:WB_E2E_ENDPOINT = ""
+          # 正例的清单改打「本次运行钉死的那一份」（fixtures/real/latest.json，由 step6 按 tag 取到的
+          # latest.json 逐字节复刻；里面的资产 URL 仍是真实 GitHub 匿名下载地址，验签/安装链路完全真实）。
+          # 原因（2026-10-29 run 40836620836 实测）：WB_BASE_VERSION 在 step6 已按 tag 钉死，
+          # 正例若中途读实时清单，发版一旦插进来，插件公告 2.2.2、env 仍是 2.2.1，
+          # 就会炸在「未检测到基线版本 2.2.1：2.2.2」——失败的是版本编号的时序，不是升级链路。
+          # 当时链路本身是全通的（downloaded_bytes=12371379、verified=true、installer_launched=true、
+          # 装后 FileVersion 与 DisplayVersion 都是 2.2.2）。
+          # 断言一条都没放宽：current/announced/verified/launched/FileVersion/DisplayVersion 全部照旧比对。
+          $env:WB_E2E_ENDPOINT = "http://127.0.0.1:8123/real/latest.json"
           $before = (Get-Item $exe).VersionInfo.FileVersion
           Write-Host "启动前 FileVersion=$before（期望 $env:WB_OLD_VERSION）"
           if ($before -notlike "$env:WB_OLD_VERSION*") { throw "低版本未正确安装：期望 $env:WB_OLD_VERSION，实际 $before" }
