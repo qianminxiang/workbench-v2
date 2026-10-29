@@ -92,7 +92,7 @@ for (const plat of placeholderPlatforms) {
 
 const manifest = {
   version,
-  notes: "综合工作台 v2.2.3（P0 热修复）：修复时区偏移换算——此前本机 UTC 偏移的秒被当作分钟使用，UTC+8 下所有日期 +20 天（如 2026-10-29 显示为 2026-11-18）；本版本仅含该修复及其回归测试（适配层单测 + CI 中国标准时间端到端断言），不包含其他功能变更。",
+  notes: "综合工作台 v2.2.4（机甲界面定稿落地）：暗色机甲指挥舱（五层表面栈/装甲渐变/双切角/HUD 角码）、液压气闸切页四阶段 400ms（含 40ms 泄压静止帧）、9 条冻结音效随包离线播放（四层 WebAudio 兜底）、亮色办公态同构。含 v2.2.3 时区偏移修复。",
   pub_date: new Date().toISOString(),
   platforms,
 };
