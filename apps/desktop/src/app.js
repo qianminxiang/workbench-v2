@@ -765,7 +765,9 @@ function bindView() {
     if (btn && runState) {
       btn.textContent = runState.total
         ? `采集中… ${runState.done}/${runState.total} 站${runState.site ? `，正在跑 ${runState.site}` : ""}`
-        : "采集中…（上一轮还没跑完，请稍候）";
+        : runState.busy
+          ? "采集中…（上一轮还没跑完，请稍候）"   // 被拒：确实有一轮在跑
+          : "采集中…（最长约 45 分钟，逐站推进）"; // 刚启动：首站还没跑完，不能说自己"被拒"
       btn.disabled = true;
     }
     $("#intel-refresh")?.addEventListener("click", async (e) => {
@@ -776,7 +778,7 @@ function bindView() {
       e.target.disabled = true;
       // 点击即置为进行中：第一个进度事件要等首站跑完（最坏 140s）才回来，
       // 这期间切走再切回来，按钮得还是「采集中」，不能变回可点的「立即刷新」。
-      state.intelRun = { done: 0, total: 0, site: "" };
+      state.intelRun = { done: 0, total: 0, site: "", busy: false };
       try { await invoke("intel_refresh"); } catch (err) {
         state.intelRun = null;
         alert("启动采集失败：" + err);
@@ -1667,7 +1669,7 @@ async function bindShellEvents() {
 
   // 已有采集在跑（防重入）：明确告诉用户「这一轮还在跑」，不装作刚启动了一轮。
   await listen("intel-busy", () => {
-    state.intelRun = { done: 0, total: 0, site: "" };
+    state.intelRun = { done: 0, total: 0, site: "", busy: true };
     const b = $("#intel-refresh");
     if (!b) return;
     b.textContent = "采集中…（上一轮还没跑完，请稍候）";
@@ -1679,7 +1681,7 @@ async function bindShellEvents() {
   await listen("intel-progress", (e) => {
     const d = e.payload || {};
     const done = d.done ?? 0, total = d.total ?? 0, site = d.site_name || "";
-    state.intelRun = { done, total, site };
+    state.intelRun = { done, total, site, busy: false };
     const b = $("#intel-refresh");
     if (!b) return;
     const tail = site ? `，正在跑 ${site}` : "";
