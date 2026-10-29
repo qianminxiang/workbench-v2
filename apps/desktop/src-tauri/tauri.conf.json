@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "个人工作台",
-  "version": "2.2.0",
+  "productName": "综合工作台",
+  "version": "2.2.1",
   "identifier": "com.anhui.pr.workbench",
   "build": {
     "frontendDist": "../src",
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "个人工作台 v2.2",
+        "title": "综合工作台 · 安徽省",
         "width": 1280,
         "height": 800,
         "minWidth": 1024,
@@ -23,7 +23,7 @@
     "trayIcon": {
       "iconPath": "icons/icon.png",
       "iconAsTemplate": false,
-      "tooltip": "个人工作台"
+      "tooltip": "综合工作台"
     },
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
@@ -40,18 +40,20 @@
       "icons/icon.ico"
     ],
     "resources": [],
-    "shortDescription": "本地优先的个人工作台（安徽省）",
-    "publisher": "安徽省小团队",
+    "shortDescription": "本地优先的综合工作台（安徽省）",
+    "publisher": "安徽新标点",
     "createUpdaterArtifacts": true,
     "windows": {
       "wix": {
-        "language": "zh-CN"
+        "language": "zh-CN",
+        "upgradeCode": "de3350cd-52fc-5f38-b777-b14d963b3722"
       },
       "nsis": {
         "languages": [
           "SimpChinese",
           "English"
-        ]
+        ],
+        "installerHooks": "windows/installer-hooks.nsh"
       }
     }
   },

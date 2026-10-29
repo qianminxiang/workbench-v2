@@ -3,7 +3,7 @@ name = "wbd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "个人工作台 v2.0 系统层驱动：导入、备份、规则求值、同步、更新校验与自检"
+description = "综合工作台 v2.0 系统层驱动：导入、备份、规则求值、同步、更新校验与自检"
 
 [[bin]]
 name = "wbd"

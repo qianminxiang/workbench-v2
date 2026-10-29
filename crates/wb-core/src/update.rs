@@ -645,7 +645,7 @@ mod tests {
     fn make_manifest_script_output_form_parses() {
         let script_output = r#"{
   "version": "2.1.0",
-  "notes": "个人工作台 v2.1：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正与免打扰可编辑。",
+  "notes": "综合工作台 v2.2.1：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
   "pub_date": "2026-10-27T08:39:56.169Z",
   "platforms": {
     "windows-x86_64": {

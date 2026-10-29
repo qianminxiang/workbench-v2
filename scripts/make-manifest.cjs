@@ -52,7 +52,7 @@ const version = JSON.parse(fs.readFileSync(
 // 2026-10-27 修复（v2.1.0 实测缺陷 D1）：清单里的下载 URL 必须使用**Release 上
 // 真实存在**的资产名，不能用本地文件名推断。实测：GitHub 保存 Release 资产时会
 // 剥离资产名里的非 ASCII 字符（上传 `probe-中文.txt` 实存 `probe-.txt`），
-// 而本包 productName 是中文，bundler 产物 `个人工作台_2.1.0_x64-setup.exe`
+// 而本包 productName 是中文，bundler 产物原名带中文前缀（如 `<产品名>_2.1.0_x64-setup.exe`）
 // 在 Release 上变成 `_2.1.0_x64-setup.exe`。此前按本地名 encodeURIComponent
 // 拼 URL，声明的地址实测 404，自动更新在下载步必然失败、而 CI 全绿。
 // 现在必须由 WB_RELEASE_ASSET（发布步从 `gh release view --json assets`
@@ -92,7 +92,7 @@ for (const plat of placeholderPlatforms) {
 
 const manifest = {
   version,
-  notes: "个人工作台 v2.1：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正与免打扰可编辑。",
+  notes: "综合工作台 v2.2.1：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
   pub_date: new Date().toISOString(),
   platforms,
 };

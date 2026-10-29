@@ -191,7 +191,7 @@ pub fn notification_text(brief: &MorningBrief, decision: &BriefDecision) -> (Str
     let title = if decision.verdict == BriefVerdict::DueLate {
         format!("晨报（补发）· {}", brief.brief_date)
     } else {
-        format!("个人工作台 · 晨报 · {}", brief.brief_date)
+        format!("综合工作台 · 晨报 · {}", brief.brief_date)
     };
     let mut lines = brief_body_lines(brief);
     if decision.verdict == BriefVerdict::DueLate {

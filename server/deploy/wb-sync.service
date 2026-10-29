@@ -1,5 +1,5 @@
 [Unit]
-Description=个人工作台 v2.0 团队同步服务端（薄服务，Node 22 内置模块，零 npm 依赖）
+Description=综合工作台 v2.0 团队同步服务端（薄服务，Node 22 内置模块，零 npm 依赖）
 After=network.target
 
 [Service]

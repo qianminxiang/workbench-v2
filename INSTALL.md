@@ -1,4 +1,4 @@
-# Windows 安装说明（个人工作台 v2.0）
+# Windows 安装说明（综合工作台 v2.0）
 
 ## 重要说明（先读）
 
@@ -8,7 +8,7 @@
 
 1. 从 CI 构建产物下载 `Workbench_2.0.0_x64-setup.exe`（NSIS，推荐）或 `.msi`。
 2. 双击运行，按向导完成安装（默认安装到 `%LOCALAPPDATA%\Programs\Workbench`，无需管理员权限）。
-3. 首次启动：桌面/开始菜单「个人工作台」图标，或直接运行安装目录下的 `Workbench.exe`。
+3. 首次启动：桌面/开始菜单「综合工作台」图标，或直接运行安装目录下的 `Workbench.exe`。
 
 ## 二、首次使用
 

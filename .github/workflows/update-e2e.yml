@@ -1,10 +1,11 @@
 name: update-e2e
 
-# 自动更新端到端验证（正例 + 4 个负例），全部在 Windows 真机上、全部走匿名网络。
+# 自动更新端到端验证：正例（真实 GitHub 匿名端点全链路）+ 4 个负例（本地 http 夹具），
+# 全部在 Windows 真机上、全部走匿名网络。
 #
 # 红线（本文件必须自证，不靠口头声明）：
-# 1. 不触碰 v2.1.0 已发布 Release 资产：
-#    · 只对 Release 做 **GET 下载**（匿名取真实安装包/签名/清单做夹具）；
+# 1. 不触碰任何已发布 Release 资产：
+#    · 只对 Release 做 **GET 下载**（匿名取真实安装包/签名/清单做基线）；
 #    · 不 PUT/PATCH/DELETE，不 `gh release upload`，不创建/修改 Release。
 #    本工作流**不含**任何 release 写操作，且不申请 `contents: write`——
 #    权限上就没法改发布物（最小权限即结构性保证）。
@@ -12,13 +13,34 @@ name: update-e2e
 # 3. 正例必须真的装上：断言读的是安装后 exe 的 FileVersion + 卸载注册表
 #    DisplayVersion（NSIS 安装器写入），不是界面显示。
 #
-# 触发：只手动（workflow_dispatch）。不挂 tag，避免与发布流水线互相干扰。
+# 触发：workflow_dispatch（手动）。不挂 tag，避免与发布流水线互相干扰。
+#
+# ── 2026-10-29 改名后的两处结构性修订（v2.2.1）───────────────
+# A. 产品名不再硬编码：v2.2.1 起 productName 由「个人工作台」改为「综合工作台」，
+#    而**基线安装包**仍是旧名。故把「基线产品名」与「被测新包产品名」拆成两个变量：
+#      $oldProduct = 基线包实际产品名（从基线安装包自身资源/发行者推出，见各步）
+#      $newProduct = 当前源码 tauri.conf.json 的 productName（综合工作台）
+#    这样 v2.1.0/v2.2.0（旧名）与 v2.2.1（新名）两条升级路径都能用同一份脚本，
+#    且改名后再改一次名也不用动这里。
+# B. 版本号不再硬编码：基线 tag、资产名、以及三处版本断言，全部由
+#    「实际下载到的 latest.json 里的 version」派生（$baseVer），不再写死 2.1.0。
+#
+# ── v2.2.1 新增：升级真机实测（两条路径）──────────────────────
+#   base_tag = v2.1.0 → 新包  与  base_tag = v2.2.0 → 新包，两条都要过。
+#   验收口径（改名连带风险的真机证据）：
+#     · 单份安装：旧卸载项（HKCU/HKLM）不存在、旧目录不存在、只有一套卸载项
+#     · 桌面快捷方式为新名，且指向新目录
+#     · 界面标题 = 「综合工作台 · 安徽省」（读真实窗口标题，不读配置）
 
 on:
   workflow_dispatch:
     inputs:
+      base_tag:
+        description: "升级基线 Release tag（如 v2.1.0 / v2.2.0；留空则取 latest.json 指向的 tag）"
+        required: false
+        default: ""
       old_version:
-        description: "旧版本号（构造的低版本构建，必须 < 2.1.0）"
+        description: "构造的低版本构建版本号（须低于基线版本）"
         required: false
         default: "2.0.0"
 
@@ -29,7 +51,7 @@ permissions:
 jobs:
   e2e:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: 打印运行上下文（匿名、无令牌）
@@ -37,7 +59,6 @@ jobs:
         run: |
           Write-Host "repo=$env:GITHUB_REPOSITORY  sha=$env:GITHUB_SHA  ref=$env:GITHUB_REF"
           Write-Host "run=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-          # 显式确认本 job 拿不到写权限令牌：只读 GITHUB_TOKEN 是本工作流的红线证据之一。
           Write-Host "GITHUB_TOKEN 存在=$([bool]$env:GITHUB_TOKEN)（仅 read 权限，见 workflow permissions）"
 
       - uses: actions/checkout@v4
@@ -50,62 +71,91 @@ jobs:
           cargo install tauri-cli --version "^2" --locked
           python --version
 
-      # ── 匿名下载真实发布物（不带 Authorization 头；这是「普通用户可完成」的证据）──
-      - name: 匿名下载 v2.1.0 发布资产（不携带任何令牌）
+      # ── 解析基线版本：tag 与资产名全部从发布侧派生，不写死 ──
+      - name: 解析基线版本与产品名（不写死版本号）
         shell: pwsh
         run: |
+          $tag = "${{ github.event.inputs.base_tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = "latest" }
+          Write-Host "基线 tag 目标：$tag"
           New-Item -ItemType Directory -Force -Path assets | Out-Null
-          $tag = "v2.1.0"
-          $names = @(
-            "latest.json",
-            "workbench_2.1.0_x64-setup.exe",
-            "workbench_2.1.0_x64-setup.exe.sig"
-          )
-          foreach ($n in $names) {
-            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$n"
-            # -UseBasicParsing + 不设任何认证头：reqwest/curl 默认匿名
-            curl.exe -sS -L --max-time 120 -o "assets/$n" -w "HTTP %{http_code} %{size_download}B  $n`n" $url
-            if ($LASTEXITCODE -ne 0) { throw "匿名下载失败：$url" }
-          }
+          # 先取 latest.json（匿名），拿到真实版本号与真实资产 URL
+          curl.exe -sS -L --max-time 120 -o "assets/latest.json" `
+            -w "HTTP %{http_code} %{size_download}B  latest.json`n" `
+            "https://github.com/$env:GITHUB_REPOSITORY/releases/$tag/download/latest.json"
+          if ($LASTEXITCODE -ne 0) { throw "下载 latest.json 失败（tag=$tag）" }
+          $j = Get-Content "assets/latest.json" -Raw | ConvertFrom-Json
+          $baseVer = $j.version
+          if ([string]::IsNullOrWhiteSpace($baseVer)) { throw "latest.json 缺 version 字段" }
+          $winUrl = $j.platforms.'windows-x86_64'.url
+          if ([string]::IsNullOrWhiteSpace($winUrl)) { throw "latest.json 缺 windows-x86_64.url" }
+          # 版本断言与资产名的唯一来源：这里是本次运行实际拿到的版本
+          "WB_BASE_VERSION=$baseVer" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          "WB_BASE_URL=$winUrl"       | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          # 新包产品名：直接从当前源码配置读，改名后再改名这里自动跟随
+          $newProduct = (Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).productName
+          "WB_NEW_PRODUCT=$newProduct" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          Write-Host "基线版本=$baseVer 新包产品名=$newProduct"
+          Write-Host "基线安装包 URL=$winUrl"
+
+      # ── 匿名下载真实发布物（不带 Authorization 头；这是「普通用户可完成」的证据）──
+      - name: 匿名下载基线发布资产（不携带任何令牌）
+        shell: pwsh
+        run: |
+          # 资产名从 latest.json 的 URL 尾部取，不写死 workbench_2.1.0_x64-setup.exe
+          $baseName = ($env:WB_BASE_URL -split '/')[-1]
+          if ([string]::IsNullOrWhiteSpace($baseName)) { throw "无法从 URL 解析资产名：$env:WB_BASE_URL" }
+          Write-Host "基线安装包资产名=$baseName"
+          "WB_BASE_ASSET=$baseName" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          curl.exe -sS -L --max-time 300 -o "assets/$baseName" -w "HTTP %{http_code} %{size_download}B  $baseName`n" $env:WB_BASE_URL
+          if ($LASTEXITCODE -ne 0) { throw "匿名下载基线安装包失败：$env:WB_BASE_URL" }
+          curl.exe -sS -L --max-time 120 -o "assets/$baseName.sig" -w "HTTP %{http_code} %{size_download}B  $baseName.sig`n" "$env:WB_BASE_URL.sig"
+          if ($LASTEXITCODE -ne 0) { throw "匿名下载基线签名失败" }
           Get-ChildItem assets | ForEach-Object {
             Write-Host ("  {0} = {1} 字节  sha256={2}" -f $_.Name, $_.Length,
               (Get-FileHash $_.FullName -Algorithm SHA256).Hash.Substring(0,16))
           }
-          if (-not (Test-Path "assets/workbench_2.1.0_x64-setup.exe")) { throw "安装包未下载成功" }
+          if (-not (Test-Path "assets/$baseName")) { throw "基线安装包未下载成功" }
+          # 基线包的真实产品名：从安装包版本资源的 ProductName 读，而不是猜
+          $vi = (Get-Item "assets/$baseName").VersionInfo
+          $oldProduct = $vi.ProductName
+          if ([string]::IsNullOrWhiteSpace($oldProduct)) { throw "无法从基线安装包读取 ProductName" }
+          Write-Host "基线安装包 ProductName=$oldProduct  FileVersion=$($vi.FileVersion) ProductVersion=$($vi.ProductVersion)"
+          "WB_OLD_PRODUCT=$oldProduct" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          # 基线版本必须与清单一致，否则夹具口径不成立
+          if ($vi.FileVersion -notlike "$env:WB_BASE_VERSION*") {
+            throw "基线安装包 FileVersion=$($vi.FileVersion) 与 latest.json version=$env:WB_BASE_VERSION 不一致"
+          }
+          # 本 job 验的是「当前产品名的更新通道」，更新装上的就是基线包 ——
+          # 基线包产品名与源码产品名不同（例如基线仍是旧名的 v2.1.0/v2.2.0）时，
+          # 装完会落在另一个安装目录，后续断言会错误归因。这里直接前置拦下，
+          # 并指明改名迁移由 rename-upgrade job 负责，避免用错 job 得出错误结论。
+          if ($oldProduct -ne $env:WB_NEW_PRODUCT) {
+            throw ("基线包产品名「$oldProduct」与源码产品名「$env:WB_NEW_PRODUCT」不一致：本 job 只验同名更新通道。" +
+                   "改名迁移（旧名→新名）请用 rename-upgrade job（矩阵 baseline v2.1.0/v2.2.0）；" +
+                   "若刚改名，请先发布 v2.2.1 使 latest 指向新名包后再跑本 job。")
+          }
 
       - name: 匿名可达性断言（无令牌、无 Cookie）
         shell: pwsh
         run: |
-          # 用 .NET HttpClient 且不加任何默认凭证，证明「普通用户环境」可达
           $h = New-Object System.Net.Http.HttpClient
           $h.DefaultRequestHeaders.UserAgent.ParseAdd("wb-e2e-probe/1.0")
-          $r = $h.GetAsync("https://github.com/$env:GITHUB_REPOSITORY/releases/download/v2.1.0/latest.json").Result
+          $r = $h.GetAsync("https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json").Result
           Write-Host "latest.json 匿名状态码=$([int]$r.StatusCode) 长度=$($r.Content.Headers.ContentLength)"
           if (-not $r.IsSuccessStatusCode) { throw "匿名访问 latest.json 失败：$([int]$r.StatusCode)" }
 
-      # ── 构造旧版本 2.0.0（带真实 updater 链路的低版本构建）──
-      # 构造方式（写进报告的口径）：
-      #   · 同一份源码（当前 main），只把 tauri.conf.json 的 version 改成 2.0.0，
-      #     并用 `--config` 深合并打开 E2E feature 驱动；
-      #   · version 是 tauri 的 package_info 与 NSIS DisplayVersion 的唯一来源
-      #     （tauri-cli interface/rust.rs: version = config.version，缺省才回落 Cargo），
-      #     所以改这一处即可让「旧版本」在注册表与 FileVersion 上都真的是 2.0.0；
-      #   · 端点/公钥不动 → 它就是指向同一更新端点的低版本构建。
-      - name: 构造旧版本 2.0.0 构建（E2E feature + 版本覆盖）
+      # ── 构造低版本构建（带真实 updater 链路的低版本，用于正例/负例驱动）──
+      - name: 构造低版本构建（E2E feature + 版本覆盖）
         shell: pwsh
         run: |
           $old = "${{ github.event.inputs.old_version }}"
           if ([string]::IsNullOrWhiteSpace($old)) { $old = "2.0.0" }
-          Write-Host "旧版本目标：$old"
-          # E2E 覆盖配置：版本号 + 允许 http 端点（负例用 127.0.0.1，正例走真实 https）
+          if ($old -notmatch '^\d+\.\d+\.\d+$') { throw "old_version 非法：$old" }
+          Write-Host "低版本目标：$old（基线=$env:WB_BASE_VERSION）"
+          "WB_OLD_VERSION=$old" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
           $cfg = [ordered]@{
             version = $old
-            # createUpdaterArtifacts 必须在这一跳关掉：仓库主配置里它是 true，
-            # tauri-cli 因此会把 updater 打包产物全部签名，并在 `sign_updaters()` 里
-            # 强制要求 TAURI_SIGNING_PRIVATE_KEY —— 本工作流只读、不注入任何 secret，
-            # 缺私钥会直接以 "A public key has been found, but no private key" 中断构建。
-            # 关掉只影响「旧版本安装包的 .sig 产物」，运行时 updater 读的是
-            # plugins.updater（pubkey/endpoints 仍在），驱动链路完全不受影响。
             bundle = [ordered]@{ createUpdaterArtifacts = $false }
             plugins = [ordered]@{
               updater = [ordered]@{
@@ -116,70 +166,58 @@ jobs:
             }
           }
           $cfg | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 "e2e-old.conf.json"
-          Get-Content "e2e-old.conf.json"
-          # 旧版本只出 NSIS（MSI 与 NSIS 安装位置不同，混用会让「已装版本」判定失真）
           Push-Location apps/desktop/src-tauri
           cargo tauri build --features e2e-update --config ../../../e2e-old.conf.json --bundles nsis
-          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "旧版本构建失败" }
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "低版本构建失败" }
           Pop-Location
           $exe = Get-ChildItem "target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          if (-not $exe) { throw "未找到旧版本 NSIS 安装包" }
-          Write-Host "旧版本安装包：$($exe.FullName) = $($exe.Length) 字节"
+          if (-not $exe) { throw "未找到低版本 NSIS 安装包" }
           Copy-Item $exe.FullName "assets/old-setup.exe" -Force
-          # 记录旧版本安装包内的产品版本，供报告引用
-          $fv = (Get-Item "assets/old-setup.exe").VersionInfo
-          Write-Host "旧版本安装包 FileVersion=$($fv.FileVersion) ProductVersion=$($fv.ProductVersion)"
+          Write-Host "低版本安装包：$($exe.Name) = $($exe.Length) 字节"
 
-      # ── 装旧版本 ──
-      - name: 安装旧版本 2.0.0（静默）
+      # ── 装低版本 ──
+      - name: 安装低版本（静默）
         shell: pwsh
         run: |
           $p = Start-Process -FilePath "assets/old-setup.exe" -ArgumentList "/S" -Wait -PassThru
-          Write-Host "安装器退出码=$($p.ExitCode)"
-          if ($p.ExitCode -ne 0) { throw "旧版本安装失败，退出码 $($p.ExitCode)" }
-          $dir = Join-Path $env:LOCALAPPDATA "个人工作台"
+          if ($p.ExitCode -ne 0) { throw "低版本安装失败，退出码 $($p.ExitCode)" }
+          # 低版本构建的产品名就是当前源码名（综合工作台）
+          $dir = Join-Path $env:LOCALAPPDATA $env:WB_NEW_PRODUCT
           if (-not (Test-Path $dir)) { throw "未找到安装目录：$dir" }
           Get-ChildItem $dir -Filter "*.exe" | ForEach-Object {
             Write-Host ("  {0}  FileVersion={1}" -f $_.Name, $_.VersionInfo.FileVersion)
           }
-          # 注册表证据：NSIS 写入 DisplayVersion=${VERSION}
-          $keys = @(
-            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台",
-            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台"
-          )
-          foreach ($k in $keys) {
-            if (Test-Path $k) {
-              $v = (Get-ItemProperty $k).DisplayVersion
-              Write-Host "注册表 $k DisplayVersion=$v"
-            }
+          foreach ($k in @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:WB_NEW_PRODUCT",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:WB_NEW_PRODUCT")) {
+            if (Test-Path $k) { Write-Host "注册表 $k DisplayVersion=$((Get-ItemProperty $k).DisplayVersion)" }
           }
 
-      # ── 测试夹具：真实副本 + 3 个负例（本地 http，不碰 Release）──
+      # ── 夹具：真实副本 + 4 个负例（本地 http，不碰 Release）──
       - name: 构造负例夹具（副本，不改发布物）
         shell: pwsh
         run: |
           python scripts/e2e-make-fixtures.py `
             --manifest "assets/latest.json" `
-            --installer "assets/workbench_2.1.0_x64-setup.exe" `
-            --sig "assets/workbench_2.1.0_x64-setup.exe.sig" `
+            --installer "assets/$env:WB_BASE_ASSET" `
+            --sig "assets/$env:WB_BASE_ASSET.sig" `
             --out "fixtures" `
-            --port 8123
+            --port 8123 `
+            --n3-version $env:WB_BASE_VERSION
           if ($LASTEXITCODE -ne 0) { throw "夹具构造失败" }
           Get-ChildItem -Recurse fixtures | ForEach-Object { Write-Host "  $($_.FullName.Replace($PWD.Path,''))  $($_.Length)B" }
 
       - name: 启动本地清单服务（127.0.0.1:8123）
         shell: pwsh
         run: |
-          # ⚠ 必须用「独立进程」而不是 Start-Job：Start-Job 起的后台作业挂在当前
-          #    step 的 pwsh 会话上，step 一结束作业即被回收，端口随之关闭。表现为
-          #    后续 step 里被测程序在 check 阶段报 "error sending request for url
-          #    (http://127.0.0.1:8123/...)"，会被误判成链路问题而非签名拒绝。
+          # ⚠ 必须用「独立进程」而非 Start-Job：Start-Job 挂在当前 step 的 pwsh 会话上，
+          #    step 一结束即被回收，端口随之关闭，后续被测程序会报
+          #    "error sending request for url (http://127.0.0.1:8123/...)"，被误判成链路问题。
           $root = Join-Path $PWD "fixtures"
           $py = (Get-Command python).Source
           $srv = Start-Process -FilePath $py -ArgumentList "-m","http.server","8123","--bind","127.0.0.1" `
                  -WorkingDirectory $root -PassThru -WindowStyle Hidden
           $srv.Id | Out-File -Encoding utf8 "fixtures/.serverpid"
-          # 就绪探针
           $ok = $false
           for ($i = 0; $i -lt 30; $i++) {
             try {
@@ -191,22 +229,21 @@ jobs:
           Write-Host "本地服务就绪：http://127.0.0.1:8123（pid=$($srv.Id)）"
 
       # ══ 正例：真实 GitHub 匿名端点，全链路 ══
-      - name: "正例：检测 2.1.0 → 下载 → 验签 → 安装 → 重启后版本确认"
+      - name: "正例：检测基线 → 下载 → 验签 → 安装 → 重启后版本确认"
         shell: pwsh
         run: |
-          $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
-          if (-not (Test-Path $exe)) { throw "未找到旧版本主程序：$exe" }
+          $exe = Join-Path $env:LOCALAPPDATA "$env:WB_NEW_PRODUCT\wb-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "未找到低版本主程序：$exe" }
           $result = Join-Path $PWD "evidence/positive.json"
           New-Item -ItemType Directory -Force -Path "evidence" | Out-Null
           $env:WB_E2E_RESULT   = $result
-          $env:WB_E2E_ENDPOINT = ""   # 空 = 用 tauri.conf.json 里的真实 GitHub 地址
+          $env:WB_E2E_ENDPOINT = ""
           $before = (Get-Item $exe).VersionInfo.FileVersion
-          Write-Host "启动前 FileVersion=$before"
-          if ($before -notlike "2.0.0*") { throw "旧版本未正确安装：期望 2.0.0，实际 $before" }
+          Write-Host "启动前 FileVersion=$before（期望 $env:WB_OLD_VERSION）"
+          if ($before -notlike "$env:WB_OLD_VERSION*") { throw "低版本未正确安装：期望 $env:WB_OLD_VERSION，实际 $before" }
 
           $p = Start-Process -FilePath $exe -PassThru
-          Write-Host "旧版本 PID=$($p.Id)"
-          # 等结果文件出现且进入终态（installer_launched / 出错）
+          Write-Host "低版本 PID=$($p.Id)"
           $deadline = (Get-Date).AddMinutes(10)
           while ((Get-Date) -lt $deadline) {
             if (Test-Path $result) {
@@ -218,7 +255,7 @@ jobs:
           if (-not (Test-Path $result)) { throw "正例未产出结果文件（10 分钟超时）" }
           Get-Content $result -Raw | Write-Host
 
-          # 等安装器完成：轮询已装 exe 的 FileVersion 变成 2.1.0
+          # 等安装器完成：轮询已装 exe 的 FileVersion 变成基线版本
           $deadline = (Get-Date).AddMinutes(10)
           $now = $null
           while ((Get-Date) -lt $deadline) {
@@ -226,11 +263,11 @@ jobs:
             if (Test-Path $exe) {
               $now = (Get-Item $exe).VersionInfo.FileVersion
               Write-Host "轮询：已装 FileVersion=$now"
-              if ($now -like "2.1.0*") { break }
+              if ($now -like "$env:WB_BASE_VERSION*") { break }
             }
           }
           $reg = $null
-          $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\个人工作台"
+          $k = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$env:WB_NEW_PRODUCT"
           if (Test-Path $k) { $reg = (Get-ItemProperty $k).DisplayVersion }
 
           $j = Get-Content $result -Raw | ConvertFrom-Json
@@ -239,30 +276,24 @@ jobs:
           Write-Host "downloaded_bytes=$($j.downloaded_bytes) verified=$($j.verified) installer_launched=$($j.installer_launched)"
           Write-Host "装上后 FileVersion=$now  DisplayVersion=$reg"
 
-          # 先判「链路本身是否成功」：失败时直接把 stage 与插件原始报错抛出来，
-          # 否则下方 verified/installer_launched 为 null 会抛出误导性断言。
-          # ⚠ 注意：install() 成功时插件直接 std::process::exit(0)，落盘的是「安装前」那次
-          # 写入（含 installer_launched=true，但**不含 stage/ok 字段**），所以这里只在
-          # ok 字段确实存在且为 false 时才判失败——不能把「无 ok 字段」当成失败。
+          # install() 成功时插件直接 std::process::exit(0)，落盘的是「安装前」那次写入
+          # （含 installer_launched=true，但**不含 stage/ok**），故只在 ok 确实为 false 时判失败。
           if ($j.PSObject.Properties.Name -contains 'ok' -and $j.ok -ne $true) {
             throw "正例链路失败：stage=$($j.stage) error=$($j.error)（原始结果见 evidence/positive.json）"
           }
-          if ($j.current_version -notlike "2.0.0*") { throw "current_version 不是 2.0.0：$($j.current_version)" }
-          if ($j.announced_version -ne "2.1.0") { throw "未检测到 2.1.0：$($j.announced_version)" }
+          if ($j.current_version -notlike "$env:WB_OLD_VERSION*") { throw "current_version 不是 $env:WB_OLD_VERSION：$($j.current_version)" }
+          if ($j.announced_version -ne $env:WB_BASE_VERSION) { throw "未检测到基线版本 $env:WB_BASE_VERSION：$($j.announced_version)" }
           if (-not $j.verified) { throw "验签未通过" }
           if (-not $j.installer_launched) { throw "安装器未拉起" }
-          if ($now -notlike "2.1.0*") { throw "安装后 FileVersion 不是 2.1.0：$now" }
-          if ($reg -notlike "2.1.0*") { throw "注册表 DisplayVersion 不是 2.1.0：$reg" }
-          Write-Host "✅ 正例通过：2.0.0 → 检测 2.1.0 → 下载 → 验签 → 安装 → 版本确认为 2.1.0"
+          if ($now -notlike "$env:WB_BASE_VERSION*") { throw "安装后 FileVersion 不是 $env:WB_BASE_VERSION：$now" }
+          if ($reg -notlike "$env:WB_BASE_VERSION*") { throw "注册表 DisplayVersion 不是 $env:WB_BASE_VERSION：$reg" }
+          Write-Host "✅ 正例通过：$env:WB_OLD_VERSION → 检测 $env:WB_BASE_VERSION → 下载 → 验签 → 安装 → 版本确认"
 
       - name: 负例驱动（4 个，全部必须被拒绝）
         shell: pwsh
         run: |
-          # ⚠ 负例必须重新装回 2.0.0：正例已把机器上的应用升到 2.1.0，
-          #    而 2.1.0 已是端点上的最新版，"检测到更新"会返回 none，负例就失去区分度。
-          # ⚠ 负例依赖本地 8123 服务；若服务已死，被测程序会在 check 阶段报
-          #    "error sending request for url"，看起来像链路问题而非签名拒绝。
-          #    先做前置探针，把「基础设施挂了」与「负例没被拒绝」区分开。
+          # 负例必须重新装回低版本：正例已把机器升到基线版本，基线即端点最新版，
+          # "检测到更新"会返回 none，负例就失去区分度。
           $probe = $false
           for ($i = 0; $i -lt 15; $i++) {
             try {
@@ -272,8 +303,6 @@ jobs:
           }
           if (-not $probe) { throw "前置检查失败：本地清单服务不可达（127.0.0.1:8123），不构成负例结论" }
 
-          # reqwest 读 HTTP(S)_PROXY；目标即使是 127.0.0.1 也可能被转发给代理，
-          # 造成 transport 层失败。被测进程启动前显式清空，并显式放行回环地址。
           $env:NO_PROXY = "127.0.0.1,localhost"
           $env:no_proxy = "127.0.0.1,localhost"
           foreach ($k in @("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy")) {
@@ -281,25 +310,23 @@ jobs:
           }
 
           function Reset-ToOld {
-            # NSIS 覆盖安装要求主程序文件未被占用：先强杀残留进程再装，
-            # 否则会因文件占用装不上（表现为 ExitCode 非 0，掩盖真正的失败原因）。
             Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
             $p = Start-Process -FilePath "assets/old-setup.exe" -ArgumentList "/S" -Wait -PassThru
-            if ($p.ExitCode -ne 0) { throw "回滚 2.0.0 失败：$($p.ExitCode)" }
-            $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
+            if ($p.ExitCode -ne 0) { throw "回滚低版本失败：$($p.ExitCode)" }
+            $exe = Join-Path $env:LOCALAPPDATA "$env:WB_NEW_PRODUCT\wb-desktop.exe"
             Write-Host "回滚后 FileVersion=$((Get-Item $exe).VersionInfo.FileVersion)"
           }
 
-          # ⚠ 断言串取自插件真实 Display 文本（不能写枚举名，枚举名不会出现在报错里）：
-          #   minisign_verify::Error::InvalidSignature  → "The signature verification failed"
-          #   updater::Error::SignedVersionMismatch     → "The update was signed for version {signed}
-          #                                               but the update endpoint announced version {announced}."
-          #   updater::Error::Network("Download request failed with status: {code}")
+          # n3 的期望串来自夹具实际写出的内容（fixtures.json），不在工作流里写版本字面量
+          $fx = Get-Content "fixtures/fixtures.json" -Raw | ConvertFrom-Json
+          if ([string]::IsNullOrWhiteSpace($fx.n3_expect)) { throw "fixtures.json 缺 n3_expect" }
+          Write-Host "n3 期望串（夹具派生）：$($fx.n3_expect)"
+
           $cases = @(
             @{ name="n1-篡改安装包内容"; endpoint="http://127.0.0.1:8123/n1/latest.json"; expect="signature verification failed"; stage="download" },
             @{ name="n2-篡改签名";       endpoint="http://127.0.0.1:8123/n2/latest.json"; expect="signature verification failed"; stage="download" },
-            @{ name="n3-篡改清单版本";   endpoint="http://127.0.0.1:8123/n3/latest.json"; expect="signed for version 2.1.0 but the update endpoint announced version 2.2.0"; stage="download" },
+            @{ name="n3-篡改清单版本";   endpoint="http://127.0.0.1:8123/n3/latest.json"; expect=$fx.n3_expect; stage="download" },
             @{ name="n4-篡改清单URL";    endpoint="http://127.0.0.1:8123/n4/latest.json"; expect="Download request failed"; stage="download" }
           )
 
@@ -307,7 +334,7 @@ jobs:
           foreach ($c in $cases) {
             Write-Host "`n===== $($c.name) ====="
             Reset-ToOld
-            $exe = Join-Path $env:LOCALAPPDATA "个人工作台\wb-desktop.exe"
+            $exe = Join-Path $env:LOCALAPPDATA "$env:WB_NEW_PRODUCT\wb-desktop.exe"
             $result = Join-Path $PWD "evidence/$($c.name).json"
             $env:WB_E2E_RESULT   = $result
             $env:WB_E2E_ENDPOINT = $c.endpoint
@@ -326,17 +353,15 @@ jobs:
             $j = Get-Content $result -Raw | ConvertFrom-Json
             Write-Host "stage=$($j.stage) ok=$($j.ok) error=$($j.error)"
             if ($j.ok -ne $false) { throw "$($c.name) 没有被拒绝（ok=true），红线不成立" }
-            if ($j.stage -ne $c.stage) { throw "$($c.name) 失败阶段不符：期望 $($c.stage)，实际 $($j.stage)（错误可能出现在别处，归因不成立）" }
+            if ($j.stage -ne $c.stage) { throw "$($c.name) 失败阶段不符：期望 $($c.stage)，实际 $($j.stage)" }
             if ($j.error -notlike "*$($c.expect)*") { throw "$($c.name) 错误不可定位：期望含 '$($c.expect)'，实际 '$($j.error)'" }
-            # 关键：安装包不得被装上 —— 版本必须还停在 2.0.0
             Start-Sleep -Seconds 3
             $v = (Get-Item $exe).VersionInfo.FileVersion
-            if ($v -notlike "2.0.0*") { throw "$($c.name) 竟然装上了新版本：FileVersion=$v" }
+            if ($v -notlike "$env:WB_OLD_VERSION*") { throw "$($c.name) 竟然装上了新版本：FileVersion=$v" }
             Write-Host "✅ $($c.name) 被拒绝且版本未变（$v）"
             $all += [pscustomobject]@{ case=$c.name; rejected=$true; stage=$j.stage; error=$j.error; version_after=$v }
           }
           $all | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "evidence/negatives.json"
-          Write-Host "`n全部负例："
           $all | Format-Table -AutoSize | Out-String | Write-Host
 
       - name: 停本地服务
@@ -347,10 +372,7 @@ jobs:
             $id = [int](Get-Content "fixtures/.serverpid")
             Get-Process -Id $id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Write-Host "已停止本地服务进程 pid=$id"
-          } else {
-            Write-Host "未找到服务 pid 记录"
           }
-          # 兜底：按命令行清理残留的 http.server
           Get-CimInstance Win32_Process -Filter "Name like 'python%'" |
             Where-Object { $_.CommandLine -like "*http.server*8123*" } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -364,5 +386,247 @@ jobs:
           path: |
             evidence/
             fixtures/fixtures.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 升级真机实测：旧名 → 新名 的存量迁移验收（v2.2.1 改名连带风险）
+  #
+  # 与上面的 e2e 分开成独立 job：上面验「自动更新链路」，这里验「改名迁移」。
+  # 两条基线各跑一次（v2.1.0 / v2.2.0），矩阵并行。
+  # 判定只读真实产物：卸载注册表项清单、安装目录、快捷方式目标、真实窗口标题。
+  # ═══════════════════════════════════════════════════════════════════
+  rename-upgrade:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        base_tag: [v2.1.0, v2.2.0]
+
+    steps:
+      - name: 上下文
+        shell: pwsh
+        run: |
+          Write-Host "基线 tag=${{ matrix.base_tag }}"
+          Write-Host "run=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 tauri-cli
+        shell: pwsh
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: 取新包配置（产品名/版本）
+        shell: pwsh
+        run: |
+          $c = Get-Content "apps/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          "WB_NEW_PRODUCT=$($c.productName)" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          "WB_NEW_VERSION=$($c.version)"     | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          "WB_NEW_IDENT=$($c.identifier)"    | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          Write-Host "新包：name=$($c.productName) version=$($c.version) id=$($c.identifier)"
+
+      # ── 构建并安装 v2.2.1（新名）──
+      - name: 构建新包 v2.2.1（签名私钥走环境变量）
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          Push-Location apps/desktop/src-tauri
+          cargo tauri build --bundles nsis
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "新包构建失败" }
+          Pop-Location
+          $exe = Get-ChildItem "target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "未找到新包 NSIS 安装包" }
+          Copy-Item $exe.FullName "new-setup.exe" -Force
+          Write-Host "新包：$($exe.Name) = $($exe.Length) 字节"
+
+      # ── 装基线（旧名），并留存装前状态 ──
+      - name: 安装基线 ${{ matrix.base_tag }}（旧名）
+        shell: pwsh
+        run: |
+          $tag = "${{ matrix.base_tag }}"
+          $ver = $tag.TrimStart('v')
+          $name = "workbench_${ver}_x64-setup.exe"
+          New-Item -ItemType Directory -Force -Path base | Out-Null
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$name"
+          curl.exe -sS -L --max-time 300 -o "base/$name" -w "HTTP %{http_code} %{size_download}B`n" $url
+          if ($LASTEXITCODE -ne 0) { throw "下载基线安装包失败：$url" }
+          $vi = (Get-Item "base/$name").VersionInfo
+          $oldProduct = $vi.ProductName
+          if ([string]::IsNullOrWhiteSpace($oldProduct)) { throw "基线包 ProductName 读取失败" }
+          Write-Host "基线包：ProductName=$oldProduct FileVersion=$($vi.FileVersion)"
+          "WB_OLD_PRODUCT=$oldProduct" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+
+          # 装前清场：机器上不应有同名残留（干净的基线）
+          Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath "base/$name" -ArgumentList "/S" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "基线安装失败：$($p.ExitCode)" }
+
+          $dir = Join-Path $env:LOCALAPPDATA $oldProduct
+          if (-not (Test-Path $dir)) { throw "基线安装目录不存在：$dir" }
+          Write-Host "基线安装目录：$dir"
+          # 留证：装前的旧卸载项、旧桌面图标目标
+          $before = [ordered]@{}
+          $before.dir = $dir
+          $before.dir_exe = (Join-Path $dir "wb-desktop.exe")
+          $before.dir_exe_exists = (Test-Path $before.dir_exe)
+          $before.uninst_hkcu = (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$oldProduct")
+          $before.uninst_hklm = (Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$oldProduct")
+          $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "$oldProduct.lnk"
+          $before.desktop_lnk = $lnk
+          $before.desktop_lnk_exists = (Test-Path $lnk)
+          if ($before.desktop_lnk_exists) {
+            $sh = New-Object -ComObject WScript.Shell
+            $before.desktop_lnk_target = $sh.CreateShortcut($lnk).TargetPath
+          }
+          $before | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "evidence-before.json"
+          $before | ConvertTo-Json -Depth 4 | Write-Host
+
+      # ── 走自动更新路径安装新包（/P /UPDATE /R，与线上用户完全一致）──
+      - name: 以自动更新方式装 v2.2.1（passive + UPDATE + 重启）
+        shell: pwsh
+        run: |
+          # 这是线上用户的真实到达方式：tauri 插件拉起安装器时带 /P /UPDATE /R。
+          # 必须走这条，才验得到「/UPDATE 不卸载旧版」这个根因是否已被钩子修复。
+          Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $p = Start-Process -FilePath "new-setup.exe" -ArgumentList "/P","/UPDATE","/R" -Wait -PassThru
+          Write-Host "新包安装器退出码=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "新包安装失败：$($p.ExitCode)" }
+          Start-Sleep -Seconds 5
+
+      # ── 验收：单份安装 / 快捷方式 / 界面标题 ──
+      - name: 验收改名迁移（单份安装 + 新快捷方式 + 界面标题）
+        shell: pwsh
+        run: |
+          $fail = @()
+          $ev = [ordered]@{}
+          $old = $env:WB_OLD_PRODUCT
+          $new = $env:WB_NEW_PRODUCT
+
+          # ① 单份安装：旧卸载项必须消失
+          foreach ($root in @("HKCU","HKLM")) {
+            $oldKey = "${root}:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$old"
+            $oldExists = Test-Path $oldKey
+            $ev["old_uninst_${root}_exists"] = $oldExists
+            if ($oldExists) { $fail += "旧卸载项仍存在：$oldKey" }
+          }
+          # ①b 新卸载项必须存在且只有一套
+          $newKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$new"
+          $newExists = Test-Path $newKey
+          $ev["new_uninst_HKCU_exists"] = $newExists
+          if (-not $newExists) { $fail += "新卸载项不存在：$newKey" }
+          if ($newExists) { $ev["new_display_version"] = (Get-ItemProperty $newKey).DisplayVersion }
+          if ($ev["new_display_version"] -notlike "$env:WB_NEW_VERSION*") {
+            $fail += "新卸载项 DisplayVersion=$($ev['new_display_version']) 不是 $env:WB_NEW_VERSION"
+          }
+          # ①c 两套卸载项总数：旧名+新名同时存在即为双安装
+          $bothNames = @()
+          foreach ($root in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall","HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall")) {
+            if (Test-Path $root) {
+              Get-ChildItem $root | ForEach-Object {
+                $dn = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName
+                if ($dn -eq $old -or $dn -eq $new) { $bothNames += "$root\$($_.PSChildName)=$dn" }
+              }
+            }
+          }
+          $ev["displayname_entries"] = $bothNames
+          if ($bothNames.Count -ne 1) { $fail += "卸载项不是恰好一条（实际 $($bothNames.Count)）：$($bothNames -join '; ')" }
+
+          # ② 旧目录必须消失，新目录必须存在
+          $oldDir = Join-Path $env:LOCALAPPDATA $old
+          $newDir = Join-Path $env:LOCALAPPDATA $new
+          $ev["old_dir_exists"] = Test-Path $oldDir
+          $ev["new_dir_exists"] = Test-Path $newDir
+          $ev["new_dir_exe_exists"] = Test-Path (Join-Path $newDir "wb-desktop.exe")
+          if (Test-Path $oldDir) { $fail += "旧安装目录仍存在：$oldDir" }
+          if (-not (Test-Path (Join-Path $newDir "wb-desktop.exe"))) { $fail += "新安装目录缺主程序：$newDir" }
+
+          # ③ 桌面快捷方式：必须新名、且指向新目录
+          $desk = [Environment]::GetFolderPath("Desktop")
+          $oldLnk = Join-Path $desk "$old.lnk"
+          $newLnk = Join-Path $desk "$new.lnk"
+          $ev["old_lnk_exists"] = Test-Path $oldLnk
+          $ev["new_lnk_exists"] = Test-Path $newLnk
+          if (Test-Path $oldLnk) { $fail += "旧桌面图标仍存在：$oldLnk" }
+          if (-not (Test-Path $newLnk)) {
+            $fail += "新桌面图标不存在：$newLnk（/UPDATE 不建快捷方式，须由钩子补建）"
+          } else {
+            $sh = New-Object -ComObject WScript.Shell
+            $t = $sh.CreateShortcut($newLnk).TargetPath
+            $ev["new_lnk_target"] = $t
+            if ($t -notlike "$newDir*") { $fail += "新桌面图标指向错误目录：$t（期望 $newDir 下）" }
+          }
+
+          # ④ 界面标题：启动应用，读真实窗口标题
+          $exe = Join-Path $newDir "wb-desktop.exe"
+          Get-Process -Name "wb-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $proc = Start-Process -FilePath $exe -PassThru
+          # 用 -TypeDefinition（可在源码里 using System.Runtime.InteropServices）；
+          # -MemberDefinition 不支持 -UsingNamespace，写成那样会直接抛参数错误。
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class WBTWin {
+            public delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+            public static List<string> Titles(int pid) {
+              var r = new List<string>();
+              EnumWindows(delegate(IntPtr h, IntPtr l) {
+                uint wp; GetWindowThreadProcessId(h, out wp);
+                if (wp == (uint)pid && IsWindowVisible(h)) {
+                  var t = new StringBuilder(256); GetWindowText(h, t, 256);
+                  var c = new StringBuilder(256); GetClassName(h, c, 256);
+                  // 跳过插件仲裁窗（-sic/-siw）与无标题窗
+                  if (t.Length > 0 && !c.ToString().EndsWith("-sic") && !c.ToString().EndsWith("-siw"))
+                    r.Add(t.ToString());
+                }
+                return true;
+              }, IntPtr.Zero);
+              return r;
+            }
+          }
+          "@
+          $titles = @()
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            $titles = [WBTWin]::Titles($proc.Id)
+            if ($titles.Count -gt 0) { break }
+          }
+          $ev["window_titles"] = $titles
+          $expectTitle = "$new · 安徽省"
+          if (-not ($titles | Where-Object { $_ -eq $expectTitle })) {
+            $fail += "界面标题不是「$expectTitle」，实际：$($titles -join ' / ')"
+          }
+          # 标题里不允许再出现旧名（两名字并存即失败）
+          if ($titles | Where-Object { $_ -like "*$old*" }) { $fail += "界面标题仍含旧名：$($titles -join ' / ')" }
+
+          Get-Process -Id $proc.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $ev | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "evidence-after.json"
+          $ev | ConvertTo-Json -Depth 5 | Write-Host
+
+          if ($fail.Count -gt 0) {
+            throw ("改名迁移验收失败（基线 ${{ matrix.base_tag }}）：`n - " + ($fail -join "`n - "))
+          }
+          Write-Host "✅ 改名迁移验收通过（基线 ${{ matrix.base_tag }} → $env:WB_NEW_VERSION）"
+
+      - name: 归档证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rename-upgrade-${{ matrix.base_tag }}
+          path: |
+            evidence-before.json
+            evidence-after.json
           if-no-files-found: warn
           retention-days: 30

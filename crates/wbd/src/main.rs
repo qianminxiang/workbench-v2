@@ -1,4 +1,4 @@
-//! `wbd` —— 个人工作台 v2.0 系统层驱动。
+//! `wbd` —— 综合工作台 v2.0 系统层驱动。
 //!
 //! 存在的意义：让「实现自检」用**真实执行**取数，而不是靠断言。Tauri 壳需要 GUI 环境，
 //! 本 CLI 复用同一份 `wb-core` 系统层能力，因此导入、落库、备份轮转、断网降级、
@@ -14,7 +14,7 @@ use wb_core::store::{Layout, Store};
 use wb_core::{rules, sync, update};
 
 fn usage() -> String {
-    r#"wbd —— 个人工作台 v2.0 驱动
+    r#"wbd —— 综合工作台 v2.0 驱动
 
 用法：
   wbd import   <xlsx> <fiscal_year> [--json]

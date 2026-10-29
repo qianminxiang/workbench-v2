@@ -21,7 +21,7 @@
   n1/tampered.exe     安装包内容篡改（中间 1 字节翻转）
   n1/latest.json      url → tampered.exe，signature 真实
   n2/latest.json      signature 篡改（全局签名最后一字节翻转；长度与 key_id 不变）
-  n3/latest.json      version 2.1.0→2.2.0（url/signature 仍是真实的 2.1.0）
+  n3/latest.json      version 改成 --n3-version（url/signature 仍是真实基线版本）
   n4/latest.json      url 指向不存在的资产（清单 URL 篡改）
 """
 import argparse
@@ -65,6 +65,10 @@ def main() -> None:
     ap.add_argument("--sig", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--port", required=True, type=int)
+    # n3 的「清单版本」不再写死：基线资产可能是任意已发布版本，
+    # 断言串由工作流按 fixtures.json 里的 n3_version 拼，避免版本前进后断言腐坏。
+    ap.add_argument("--n3-version", required=True,
+                    help="n3 清单里篡改成的版本号（应 != 基线版本，通常取当前 latest）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -107,7 +111,7 @@ def main() -> None:
     # ── n3：篡改清单版本号 ──
     (out / "n3").mkdir()
     m3 = json.loads(json.dumps(real))
-    m3["version"] = "2.2.0"
+    m3["version"] = args.n3_version
     m3["platforms"]["windows-x86_64"]["url"] = f"{base}/real/win.exe"
     write_manifest(out / "n3" / "latest.json", m3)
 
@@ -123,7 +127,12 @@ def main() -> None:
         "tampered_original_byte": f"0x{original:02x}",
         "tampered_new_byte": "0x{:02x}".format(blob[mid]),
         "sig_is_base64_of_minisign_text": True,
+        "base_version": win_real["version"] if "version" in win_real else real["version"],
         "n3_version": m3["version"],
+        # 断言串在脚本侧拼好（唯一来源），工作流不再自己写版本字面量
+        "n3_expect": (
+            "signed for version {signed} but the update endpoint announced version {announced}"
+        ).format(signed=real["version"], announced=m3["version"]),
         "n4_url": m4["platforms"]["windows-x86_64"]["url"],
     }
     (out / "fixtures.json").write_text(

@@ -3,7 +3,7 @@ name = "wb-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "个人工作台 v2.0 可移植核心：日期规范化、导入、规则引擎、存储与备份、同步合并、更新校验"
+description = "综合工作台 v2.0 可移植核心：日期规范化、导入、规则引擎、存储与备份、同步合并、更新校验"
 
 [dependencies]
 # SQLite 走 bundled：目标机器无需预装，且自带在线备份接口（架构 §4.9 禁止直接拷 .db 文件）
