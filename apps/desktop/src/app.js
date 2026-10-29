@@ -48,6 +48,9 @@ const state = {
   kpis: [],
   units: [],
   prefs: null, // 单机偏好（免打扰窗口 + 语音开关），boot 时读、改时写
+  intelRun: null, // 采集中状态 {done,total,site}；null = 当前没有采集在跑。
+                  // 存在 state 而不是只写在按钮上：切到别的舱段再切回来时
+                  // 按钮是重建的，不恢复就会变回「立即刷新」，让人以为采集已经停了。
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -756,10 +759,30 @@ function bindView() {
   }
 
   if (state.view === "intel") {
+    // 采集可能在上一个舱段里就启动了：重建出来的按钮必须回到「进行中」形态。
+    const runState = state.intelRun;
+    const btn = $("#intel-refresh");
+    if (btn && runState) {
+      btn.textContent = runState.total
+        ? `采集中… ${runState.done}/${runState.total} 站${runState.site ? `，正在跑 ${runState.site}` : ""}`
+        : "采集中…（上一轮还没跑完，请稍候）";
+      btn.disabled = true;
+    }
     $("#intel-refresh")?.addEventListener("click", async (e) => {
-      e.target.textContent = "采集中…（约 1 分钟，同站间隔≥2s）";
+      // 时长不能写死「约 1 分钟」：18 个调度源 × 40s 超时 × 3 次尝试（含 5s/15s 退避）
+      // = 单站最坏 140s，5 个网络失败站就能吃掉十几分钟。写死一个乐观值会让用户
+      // 以为程序卡死。这里只描述「最长」的真实上限，并显示后端逐站推进的进度。
+      e.target.textContent = "采集中…（最长约 45 分钟，逐站推进）";
       e.target.disabled = true;
-      try { await invoke("intel_refresh"); } catch (err) { alert("启动采集失败：" + err); }
+      // 点击即置为进行中：第一个进度事件要等首站跑完（最坏 140s）才回来，
+      // 这期间切走再切回来，按钮得还是「采集中」，不能变回可点的「立即刷新」。
+      state.intelRun = { done: 0, total: 0, site: "" };
+      try { await invoke("intel_refresh"); } catch (err) {
+        state.intelRun = null;
+        alert("启动采集失败：" + err);
+        e.target.textContent = "立即刷新";
+        e.target.disabled = false;
+      }
     });
     document.querySelectorAll("[data-verdict-key]").forEach((b) => {
       b.addEventListener("click", async () => {
@@ -1642,9 +1665,31 @@ async function bindShellEvents() {
   // 托盘菜单「查看晨报」→ 切到晨报页
   await listen("brief-open", () => gotoView("brief"));
 
+  // 已有采集在跑（防重入）：明确告诉用户「这一轮还在跑」，不装作刚启动了一轮。
+  await listen("intel-busy", () => {
+    state.intelRun = { done: 0, total: 0, site: "" };
+    const b = $("#intel-refresh");
+    if (!b) return;
+    b.textContent = "采集中…（上一轮还没跑完，请稍候）";
+    b.disabled = true;
+  });
+
+  // FR-2 情报采集逐站进度：整轮最长可到 45 分钟（单站最坏 140s），没有进度就只能
+  // 靠按钮上那行字干等。后端每站完成即 emit 一次，这里把它变成「3/18 站」。
+  await listen("intel-progress", (e) => {
+    const d = e.payload || {};
+    const done = d.done ?? 0, total = d.total ?? 0, site = d.site_name || "";
+    state.intelRun = { done, total, site };
+    const b = $("#intel-refresh");
+    if (!b) return;
+    const tail = site ? `，正在跑 ${site}` : "";
+    b.textContent = `采集中… ${done}/${total} 站${tail}`;
+  });
+
   // FR-2 情报日采集完成 → 字幕摘要「今日新增相关项目 N 条」（PRD：不把正文塞进通知）
   await listen("intel-updated", (e) => {
     const d = e.payload || {};
+    state.intelRun = null; // 本轮结束：按钮在下一次 render 时恢复成「立即刷新」
     enqueueNotice({
       key: `intel-${d.manual ? "manual-" : ""}${new Date().toISOString().slice(0, 10)}`,
       level: d.failed > 0 ? "normal" : "normal",

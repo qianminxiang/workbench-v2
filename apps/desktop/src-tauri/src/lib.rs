@@ -17,6 +17,7 @@
 //! - 桌面自动更新：tauri-plugin-updater 打通「检查 → 下载 → 验签 → 重启安装」。
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -722,10 +723,43 @@ fn load_intel(paths: &AppPaths) -> intel::IntelState {
     intel::IntelState::load(&paths.data_dir)
 }
 
+/// 采集进行中标志：整轮最长可到 45 分钟（18 站 × 单站最坏 140s）。
+/// 没有它时，用户连点「立即刷新」（或调度线程正好同时到点）会并发跑两轮，
+/// 两轮各自 `IntelState::load` 一份旧快照、各自 `save`，后落盘的一方把前一轮
+/// 刚写好的站点状态与诊断整段覆盖掉——表现为「刷新了一次，另一批结果不见了」。
+/// 用 `swap` 做占用判定，天然互斥，不需要给整个采集加锁。
+static INTEL_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 占用一次采集名额：成功返回 `true`，已有采集在跑返回 `false`。
+/// 抽成独立函数是为了让这条语义能被单测直接验证（`spawn_intel_run` 需要
+/// `AppHandle`，单测里造不出来，只能靠肉眼看代码——那不算验证）。
+fn try_begin_intel_run() -> bool {
+    !INTEL_RUNNING.swap(true, Ordering::SeqCst)
+}
+
+/// 释放采集名额。由线程内的 guard 在退出时调用，panic 展开也会触发。
+fn end_intel_run() {
+    INTEL_RUNNING.store(false, Ordering::SeqCst);
+}
+
 /// 日频抓取一轮（调度线程与手动「立即刷新」共用）。
 /// 抓取在独立线程执行不阻塞 UI；同站间隔 ≥2s（预研口径）；失败只标记站点。
 fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
+    // 已有采集在跑：直接返回，让调用方（前端）保持原有进度显示。
+    if !try_begin_intel_run() {
+        let _ = app.emit("intel-busy", serde_json::json!({ "manual": manual }));
+        return;
+    }
     std::thread::spawn(move || {
+        // 无论正常结束还是 panic 退出，都必须把标志放回去，否则一次异常
+        // 会让后续所有采集被永久挡住。用一个 guard 结构承载。
+        struct RunGuard;
+        impl Drop for RunGuard {
+            fn drop(&mut self) {
+                end_intel_run();
+            }
+        }
+        let _guard = RunGuard;
         let (data_dir, today_iso, start_iso, end_iso) = {
             let Some(paths) = app.try_state::<Mutex<AppPaths>>() else { return };
             let p = paths.lock().unwrap();
@@ -743,6 +777,9 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
         let mut new_total = 0usize;
         let mut failed = 0usize;
         let mut first = true;
+        // 逐站进度：整轮最长 45 分钟，前端需要知道「跑到第几站」而不是干等一行字。
+        let total_sites = intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()).count();
+        let mut done_sites = 0usize;
         for spec in intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
             if !first {
                 // 同站请求间隔 ≥2s：跨站也保持，避免整体突发
@@ -811,6 +848,16 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                 attempts: fail.as_ref().map(|f| f.attempts).unwrap_or(1),
             });
             results.push(sr);
+            // 进度事件只带计数与站名，不带业务数据——被丢掉的监听不会丢任何结果。
+            done_sites += 1;
+            let _ = app.emit(
+                "intel-progress",
+                serde_json::json!({
+                    "done": done_sites, "total": total_sites,
+                    "site_name": spec.name, "manual": manual,
+                    "failed": failed, "new_total": new_total,
+                }),
+            );
         }
         state.last_run_date = Some(today_iso.clone());
         let (connected, planned) = intel::coverage_counts();
@@ -1304,6 +1351,20 @@ mod tz_tests {
             .expect("valid iso");
         assert_eq!((d.year, d.month, d.day), (2026, 10, 29));
         assert_eq!(m, 9 * 60);
+    }
+
+    /// 防重入（v2.2.4 追加）：连点「立即刷新」或调度线程同时到点时，
+    /// 两轮采集会各自 load 一份旧快照再各自 save，后落盘者覆盖前一轮的站点状态。
+    /// 这条断言锁死「同一时刻只允许一轮采集」这一契约。
+    #[test]
+    fn intel_run_is_exclusive_until_released() {
+        end_intel_run(); // 清场：测试可能与其他用例共享同一静态量
+        assert!(try_begin_intel_run(), "首次应能占用");
+        assert!(!try_begin_intel_run(), "占用期间第二次必须被拒");
+        assert!(!try_begin_intel_run(), "连点第三次同样必须被拒");
+        end_intel_run();
+        assert!(try_begin_intel_run(), "释放后应可再次占用");
+        end_intel_run();
     }
 
     /// 反证用例：若把秒当分钟传进去（修复前的实际行为），日期会 +20 天——
