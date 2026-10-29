@@ -983,6 +983,9 @@ function precisionZh(p) {
    L1 冲击层（噪声低通 300-900Hz）/ L2 瞬态层（噪声带通 2-6kHz Q1.2）/
    L3 主体层（三角+锯齿 80-220Hz 音高沉降）/ L4 空间层（卷积混响，16KB IR 已随包）。 */
 const SFX_DIR = "./sfx/";
+/** 规范落地映射「新增静态资源 1 份」：随包分发的舱室脉冲响应 IR（~16KB）。
+    优先用包内这份（每次启动同一段混响，音色稳定），取不到才回落程序生成的近似 IR。 */
+const SFX_IR_URL = "./sfx/ir-cabin.wav";
 
 /** 9 条冻结音效（v1）。键 = 规范 ID，值 = 承载参数（时长/层级增益/重复），供兜底合成用。 */
 const SFX_SPEC = {
@@ -1107,7 +1110,10 @@ function uiTick() { playSfx("ui-click", { sample: tickSample() }); }
 /* ── 四层兜底合成（路线 a）：采样不可用时的降级路径，同样「有重量的机械音」 ── */
 let sfxCtx = null;
 let sfxNoiseBuf = null;
-let sfxIrBuf = null;
+let sfxIrBuf = null;      // 程序生成的近似 IR（最后一道兜底）
+let sfxIrPack = null;      // 随包 IR 解码后的缓冲（优先使用）
+let sfxIrBytes = null;     // 随包 IR 原始字节
+let sfxIrFetching = false;
 
 function sfxCtxGet() {
   if (sfxCtx) return sfxCtx;
@@ -1126,8 +1132,9 @@ function sfxNoise(ctx) {
   sfxNoiseBuf = b;
   return b;
 }
-/** 舱室脉冲响应（L4 空间层）：随包 16KB IR 加载，失败时用指数衰减噪声近似。 */
+/** 舱室脉冲响应（L4 空间层）：优先用随包分发的 16KB IR，取不到才用指数衰减噪声近似。 */
 function sfxIr(ctx) {
+  if (sfxIrPack) return sfxIrPack;
   if (sfxIrBuf) return sfxIrBuf;
   const len = Math.floor(ctx.sampleRate * 0.6); // 规范 0.4-0.8s，取 0.6s
   const b = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -1140,22 +1147,52 @@ function sfxIr(ctx) {
   return b;
 }
 
+/** 预取随包 IR 字节（不需要 AudioContext，任何时机都能调）。失败静默，绝不阻断交互。 */
+function sfxIrFetch() {
+  if (sfxIrBytes || sfxIrFetching) return;
+  sfxIrFetching = true;
+  try {
+    fetch(SFX_IR_URL)
+      .then((r) => (r && r.ok ? r.arrayBuffer() : null))
+      .then((ab) => { sfxIrBytes = ab || null; })
+      .catch(() => { sfxIrBytes = null; })
+      .then(() => { sfxIrFetching = false; });
+  } catch (_) { sfxIrFetching = false; }
+}
+
+/** 解码随包 IR（解码时浏览器会重采样到 ctx.sampleRate）。失败或采样率不符则弃用，走近似 IR。 */
+async function sfxIrDecode(ctx) {
+  if (sfxIrPack) return sfxIrPack;
+  if (!sfxIrBytes) { sfxIrFetch(); return null; }
+  try {
+    const buf = await ctx.decodeAudioData(sfxIrBytes.slice(0));
+    // 采样率对不上说明没做重采样，弃用包内 IR，避免卷积走偏
+    if (buf && buf.sampleRate === ctx.sampleRate) sfxIrPack = buf;
+  } catch (_) { sfxIrPack = null; }
+  return sfxIrPack;
+}
+
 /**
  * 四层合成一条 UI 音。参数按 SFX_SPEC 取（增益/时长/重复/层级），
  * 输出统一经增益节点钳制峰值 -3dBFS。
  */
-function sfxSynth(id, extraGainDb) {
+sfxIrFetch(); // 预取随包舱室 IR
+async function sfxSynth(id, extraGainDb) {
   const ctx = sfxCtxGet();
   const spec = SFX_SPEC[id] || SFX_SPEC["ui-click"];
   if (!ctx || !spec) return;
-  if (ctx.state === "suspended") { try { ctx.resume(); } catch (_) {} }
-  const gainDb = (spec.gain || 0) + (extraGainDb || 0);
-  const dur = Math.max(0.1, spec.ms / 1000);
-  const repeats = spec.repeat || 1;
-  const stepMs = 450; // 规范：警报类 2-3 次等间隔重复，450ms 步进
-  for (let r = 0; r < repeats; r++) {
-    synthOnce(ctx, spec, gainDb, dur, r * stepMs);
-  }
+  try {
+    if (ctx.state === "suspended") { try { ctx.resume(); } catch (_) {} }
+    // 随包 IR 优先：等它解码完再合成；本次取不到就用程序生成的近似 IR
+    if (!sfxIrPack && !sfxIrBuf) { try { await sfxIrDecode(ctx); } catch (_) {} }
+    const gainDb = (spec.gain || 0) + (extraGainDb || 0);
+    const dur = Math.max(0.1, spec.ms / 1000);
+    const repeats = spec.repeat || 1;
+    const stepMs = 450; // 规范：警报类 2-3 次等间隔重复，450ms 步进
+    for (let r = 0; r < repeats; r++) {
+      synthOnce(ctx, spec, gainDb, dur, r * stepMs);
+    }
+  } catch (_) { /* 合成失败绝不阻断交互（规范第六节⑤） */ }
 }
 
 function synthOnce(ctx, spec, gainDb, dur, delayMs) {
