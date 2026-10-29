@@ -566,10 +566,34 @@ jobs:
           if (-not (Test-Path $newLnk)) {
             $fail += "新桌面图标不存在：$newLnk（/UPDATE 不建快捷方式，须由钩子补建）"
           } else {
-            $sh = New-Object -ComObject WScript.Shell
-            $t = $sh.CreateShortcut($newLnk).TargetPath
-            $ev["new_lnk_target"] = $t
-            if ($t -notlike "$newDir*") { $fail += "新桌面图标指向错误目录：$t（期望 $newDir 下）" }
+            # 为什么不用 WScript.Shell 读 TargetPath：2026-10-29 实测（run 40820493314），
+            # 该 COM 在本 runner 上对「基线 v2.1.0 安装器自己创建的桌面图标」同样读出空串
+            # （evidence-before.json: desktop_lnk_target=""），说明读空是环境/读取层问题，
+            # 不能据此判定 lnk 没写目标。改为直接解析 .lnk 二进制：目标（LocalBasePath）
+            # 以 UTF-16LE 逐字存在文件内，断言不放宽——新目录完整路径必须出现在 lnk 里。
+            $bytes = [IO.File]::ReadAllBytes($newLnk)
+            $ev["new_lnk_size"] = $bytes.Length
+            $target = Join-Path $newDir "wb-desktop.exe"
+            $hit = $false
+            foreach ($off in 0, 1) {
+              if ($off -ge $bytes.Length) { continue }
+              $s = [Text.Encoding]::Unicode.GetString($bytes, $off, $bytes.Length - $off)
+              if ($s.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true }
+            }
+            # 对照留痕（不作断言依据）：WScript COM 读到的值，预期与基线快照一样为空
+            try {
+              $sh = New-Object -ComObject WScript.Shell
+              $ev["new_lnk_target_wscript"] = $sh.CreateShortcut($newLnk).TargetPath
+            } catch {
+              $ev["new_lnk_target_wscript"] = "COM-ERROR: $($_.Exception.Message)"
+            }
+            $ev["new_lnk_target_expected"] = $target
+            $ev["new_lnk_target_binary_hit"] = $hit
+            if (-not $hit) {
+              $fail += "新桌面图标未指向新目录：lnk 二进制（$($bytes.Length) 字节）中未找到目标 $target"
+            }
+            # lnk 本体留证：失败时可离线复核 LocalBasePath 是否真的缺失
+            Copy-Item $newLnk -Destination "evidence-new-desktop.lnk" -ErrorAction SilentlyContinue
           }
 
           # ④ 界面标题：启动应用，读真实窗口标题
@@ -639,5 +663,6 @@ jobs:
           path: |
             evidence-before.json
             evidence-after.json
+            evidence-new-desktop.lnk
           if-no-files-found: warn
           retention-days: 30
