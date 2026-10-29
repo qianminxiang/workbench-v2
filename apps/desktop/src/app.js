@@ -767,16 +767,18 @@ function bindView() {
         ? `采集中… ${runState.done}/${runState.total} 站${runState.site ? `，正在跑 ${runState.site}` : ""}`
         : runState.busy
           ? "采集中…（上一轮还没跑完，请稍候）"   // 被拒：确实有一轮在跑
-          : "采集中…（最长约 45 分钟，逐站推进）"; // 刚启动：首站还没跑完，不能说自己"被拒"
+          : "采集中…（逐站推进）"; // 刚启动：首站还没跑完，不能说自己"被拒"
       btn.disabled = true;
     }
     $("#intel-refresh")?.addEventListener("click", async (e) => {
-      // 时长不能写死「约 1 分钟」：18 个调度源 × 40s 超时 × 3 次尝试（含 5s/15s 退避）
-      // = 单站最坏 140s，5 个网络失败站就能吃掉十几分钟。写死一个乐观值会让用户
-      // 以为程序卡死。这里只描述「最长」的真实上限，并显示后端逐站推进的进度。
-      e.target.textContent = "采集中…（最长约 45 分钟，逐站推进）";
+      // 时长不能写死一个乐观值：单请求最坏 140s（40s 超时 ×3 次 + 5s/15s 退避），
+      // 地市站还要翻页（MAX_PAGES_PER_SITE = 5），单站最坏 300s。整轮绝对上限经实算
+      // 为 5254s ≈ 87.6 分钟（16 地市站 ×300s + 省级主站双请求 2×140s + 徽采云 140s
+      // + 站间 17×2s）。不写总时长承诺，只写「逐站推进」——中途失败即止步，
+      // 真实耗时跨度极大，写任何一个固定数字都会在某种输入下变成谎话。
+      e.target.textContent = "采集中…（逐站推进）";
       e.target.disabled = true;
-      // 点击即置为进行中：第一个进度事件要等首站跑完（最坏 140s）才回来，
+      // 点击即置为进行中：第一个进度事件要等首站跑完才回来（地市站单站最坏 300s），
       // 这期间切走再切回来，按钮得还是「采集中」，不能变回可点的「立即刷新」。
       state.intelRun = { done: 0, total: 0, site: "", busy: false };
       try { await invoke("intel_refresh"); } catch (err) {
@@ -1676,8 +1678,8 @@ async function bindShellEvents() {
     b.disabled = true;
   });
 
-  // FR-2 情报采集逐站进度：整轮最长可到 45 分钟（单站最坏 140s），没有进度就只能
-  // 靠按钮上那行字干等。后端每站完成即 emit 一次，这里把它变成「3/18 站」。
+  // FR-2 情报采集逐站进度：整轮绝对上限 87.6 分钟（单站最坏 300s，地市站翻页 5 页），
+  // 没有进度就只能靠按钮上那行字干等。后端每站完成即 emit 一次，这里把它变成「N/18 站」。
   await listen("intel-progress", (e) => {
     const d = e.payload || {};
     const done = d.done ?? 0, total = d.total ?? 0, site = d.site_name || "";

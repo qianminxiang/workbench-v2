@@ -723,7 +723,8 @@ fn load_intel(paths: &AppPaths) -> intel::IntelState {
     intel::IntelState::load(&paths.data_dir)
 }
 
-/// 采集进行中标志：整轮最长可到 45 分钟（18 站 × 单站最坏 140s）。
+/// 采集进行中标志：整轮绝对上限 87.6 分钟（16 地市站各最坏 300s：5 页翻页，
+/// 第 5 页失败即中止；省级主站双请求 2×140s；徽采云 140s；站间 17×2s）。
 /// 没有它时，用户连点「立即刷新」（或调度线程正好同时到点）会并发跑两轮，
 /// 两轮各自 `IntelState::load` 一份旧快照、各自 `save`，后落盘的一方把前一轮
 /// 刚写好的站点状态与诊断整段覆盖掉——表现为「刷新了一次，另一批结果不见了」。
@@ -777,7 +778,7 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
         let mut new_total = 0usize;
         let mut failed = 0usize;
         let mut first = true;
-        // 逐站进度：整轮最长 45 分钟，前端需要知道「跑到第几站」而不是干等一行字。
+        // 逐站进度：整轮绝对上限 87.6 分钟，前端需要知道「跑到第几站」而不是干等一行字。
         let total_sites = intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()).count();
         let mut done_sites = 0usize;
         for spec in intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
