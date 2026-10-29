@@ -1004,13 +1004,17 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
   color: var(--hud-amber);
 }
 
-/* 3.4 HUD 角码（四角 L 形琥珀括角）：18px / 2px，八段 background 渐变（零 DOM）。
-   常驻位置：看板列容器、KPI 侧栏、底部指令条。与卡片选中锁定框（绿）区分「区域 / 条目」两级。 */
+/* 3.4 HUD 角码（四角 L 形琥珀括角）：18px / 2px，八段 background 渐变。
+   实现说明：面板的 ::before 已被灯带（3.7）占用、::after 已被内框占用，角码若也走伪元素
+   会在同特异性下覆盖掉灯带。因此角码用一个 aria-hidden 的覆盖层元素承载（与铆钉/扫描线
+   同一注入机制），伪元素零占用、灯带与内框都不受影响。 */
 .hud-corners {
   position: relative;
 }
-.hud-corners::before {
-  content: ""; position: absolute; inset: 4px; pointer-events: none; z-index: 1;
+.hud-corner {
+  /* z-index 3：表格视图（KPI/单位/明细）的 thead 背景会盖住 z-index 1 的覆盖层，
+     角码必须浮在内容之上才能保持「区域括角」语义；2px 线宽落在面板内边 4px 处，不压文字。 */
+  position: absolute; inset: 4px; pointer-events: none; z-index: 3;
   background:
     linear-gradient(var(--hud-amber), var(--hud-amber)) left top / var(--hud-corner-size) var(--hud-corner-weight) no-repeat,
     linear-gradient(var(--hud-amber), var(--hud-amber)) left top / var(--hud-corner-weight) var(--hud-corner-size) no-repeat,
@@ -1022,7 +1026,7 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
     linear-gradient(var(--hud-amber), var(--hud-amber)) right bottom / var(--hud-corner-weight) var(--hud-corner-size) no-repeat;
 }
 /* 锁定脉冲（DS-02 2.1 ④ / 2.3「确认执行」）：目标区域角码琥珀脉冲一次 */
-.hud-corners.hud-pulse::before { animation: hud-corner-pulse var(--motion-airlock-lock) var(--ease-standard); }
+.hud-corners.hud-pulse .hud-corner { animation: hud-corner-pulse var(--motion-airlock-lock) var(--ease-standard); }
 @keyframes hud-corner-pulse { 0%, 100% { opacity: 1; } 45% { opacity: 0.25; } }
 
 /* 3.8 金属渐变按钮：45° 双端切角（两端 6px 斜切）+ 顶 1px 高光 + 底 2px 暗边；

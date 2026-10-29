@@ -369,7 +369,7 @@ function viewKpi() {
     <td>${k.current == null ? '<span class="muted">—（口径未落板块，不估）</span>' : k.current}</td>
     <td class="mini">${esc(k.rule)}</td>
   </tr>`).join("");
-  return `<div class="panel panel--chamfer" style="padding:0; overflow:auto">
+  return `<div class="panel panel--chamfer" data-hud style="padding:0; overflow:auto">
     <table><thead><tr><th>指标</th><th>目标值</th><th>当前完成（派生）</th><th>口径</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="4" class="empty">未导入</td></tr>'}</tbody></table>
   </div>`;
@@ -1752,6 +1752,46 @@ function decoratePanels(root) {
     });
   });
   scanlineAttach(root);
+  armorButtons(root);
+  hudCorners(root);
+}
+
+/* ── 3.8 金属渐变按钮：给所有非 ghost 按钮挂 --armor（双端切角 + 顶高光 + 底暗边）。
+   ghost 按钮（次要/取消）保持描边形态，不参与金属材质的层级表达。
+   按钮散布在 #main 之外（筛选条、指令条、通知面板）也有，故整页扫描；
+   apply() 自带幂等判断，重复调用只处理新增按钮、不重复绑监听。 */
+function armorButtons() {
+  const apply = (b) => {
+    if (b.classList.contains("btn--armor")) return;
+    b.classList.add("btn--armor");
+    // 松手回弹（--ease-hydraulic-out 带过冲）
+    b.addEventListener("pointerup", () => {
+      if (reducedMotion()) return;
+      b.classList.add("btn--released");
+      setTimeout(() => b.classList.remove("btn--released"), 200);
+    });
+  };
+  document.querySelectorAll(".btn:not(.btn--armor):not(.btn--ghost)").forEach(apply);
+}
+
+/* ── 3.4 HUD 角码：看板列容器 / KPI 侧栏 / 底部指令条三处常驻（琥珀 L 形括角）。
+   面板 ::before/::after 已分别被灯带与内框占用，故用独立覆盖层元素承载（与铆钉/扫描线同一机制）。
+   卡片选中态的锁定框仍走 --mech-ok 绿，区分「区域」与「条目」两级。 */
+function hudCorners(root) {
+  const scope = root || document;
+  const paint = (el) => {
+    if (el.querySelector(":scope > .hud-corner")) return;
+    el.classList.add("hud-corners");
+    const c = document.createElement("span");
+    c.className = "hud-corner";
+    c.setAttribute("aria-hidden", "true");
+    el.insertBefore(c, el.firstChild);
+  };
+  scope.querySelectorAll(".kanban > .panel").forEach(paint);
+  scope.querySelectorAll("#main .panel[data-hud]").forEach(paint);
+  // 指令条固定在 #main 之外：无论 root 传什么，都从 document 取
+  const cmd = document.querySelector("#cmd-bar");
+  if (cmd) paint(cmd);
 }
 
 /* ── 面板扫描线调度（DS-02 2.3）──
