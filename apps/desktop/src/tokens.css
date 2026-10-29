@@ -620,6 +620,16 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate-solid) 92%, var(--
 @keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .radar::after { animation: none; } }
 
+/* v2.2.4 雷达移位（用户 2026-10-29 17:14 确认）：从晨报标题移到顶栏标题「… · 安徽省」之后。
+   顶栏 h1 字号 16px，22px 直径过大，按视觉等比缩到 15px；扫掠周期沿用 --motion-radar（2.4s）不变。
+   vertical-align:-3px 使其在 16px 文本行上视觉居中；margin-left 收到 6px，避免挤压右侧 .top-right。 */
+.top h1 .radar {
+  width: 15px; height: 15px;
+  margin-left: 6px;
+  vertical-align: -3px;
+}
+.top h1 .radar::after { height: 1px; }
+
 
 
 /* ══════════════════════════════════════════════════════════════════════

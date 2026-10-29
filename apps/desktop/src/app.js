@@ -263,7 +263,7 @@ function viewBrief() {
     </div></div>`).join("");
   return `
     <div class="panel panel--chamfer" style="--panel-strip: var(--mech-ok); padding:16px">
-      <b>晨报 · <span class="mono">${esc(b.date)}</span><span class="radar" title="扫描中" aria-hidden="true"></span></b>
+      <b>晨报 · <span class="mono">${esc(b.date)}</span></b>
       <div><span class="text-2">① 当日到期 / 应启动</span>${list(b.due_today) || '<div class="mini">无</div>'}</div>
       <hr class="divider">
       <div><span class="text-2">② 临期</span>${list(b.due_soon, "amber") || '<div class="mini">无</div>'}</div>
