@@ -114,15 +114,32 @@ fn load_theme(conn: &rusqlite::Connection) -> String {
     }
 }
 
+/// v2.2.2（需求15）：交互音效独立开关 + 点击音采样 id。
+/// 与 voice_enabled **互不相干**——这是「关掉语音播报连点击音一起消失」的对症修复：
+/// 两个开关各存各的键，任一关闭都不影响另一个。
+/// 缺省开启（用户主动点击产生的反馈音属于操作确认，不是主动推送，不受免打扰约束）。
+fn load_sfx(conn: &rusqlite::Connection) -> (bool, String) {
+    let enabled = sync_client::state_get(conn, sync_client::keys::SFX_ENABLED)
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let sample = sync_client::state_get(conn, sync_client::keys::SFX_SAMPLE)
+        .filter(|v| wb_core::sfx::is_known_sample(v))
+        .unwrap_or_else(|| wb_core::sfx::DEFAULT_SAMPLE.to_string());
+    (enabled, sample)
+}
+
 /// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
 fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
     let (quiet, voice_enabled) = load_prefs(conn);
+    let (sfx_enabled, sfx_sample) = load_sfx(conn);
     serde_json::json!({
         "quiet_start": wb_core::local_time::fmt_hhmm(quiet.start_minute),
         "quiet_end": wb_core::local_time::fmt_hhmm(quiet.end_minute),
         "voice_enabled": voice_enabled,
         "voice_pack": load_voice_pack(conn),
         "theme": load_theme(conn),
+        "sfx_enabled": sfx_enabled,
+        "sfx_sample": sfx_sample,
     })
 }
 
@@ -278,9 +295,11 @@ fn get_prefs(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String>
     Ok(prefs_json(store.conn()))
 }
 
-/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）+ 主题档位（v2.2.1）。
+/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）+ 主题档位（v2.2.1）
+/// + 交互音效独立开关与采样（v2.2.2）。
 /// 时间格式在本地就拦下，不合法不落库；voice_pack 仅认 system/pack 两值；
-/// theme 仅认 dark/light/system 三值（未设置默认 dark）；成功返回回读后的规范值。
+/// theme 仅认 dark/light/system 三值（未设置默认 dark）；sfx_sample 仅认已知采样 id；
+/// 成功返回回读后的规范值。
 #[tauri::command]
 fn set_prefs(
     paths: State<Mutex<AppPaths>>,
@@ -289,6 +308,8 @@ fn set_prefs(
     voice_enabled: bool,
     voice_pack: String,
     theme: String,
+    sfx_enabled: bool,
+    sfx_sample: String,
 ) -> Result<serde_json::Value, String> {
     let s = wb_core::local_time::parse_hhmm(&quiet_start)
         .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
@@ -299,6 +320,12 @@ fn set_prefs(
     }
     if !matches!(theme.as_str(), "dark" | "light" | "system") {
         return Err("theme 仅支持 dark / light / system".to_string());
+    }
+    if !wb_core::sfx::is_known_sample(&sfx_sample) {
+        return Err(format!(
+            "sfx_sample 仅支持 {}",
+            wb_core::sfx::TICK_SAMPLES.join(" / ")
+        ));
     }
     {
         let paths = paths.lock().unwrap();
@@ -331,6 +358,19 @@ fn set_prefs(
             store.conn(),
             sync_client::keys::THEME,
             &theme,
+        )
+        .map_err(err_string)?;
+        // v2.2.2（需求15）：音效开关独立落库，与 VOICE_ENABLED 无任何联动。
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::SFX_ENABLED,
+            if sfx_enabled { "1" } else { "0" },
+        )
+        .map_err(err_string)?;
+        sync_client::state_set(
+            store.conn(),
+            sync_client::keys::SFX_SAMPLE,
+            &sfx_sample,
         )
         .map_err(err_string)?;
         Ok(prefs_json(store.conn()))

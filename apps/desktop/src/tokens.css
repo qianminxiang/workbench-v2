@@ -203,18 +203,36 @@ html, body {
 .card--alert {
   clip-path: polygon(0 0, calc(100% - var(--chamfer-card)) 0, 100% var(--chamfer-card), 100% 100%, 0 100%);
 }
-.card--amber .alert-strip { background: var(--mech-amber-bg); }
-.card--red   .alert-strip { background: var(--mech-red-bg); }
+/* v2.2.2（需求15）：警示条改用 warn 语义色（--mech-warn-amber 仅临期 / --mech-warn-red 仅逾期）。
+   色条本身不承载文字，因此不受「语义色不进文字位」的对比度纪律约束；
+   警示灯的填充块仍用 amber-bg/red-bg（那两色是按白字/深字实测选定底的）。 */
+.card--amber .alert-strip { background: var(--mech-warn-amber); }
+.card--red   .alert-strip { background: var(--mech-warn-red); }
+/* 警示卡的整卡描边同样取 warn 语义色：亮色态靠明度差、暗色态靠色相，
+   两套主题下「这卡不对劲」都能一眼看出（纯描边不承载文字，不涉及文字对比度）。 */
+.card--alert.card--amber, .card--alert.card--amber:hover { border-color: var(--mech-warn-amber); }
+.card--alert.card--red,   .card--alert.card--red:hover   { border-color: var(--mech-warn-red); }
 .alert-strip {
   display: inline-block; width: var(--w-alert-strip);
   align-self: stretch; border-radius: 1px; margin-right: var(--sp-2);
 }
-/* 板块条：4px，悬停该卡时 5px（唯一允许的尺寸变化，不参与布局流感知） */
+/* 板块条：4px，悬停该卡时 5px（唯一允许的尺寸变化，不参与布局流感知）
+   v2.2.2（需求15）：板块识别色从内联 style 改为 data-board → CSS 静态映射，
+   --board-b1 ~ --board-b6 因此有真实 var() 消费点（两套主题各一份取值）。 */
 .board-strip {
   display: inline-block; width: var(--w-board-strip);
   align-self: stretch; border-radius: 2px; margin-right: var(--sp-2);
   transition: width var(--motion-micro) var(--ease-micro);
 }
+/* 任意元素带 data-board 即解析出 --board-accent（卡条 / 面板灯带 / 时间线色块共用一套映射） */
+[data-board="b1"] { --board-accent: var(--board-b1); }
+[data-board="b2"] { --board-accent: var(--board-b2); }
+[data-board="b3"] { --board-accent: var(--board-b3); }
+[data-board="b4"] { --board-accent: var(--board-b4); }
+[data-board="b5"] { --board-accent: var(--board-b5); }
+[data-board="b6"] { --board-accent: var(--board-b6); }
+.board-strip[data-board] { background: var(--board-accent); }
+.panel[data-board] { --panel-strip: var(--board-accent); }
 .card:hover .board-strip { width: 5px; }
 
 .divider { border: 0; border-top: var(--w-rule) solid var(--mech-seam); margin: var(--sp-4) 0; }
@@ -239,7 +257,7 @@ html, body {
 .lamp--green::before { content: "▲"; }
 /* v2.2 FR-2：源站状态表 / 改判小按钮 */
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--seam, rgba(127,127,127,.25)); }
+.tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--mech-border); }
 .tbl th { color: var(--mech-brand); font-weight: 600; }
 .btn--sm { padding: 2px 10px; font-size: 12px; }
 
@@ -359,6 +377,11 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-s
 .btn--ghost:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
 
 :focus-visible { outline: 2px solid var(--mech-brand); outline-offset: 2px; }
+/* v2.2.2（需求15）：处方内联组件的聚焦环走 --shadow-focus（实色环、非 glow）。
+   默认 outline 环继续保留给所有原生可聚焦元素；可见环走 box-shadow 的控件用它。 */
+.focus-ring:focus-visible, .chip:focus-visible, .btn:focus-visible, .btn--ghost:focus-visible {
+  outline: none; box-shadow: var(--shadow-focus);
+}
 
 /* L2：卡高密度三档（紧凑 70 / 标准 82 / 展开 98），默认标准 */
 :root[data-density="compact"] { --card-h: var(--card-h-compact); }
@@ -537,6 +560,7 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 /* 键盘可达（5.2）：focus-visible 与选中同形态，但不播呼吸 */
 .card:focus-visible {
   outline: 2px solid var(--mech-brand); outline-offset: 2px;
+  box-shadow: var(--shadow-focus);
   background: var(--armor-lock-bg);
 }
 @keyframes lock-breathe {
@@ -619,9 +643,11 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 .tree-dealers li { padding: 2px 0; color: var(--mech-text-2); overflow-wrap: anywhere; }
 
 /* ── 第六章：首行滚动字幕条 ── */
+/* v2.2.2（需求13）：字幕条允许换行——详情条展开时落到第二行、占用真实高度，
+   整条随内容长高，下方筛选行被自然下推而不是被浮层盖住。 */
 #marquee-bar:not([hidden]) {
-  position: relative; display: flex; align-items: center; gap: 8px;
-  height: var(--marquee-height);
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  min-height: var(--marquee-height); height: auto;
   background: var(--mech-plate);
   border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
   margin-bottom: var(--sp-4); padding: 0 10px 0 0;
@@ -643,10 +669,11 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 }
 .mq-alert-badge { color: var(--mech-red-bg); font-size: 12px; font-weight: 700; }
 .mq-viewport {
-  flex: 1; min-width: 0; height: 100%; position: relative; overflow: hidden;
+  /* v2.2.2：条高改为 auto（详情条占位）后，视口高度必须写死，否则 100% 无参照会塌成 0 */
+  flex: 1; min-width: 0; height: var(--marquee-height); position: relative; overflow: hidden;
   cursor: pointer; border-radius: 2px;
 }
-.mq-viewport:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
+.mq-viewport:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: -2px; box-shadow: var(--shadow-focus); }
 .mq-track {
   position: absolute; left: 0; top: 50%; transform: translateY(-50%);
   white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--mech-text-1);
@@ -667,13 +694,17 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
   flex: none; font-family: var(--font-mono); font-size: 11px;
   color: var(--mech-text-3); min-width: 28px; text-align: right;
 }
-/* 详情条（6.2）：原位展开至 88px，inset 层，含完整内容 + 主操作 */
+/* 详情条（6.2）：原位展开，inset 层，含完整内容 + 主操作。
+   v2.2.2（需求13）：由绝对定位浮层改为**正常流占位**——独占第二行（flex-basis 100%），
+   展开时字幕条整体长高、把下方筛选行推下去，任何控件都不再被压住。
+   长文本继续撑高面板（max-height 在 .mq-detail-body 上滚动），下面同样让位。 */
 .mq-detail:not([hidden]) {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+  position: static; flex: 0 0 100%; width: auto;
   min-height: var(--marquee-detail-height);
+  margin: 4px 0 6px 10px;
   background: var(--mech-inset);
   border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
-  padding: 10px 14px; z-index: 40;
+  padding: 10px 14px; z-index: auto;
   display: flex; flex-direction: column; gap: 8px; justify-content: center;
   animation: marquee-detail-open var(--motion-marquee-detail) var(--ease-morph-in);
 }

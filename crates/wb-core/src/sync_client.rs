@@ -48,6 +48,11 @@ pub mod keys {
     pub const VOICE_PACK: &str = "voice_pack"; // "system" | "pack"（v2.2 语音包）
     /// 主题档位（v2.2.1）："dark"（机甲态，默认）/ "light"（办公态）/ "system"（跟随系统）
     pub const THEME: &str = "theme";
+    // ── v2.2.2（需求15）：交互音效独立开关与采样选择 ──
+    // 与 VOICE_ENABLED 完全解耦：关掉语音播报不影响点击/气闸反馈音，反之亦然。
+    pub const SFX_ENABLED: &str = "sfx_enabled"; // "1" / "0"
+    /// 点击音采样 id（sfx/ 目录下的文件名，如 "tick-a"）；非法值回落默认。
+    pub const SFX_SAMPLE: &str = "sfx_sample";
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────

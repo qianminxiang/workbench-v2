@@ -31,6 +31,15 @@ import shutil
 from pathlib import Path
 
 
+def bump_patch(version: str) -> str:
+    """把 x.y.z 的最后一段 +1；无法解析时抛错（宁可失败，不静默造一个假版本）。"""
+    parts = version.strip().split(".")
+    if len(parts) < 3 or not all(p.isdigit() for p in parts):
+        raise SystemExit(f"基线版本 {version!r} 不是 x.y.z 形式，无法派生 n3 版本")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return ".".join(parts)
+
+
 def write_manifest(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -65,10 +74,15 @@ def main() -> None:
     ap.add_argument("--sig", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--port", required=True, type=int)
-    # n3 的「清单版本」不再写死：基线资产可能是任意已发布版本，
-    # 断言串由工作流按 fixtures.json 里的 n3_version 拼，避免版本前进后断言腐坏。
-    ap.add_argument("--n3-version", required=True,
-                    help="n3 清单里篡改成的版本号（应 != 基线版本，通常取当前 latest）")
+    # n3 的「清单版本」不再写死：基线资产可能是任意已发布版本，断言串由本脚本
+    # 按实际写出的 n3_version 派生，避免版本前进后断言腐坏。
+    #
+    # ⚠ 结构性坑（v2.2.2 修复）：此前工作流传 `--n3-version $WB_BASE_VERSION`，
+    # 也就是把清单版本篡改成**基线自己的版本**——签名里的版本与清单宣告版本相等，
+    # 插件根本不会走「版本不符」分支，期望串永远不可能出现，n3 必然拿不到终态结果。
+    # 现在改为可选：缺省自动取基线 patch+1，并在下面硬校验「必须 != 基线」。
+    ap.add_argument("--n3-version", default=None,
+                    help="n3 清单里篡改成的版本号；缺省 = 基线 patch+1（必须 != 基线）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -119,10 +133,19 @@ def main() -> None:
     if m2["platforms"]["windows-x86_64"]["signature"] == win_real["signature"]:
         raise SystemExit("n2 篡改未生效")
 
-    # ── n3：篡改清单版本号 ──
+    # ── n3：篡改清单版本号（必须与签名内绑定的基线版本不同，否则这条红线不成立）──
+    base_version = real["version"]
+    n3_version = args.n3_version
+    if not n3_version:
+        n3_version = bump_patch(base_version)
+    if n3_version == base_version:
+        raise SystemExit(
+            f"n3 版本不能等于基线版本 {base_version}：清单宣告与签名绑定一致时，"
+            "插件不会进入「版本不符」分支，n3 用例失去意义"
+        )
     (out / "n3").mkdir()
     m3 = json.loads(json.dumps(real))
-    m3["version"] = args.n3_version
+    m3["version"] = n3_version
     m3["platforms"]["windows-x86_64"]["url"] = f"{base}/real/win.exe"
     write_manifest(out / "n3" / "latest.json", m3)
 
@@ -138,7 +161,7 @@ def main() -> None:
         "tampered_original_byte": f"0x{original:02x}",
         "tampered_new_byte": "0x{:02x}".format(blob[mid]),
         "sig_is_base64_of_minisign_text": True,
-        "base_version": win_real["version"] if "version" in win_real else real["version"],
+        "base_version": base_version,
         "n3_version": m3["version"],
         # 断言串在脚本侧拼好（唯一来源），工作流不再自己写版本字面量
         "n3_expect": (

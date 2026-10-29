@@ -15,6 +15,7 @@ pub mod local_time;
 pub mod model;
 pub mod repo;
 pub mod rules;
+pub mod sfx;
 pub mod store;
 pub mod sync;
 pub mod sync_client;

@@ -57,7 +57,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
 const BOARD_ZH = { policy: "政策项目", gov: "政府关系", industry: "行业资源", media: "媒体品牌", event: "活动管理", customer: "客户线索" };
 const CODE_OF = Object.fromEntries(Object.entries(BOARD_ZH).map(([k, v]) => [v, k]));
 const BOARD_CLASS = { "政策项目": "b1", "政府关系": "b2", "行业资源": "b3", "媒体品牌": "b4", "活动管理": "b5", "客户线索": "b6" };
-const boardVar = (b) => `var(--board-${BOARD_CLASS[BOARD_ZH[b] ?? b] || "b1"})`;
+/** v2.2.2（需求15）：板块色改为 CSS 静态映射（data-board="b1..b6" → var(--board-bN)）。
+ *  原实现用内联 `style="background:var(--board-bN)"`，语义色写死在 JS 字符串里、
+ *  tokens.css 里一个 var() 消费点都没有——这正是「板块色看不出机甲风」的机械原因。 */
+const boardClass = (b) => BOARD_CLASS[BOARD_ZH[b] ?? b] || "b1";
 
 // ── 数据载入 ──
 async function reload() {
@@ -248,7 +251,7 @@ function viewBrief() {
   if (!b) return `<div class="empty">暂无晨报数据</div>`;
   const list = (arr, kind) => (arr || []).map((a) =>
     `<div class="card${kind ? ` card--alert card--${kind}` : ""}" tabindex="0">${kind ? `<span class="alert-strip"></span>` : ""}<div class="rowline">
-      <span class="board-strip" style="background:${boardVar(a.board)}"></span>
+      <span class="board-strip" data-board="${boardClass(a.board)}"></span>
       <div style="flex:1"><b>${esc(a.title)}</b>
         <div class="mini">${esc(a.detail)}</div></div>
       ${kind ? `<span class="lamp lamp--${kind}">${kind === "red" ? "逾期" : "临期"}</span>` : ""}
@@ -268,7 +271,7 @@ function viewBrief() {
 function viewKanban() {
   const boards = ["policy", "gov", "industry", "media", "event", "customer"];
   const cardOf = (i, zh) => `<div class="card${cardAlertCls(i)}" tabindex="0">${alertStripOf(i)}
-    <span class="board-strip" style="background:${boardVar(zh)}"></span>
+    <span class="board-strip" data-board="${boardClass(zh)}"></span>
     <div class="body"><b>${esc(i.title)}</b>
       <div class="rowline" style="margin-top:4px">${gauge(i.progress_pct)}<span class="mini mono">${i.progress_pct}%</span>${lampFor(i)}</div>
     </div>
@@ -279,7 +282,7 @@ function viewKanban() {
     const items = filtered().filter((i) => i.board === focus);
     const open = items.filter((i) => i.status !== "done");
     const done = items.filter((i) => i.status === "done");
-    const col = (title, arr) => `<section class="panel" style="--panel-strip:${boardVar(zh)}; padding:12px">
+    const col = (title, arr) => `<section class="panel" data-board="${boardClass(zh)}" style="padding:12px">
       <div class="rowline" style="margin-bottom:8px">
         <b>${esc(zh)} · ${title}</b><span class="mini" style="margin-left:auto">${arr.length} 项</span>
       </div>
@@ -291,7 +294,7 @@ function viewKanban() {
     const zh = BOARD_ZH[code];
     const items = filtered().filter((i) => i.board === code);
     const status = (...ss) => items.filter((i) => ss.includes(i.status ?? "")).length;
-    return `<section class="panel" style="--panel-strip:${boardVar(zh)}; padding:12px">
+    return `<section class="panel" data-board="${boardClass(zh)}" style="padding:12px">
       <div class="rowline" style="margin-bottom:8px">
         <b>${zh}</b><span class="mini" style="margin-left:auto">${items.length} 项</span>
       </div>
@@ -342,7 +345,7 @@ function viewTimeline() {
       <div class="mini" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(i.title)}</div>
       <div style="position:relative;height:16px">
         <div class="tl-band ${monthish ? "tl-band--month" : ""}"
-             style="position:absolute;left:${x0}%;width:${w}%;background:${boardVar(i.board)}"></div>
+             data-board="${boardClass(i.board)}" style="position:absolute;left:${x0}%;width:${w}%;background:var(--board-accent)"></div>
       </div>
     </div>`;
   }).join("");
@@ -390,10 +393,6 @@ function viewAdd() {
   ];
   return `<div class="panel panel--chamfer" style="padding:16px; max-width:720px">
     <b>快速添加</b>
-    <div class="mini text-2" style="margin:2px 0 12px">
-      计划时间可以直接写自然语言——「下月3号」「周五」「月底」「明天」都认；
-      精度不确定的会进待确认队列，不编日精度。
-    </div>
     <div class="settings-row">
       <span>标题 <span class="mini">（必填）</span></span>
       <input type="text" id="add-title" placeholder="例如：拜访省发改委" style="width:340px">
@@ -405,11 +404,11 @@ function viewAdd() {
       </select>
     </div>
     <div class="settings-row">
-      <span>计划开始 <span class="mini">（可写「下月3号」）</span></span>
+      <span>计划开始</span>
       <input type="text" id="add-start" placeholder="下月3号" style="width:340px">
     </div>
     <div class="settings-row">
-      <span>计划结束 <span class="mini">（留空 = 单点）</span></span>
+      <span>计划结束</span>
       <input type="text" id="add-end" placeholder="留空即可" style="width:340px">
     </div>
     <div class="settings-row" style="justify-content:flex-end">
@@ -462,6 +461,26 @@ function viewSettings() {
     <b>语音播报</b>
     <div class="settings-row">
       <span class="mini">总开关在主界面右上角</span>
+    </div>
+    <hr class="divider">
+    <b>音效反馈</b>
+    <div class="settings-row">
+      <span>界面音效<span class="mini">（点击/选中/气闸，独立开关，不受语音播报影响）</span></span>
+      <label class="switch" title="界面音效：点击、选中、筛选与气闸切换的反馈音">
+        <input id="sfx-master" type="checkbox">
+      </label>
+    </div>
+    <div class="settings-row">
+      <span>点击音采样<span class="mini">（红警风格样本，可逐个试听）</span></span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <select id="sfx-sample">
+          <option value="tick-a">样本 A · 机械拨杆</option>
+          <option value="tick-b">样本 B · 继电器双击</option>
+          <option value="tick-c">样本 C · 装甲闷响</option>
+        </select>
+        <button class="btn btn--ghost" id="sfx-preview">试听</button>
+        <span class="mini" id="sfx-saved"></span>
+      </span>
     </div>
     <hr class="divider">
     <b>更新</b>
@@ -751,6 +770,8 @@ function bindView() {
           voiceEnabled: $("#f10-master").checked,
           voicePack: cur.voice_pack === "pack" ? "pack" : "system",
           theme: currentTheme,
+          sfxEnabled: cur.sfx_enabled !== false,
+          sfxSample: cur.sfx_sample || SFX_DEFAULT_SAMPLE,
         });
         $("#quiet-saved").textContent = `已保存：${state.prefs.quiet_start}–${state.prefs.quiet_end}`;
       } catch (e) {
@@ -768,13 +789,58 @@ function bindView() {
           quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
           voiceEnabled: cur.voice_enabled,
           voicePack: cur.voice_pack || "system",
-          theme,
-          theme: currentTheme,
+          theme, // 原实现这里多写了一个 theme: currentTheme 的重复键，已删除
+          sfxEnabled: cur.sfx_enabled !== false,
+          sfxSample: cur.sfx_sample || SFX_DEFAULT_SAMPLE,
         });
       } catch (err) { toast("主题未保存（下次启动可能回退）：" + err); }
     });
 
+    // ── v2.2.2（需求15）：音效反馈独立开关 + 点击音采样选择 ──
+    // 回填与绑定都在这里做：进入设置页即可看到真实状态，改一下立刻落库。
+    (async () => {
+      try {
+        state.prefs = await invoke("get_prefs");
+        syncSfxUi();
+      } catch (_) { /* 回填失败不阻断设置页 */ }
+    })();
+    const saveSfx = async () => {
+      const master = $("#sfx-master");
+      const sample = $("#sfx-sample");
+      if (!master || !sample) return;
+      try {
+        const cur = state.prefs || await invoke("get_prefs");
+        state.prefs = await invoke("set_prefs", {
+          quietStart: cur.quiet_start, quietEnd: cur.quiet_end,
+          voiceEnabled: cur.voice_enabled,
+          voicePack: cur.voice_pack || "system",
+          theme: currentTheme,
+          sfxEnabled: master.checked,
+          sfxSample: sample.value,
+        });
+        $("#sfx-saved").textContent = `已保存：${state.prefs.sfx_enabled ? "开" : "关"} · ${state.prefs.sfx_sample}`;
+      } catch (e) {
+        $("#sfx-saved").textContent = "保存失败：" + e;
+      }
+    };
+    $("#sfx-master")?.addEventListener("change", saveSfx);
+    $("#sfx-sample")?.addEventListener("change", saveSfx);
+    // 试听：无视当前开关状态先响一声，让用户直接比较三个采样（改完不存偏好）
+    $("#sfx-preview")?.addEventListener("click", () => {
+      const sample = $("#sfx-sample")?.value || SFX_DEFAULT_SAMPLE;
+      playSfx("tick", { sample, volume: 1, forcePlay: true });
+    });
+
   }
+}
+
+/** 把偏好里的音效状态回填到设置页控件（页面重新渲染后也要重新调用）。 */
+function syncSfxUi() {
+  const master = $("#sfx-master");
+  const sample = $("#sfx-sample");
+  const prefs = state.prefs || {};
+  if (master) master.checked = prefs.sfx_enabled !== false; // 缺省开启
+  if (sample) sample.value = SFX_CATALOG.tick.includes(prefs.sfx_sample) ? prefs.sfx_sample : SFX_DEFAULT_SAMPLE;
 }
 
 /** 把计划精度翻成人话，避免界面直出 day/month/quarter 这类枚举值。 */
@@ -782,52 +848,56 @@ function precisionZh(p) {
   return ({ day: "日精度", month: "月精度", quarter: "季精度", ongoing: "长期", unknown: "待确认" })[p] ?? (p || "—");
 }
 
-/* ── 红色警戒参照交互音效（v2.1 追加评论）：WebAudio 现场合成 ──
-   零素材、零版权、零新增依赖——不复用任何游戏原声，全部程序合成。
-   ① uiTick：导航/选中/筛选的机械咔哒（RA 风格 UI 反馈音）
-   ② sfxAlert：新警示卡入场的 EVA 式短双音——受 4.4 疲劳控制（每卡每会话 1 次，警示灯仍不循环）
-   闸门：与语音播报共用 voice_enabled 总开关（数据库唯一事实源）；
-   免打扰只约束晨报主动送达，用户主动点击产生的反馈音不受其限。失败静默，绝不阻断交互。 */
-let sfxCtx = null;
-function sfxOn() { return !!(state.prefs && state.prefs.voice_enabled); }
-function beep(freq, ms, vol) {
-  try {
-    if (!sfxOn()) return;
-    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (sfxCtx.state === "suspended") sfxCtx.resume();
-    const o = sfxCtx.createOscillator(), g = sfxCtx.createGain();
-    o.type = "square";
-    o.frequency.value = freq;
-    const t = sfxCtx.currentTime;
-    g.gain.setValueAtTime(vol || 0.035, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
-    o.connect(g);
-    g.connect(sfxCtx.destination);
-    o.start(t);
-    o.stop(t + ms / 1000);
-  } catch (_) { /* 无手势/无音频设备/被策略拦截：静默跳过 */ }
+/* ── v2.2.2（需求15）：交互音效改为「可替换音频采样 + 独立开关」 ──
+   原实现是 WebAudio 现场合成（beep / uiTick / sfxAlert / sfxServo 硬编码频率），
+   用户要求的红警采样风格无法替换、且与语音播报共用 voice_enabled 总开关
+   （关掉语音播报连点击反馈音一起消失）。改法：
+   ① 所有音效走 SFX_CATALOG 里的采样文件（apps/desktop/src/sfx/*.wav），
+      换风格只改目录 + 首选项里的样本 id，不动一行播放逻辑；
+   ② 独立开关 sfx_enabled（数据库 sync_state 键，与 voice_enabled 完全解耦）；
+   ③ 采样缺失/播放失败一律静默跳过，绝不阻断交互。
+   红警具体采样风格由用户挑选（候选 tick-a / tick-b / tick-c 随安装包提供）。 */
+const SFX_DIR = "./sfx/";
+const SFX_CATALOG = {
+  tick: ["tick-a", "tick-b", "tick-c"], // 点击/选中/筛选：机械咔哒，可换
+  alert1: ["alert-1"],                   // 警示入场首音
+  alert2: ["alert-2"],                   // 警示入场次音（110ms 后）
+  airlockClose: ["airlock-close"],       // 气闸 ① 合盖
+  airlockOpen: ["airlock-open"],         // 气闸 ② 弹出
+};
+const SFX_DEFAULT_SAMPLE = "tick-a";
+/** 独立音效开关：只看 sfx_enabled，不再回落到语音播报总开关。 */
+function sfxOn() { return !!(state.prefs && state.prefs.sfx_enabled); }
+/** 点击音样本 id：偏好里存的是 tick-a / tick-b / tick-c，非法值回落默认。 */
+function tickSample() {
+  const id = state.prefs && state.prefs.sfx_sample;
+  return SFX_CATALOG.tick.includes(id) ? id : SFX_DEFAULT_SAMPLE;
 }
-function uiTick() { beep(1150, 35); }
-function sfxAlert() { beep(620, 70); setTimeout(() => beep(620, 70), 110); }
-
-/* v2.2 气闸切换音（4.3）：WebAudio 纯合成伺服声——合盖约 90ms 下落、弹出约 120ms
-   上扬；响度对齐既有档位；同一时刻只出一条；降级态（reduced-motion）视为静音态。 */
-function sfxServo(up) {
+/** 采样播放：每次都新建 Audio 实例，允许同一音效连点重叠；preload 减少首击延迟。 */
+function playSfx(name, opts) {
+  const o = opts || {};
+  if (!sfxOn() && !o.forcePlay) return null;
+  if (o.respectReducedMotion && reducedMotion()) return null;
+  const sample = o.sample || (SFX_CATALOG[name] || [])[0];
+  if (!sample) return null;
   try {
-    if (!sfxOn() || reducedMotion()) return;
-    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (sfxCtx.state === "suspended") sfxCtx.resume();
-    const o = sfxCtx.createOscillator(), g = sfxCtx.createGain();
-    o.type = "sawtooth";
-    const t = sfxCtx.currentTime;
-    const dur = up ? 0.12 : 0.09;
-    o.frequency.setValueAtTime(up ? 300 : 620, t);
-    o.frequency.linearRampToValueAtTime(up ? 620 : 300, t + dur);
-    g.gain.setValueAtTime(0.03, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(sfxCtx.destination);
-    o.start(t); o.stop(t + dur + 0.01);
-  } catch (_) { /* 音频失败绝不阻断切换 */ }
+    const a = new Audio(`${SFX_DIR}${sample}.wav`);
+    a.volume = o.volume == null ? 1 : o.volume;
+    const p = a.play();
+    if (p && p.catch) p.catch(() => { /* 自动播放策略/无音频设备/文件缺失：静默 */ });
+    return a;
+  } catch (_) { return null; } // 构造失败绝不阻断交互
+}
+/** 点击反馈音（导航/选中/筛选）。 */
+function uiTick() { playSfx("tick", { sample: tickSample() }); }
+/** 警示卡入场：短双音，110ms 间隔（受 4.4 疲劳控制：每卡每会话 1 次）。 */
+function sfxAlert() {
+  playSfx("alert1");
+  setTimeout(() => playSfx("alert2"), 110);
+}
+/** v2.2 气闸切换音：合盖 = 下落采样、弹出 = 上扬采样；降级态视为静音。 */
+function sfxServo(up) {
+  playSfx(up ? "airlockOpen" : "airlockClose", { respectReducedMotion: true });
 }
 
 /* RA 单位选中：点击/回车卡片 → 四角括号选中 + 咔哒音，再点取消；一次一张主选。
@@ -925,7 +995,11 @@ $("#filter-clear").addEventListener("click", () => {
           voiceEnabled: sw.checked,
           voicePack: vp.checked ? "pack" : "system",
           theme: currentTheme,
+          sfxEnabled: $("#sfx-master")?.checked ?? cur.sfx_enabled !== false,
+          sfxSample: cur.sfx_sample || SFX_DEFAULT_SAMPLE,
         });
+        // 音效开关就地生效（下一声立刻按新状态判定），不必等下次启动。
+        syncSfxUi();
       } catch (_) { /* 写失败时开关状态可能不同步，下次启动回读纠偏 */ }
     };
     sw.addEventListener("change", savePrefs);

@@ -92,7 +92,7 @@ for (const plat of placeholderPlatforms) {
 
 const manifest = {
   version,
-  notes: "综合工作台 v2.2.1：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
+  notes: "综合工作台 v2.2.2：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
   pub_date: new Date().toISOString(),
   platforms,
 };
