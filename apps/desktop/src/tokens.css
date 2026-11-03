@@ -19,15 +19,19 @@
   --mech-plate-solid: #FFFFFF;   /* 纯色回退/派生色用：color-mix 与首列吸附底不能吃渐变 */
   --mech-inset: #E7EBEF;
   --mech-groove: #CBD3DA;
-  --mech-seam: #A0ACB6;          /* 结构缝：亮色卡片边界感的主力 */
-  --mech-seam-hover: #8299A8;    /* 派生值：seam 与 brand 混色（hover 态） */
-  --mech-ctl: #7B8694;           /* 控件描边（对 plate ≥3:1） */
+  --mech-seam: #748594;          /* 结构缝：亮色卡片边界感的主力 */
+  --mech-seam-hover: #708190;    /* 派生值：seam 与 brand 混色（hover 态） */
+  --mech-ctl: #78838F;           /* 控件描边（对 plate ≥3:1） */
   /* ── 文字三级（DS-04 2.4）── */
   --mech-text-1: #1A2128;
   --mech-text-2: #45525D;
   --mech-text-3: #5D6B76;
   /* ── 交互与语义色（DS-04 2.4，亮底加深）── */
   --mech-brand: #3266B0;
+  /* v2.3.0 对比度：亮色 #3266B0 一个值同时满足「实心底配白字 5.733」与
+     「文字打 8 个浅底最差 4.655」，故三个角色取同值、不拆（照暗色改法拆会把 4.655 压到 3.679）。 */
+  --mech-brand-solid: #3266B0;   /* 实心底（配 #FFFFFF）*/
+  --mech-brand-text: #3266B0;    /* 承载文字（ghost 描边字 / 表头 / 链接式文案）*/
   --mech-brand-hover: #28538F;   /* 悬停纯色（不用 filter） */
   --mech-brand-pressed: #1F4478;  /* 按下纯色 */
   --mech-warn-amber: #854F00;     /* 仅临期（≤3 天） */
@@ -136,14 +140,16 @@
     --mech-plate-solid: #222A32;
     --mech-inset: #10151A;
     --mech-groove: #06080B;
-    --mech-seam: #4A5663;
-    --mech-seam-hover: #5E6C7B;  /* 派生值：seam 与暗色 brand 混色 */
-    --mech-ctl: #4A5560;
+    --mech-seam: #8090A1;
+    --mech-seam-hover: #8494A5;  /* 派生值：seam 与暗色 brand 混色 */
+    --mech-ctl: #81909F;
     --mech-text-1: #F2F6F9;
     --mech-text-2: #B4BEC7;
     --mech-text-3: #97A4AE;
-    --mech-brand: #5B8FD6;
-    --mech-brand-hover: #7FAAF3;
+    --mech-brand: #5B8FD6;   /* 描边 / 聚焦环 / 灯带：图形口径 3.045，视觉不动 */
+    --mech-brand-solid: #3776CD;  /* v2.3.0：实心底（配 #FFFFFF 4.530）*/
+    --mech-brand-text: #8DB2E4;   /* v2.3.0：承载文字（打 8 个暗底最差 4.617）*/
+    --mech-brand-hover: #3271C8;
     --mech-brand-pressed: #46709F;
     --mech-warn-amber: #F0B24A;
     --mech-warn-red: #F0796F;
@@ -193,9 +199,10 @@
 :root[data-theme="light"] {
   --mech-canvas: #EEF1F4; --mech-panel: #FFFFFF; --mech-plate-solid: #FFFFFF;
   --mech-inset: #E7EBEF; --mech-groove: #CBD3DA;
-  --mech-seam: #A0ACB6; --mech-seam-hover: #8299A8; --mech-ctl: #7B8694;
+  --mech-seam: #748594; --mech-seam-hover: #708190; --mech-ctl: #78838F;
   --mech-text-1: #1A2128; --mech-text-2: #45525D; --mech-text-3: #5D6B76;
-  --mech-brand: #3266B0; --mech-brand-hover: #28538F; --mech-brand-pressed: #1F4478;
+  --mech-brand: #3266B0; --mech-brand-solid: #3266B0; --mech-brand-text: #3266B0;
+  --mech-brand-hover: #28538F; --mech-brand-pressed: #1F4478;
   --mech-warn-amber: #854F00; --mech-warn-red: #B22C24; --mech-ok: #157A66;
   --hud-amber: #A66E12; --hud-amber-fill: #F0B24A; --hud-amber-fill-fg: #20180A;
   --mech-amber-bg: #E09A2E; --mech-amber-fg: #20180A;
@@ -222,9 +229,10 @@
 :root[data-theme="dark"] {
   --mech-canvas: #090D12; --mech-panel: #171E25; --mech-plate-solid: #222A32;
   --mech-inset: #10151A; --mech-groove: #06080B;
-  --mech-seam: #4A5663; --mech-seam-hover: #5E6C7B; --mech-ctl: #4A5560;
+  --mech-seam: #8090A1; --mech-seam-hover: #8494A5; --mech-ctl: #81909F;
   --mech-text-1: #F2F6F9; --mech-text-2: #B4BEC7; --mech-text-3: #97A4AE;
-  --mech-brand: #5B8FD6; --mech-brand-hover: #7FAAF3; --mech-brand-pressed: #46709F;
+  --mech-brand: #5B8FD6; --mech-brand-solid: #3776CD; --mech-brand-text: #8DB2E4;
+  --mech-brand-hover: #3271C8; --mech-brand-pressed: #46709F;
   --mech-warn-amber: #F0B24A; --mech-warn-red: #F0796F; --mech-ok: #4FC3AE;
   --hud-amber: #F0B24A; --hud-amber-fill: #F0B24A; --hud-amber-fill-fg: #12161A;
   --mech-amber-bg: #F0B24A; --mech-amber-fg: #12161A;
@@ -318,7 +326,7 @@
 }
 /* 选中态：实色 brand 底 + 白字（与 .btn 同一对比口径，不另调一档浅色） */
 .pct-stop[data-active="true"], .st[data-active="true"] {
-  background: var(--mech-brand); color: #FFFFFF;
+  background: var(--mech-brand-solid); color: #FFFFFF;
   box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand);
 }
 .pct-stop[data-active="true"]:hover, .st[data-active="true"]:hover { color: #FFFFFF; }
@@ -342,8 +350,8 @@
   outline: none;
   box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), var(--shadow-focus);
 }
-.note-add { color: var(--mech-brand); }
-.hist-toggle { color: var(--mech-brand); font-family: inherit; }
+.note-add { color: var(--mech-brand-text); }
+.hist-toggle { color: var(--mech-brand-text); font-family: inherit; }
 
 /* 提交回显：成功走 text-2，被拒走红（只改字色，不加背景块，避免和警示条抢注意力） */
 .edit-msg { flex: 1 1 100%; min-height: 1.2em; color: var(--mech-text-2); }
@@ -570,7 +578,7 @@ body {
 /* v2.2 FR-2：源站状态表 / 改判小按钮 */
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
 .tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--mech-border); }
-.tbl th { color: var(--mech-brand); font-weight: 600; }
+.tbl th { color: var(--mech-brand-text); font-weight: 600; }
 .btn--sm { padding: 2px 10px; font-size: 12px; }
 
 /* 分段式能量槽（4.2）：groove 深槽为轨道（语义色不进 groove 作文字），ok 点亮，每段 40ms */
@@ -701,13 +709,13 @@ tr:hover td { background: color-mix(in srgb, var(--mech-plate-solid) 92%, var(--
   /* v2.2.4 图标系统：按钮内图标与文案之间留 6px（.ico 为 inline-block，需 inline-flex 承载） */
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 16px; border-radius: var(--radius-badge);
-  background: var(--mech-brand); color: #FFFFFF;
+  background: var(--mech-brand-solid); color: #FFFFFF;
   /* 无滤镜（P6）：hover/press 走纯色，不用 filter、不改尺寸 */
   transition: background-color var(--motion-micro) var(--ease-micro);
 }
 .btn:hover   { background: var(--mech-brand-hover); }
 .btn:active  { background: var(--mech-brand-pressed); transition-duration: var(--motion-press); }
-.btn--ghost { background: transparent; color: var(--mech-brand); box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl); }
+.btn--ghost { background: transparent; color: var(--mech-brand-text); box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl); }
 .btn--ghost:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
 
 :focus-visible { outline: 2px solid var(--mech-brand); outline-offset: 2px; }
