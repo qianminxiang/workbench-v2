@@ -34,6 +34,16 @@ jobs:
       # 该步骤不干活，却是一个额外的失败面（apt 源抖动就会让整条流水线红），删除。
       - name: 核心单测（wb-core + wbd）
         run: cargo test -p wb-core -p wbd --locked
+      - name: 前端语音播报编排单测（node --test，零依赖）
+        # 2026-10-30 P1 缺陷「播报语音和实际数据不符」的回归门：
+        # pack 模式曾被写成 new Audio(固定 WAV) 后直接 return，丢弃实时文案。
+        run: node --test apps/desktop/speech-plan.test.cjs
+      - name: 前端语音播报执行层单测（node --test，零依赖）
+        # 编排层只证明「该说什么」，不证明「真的说出了声」。这一条守的是要求 3 的兜底：
+        # 样音 error / play() 被拒 / new Audio 抛错 / timeupdate 不触发，四种情况都必须
+        # 收口并继续读实时文案；编排模块缺席或加载失败也必须回落 TTS 而不是静默。
+        # 直接从 app.js 抽 speakBrief / playWavHead / speakTts 原文进 vm 跑，不复制实现。
+        run: node --test apps/desktop/speech-exec.test.cjs
       - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
         # 硬门：测试失败即构建失败。此前写成 `npm test || echo ...` 会把失败吞掉，
         # 门禁形同虚设——复核方指出的「说全绿但无法复验」有一半源于此。

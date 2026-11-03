@@ -1636,7 +1636,10 @@ async function bindShellEvents() {
     const d = e.payload || {};
     const vTag = d.new_version ? "（新版本）" : "";
     enqueueNotice({
-      key: `brief-delivered-${d.date || "today"}`,
+      // 去重键必须用 payload 里真实存在的 brief_date（Rust 侧键名就是 brief_date）。
+      // 此前这里写的是 d.date，恒为 undefined，去重键退化成常量 "today"：应用跨午夜
+      // 之后，新一天的晨报会覆盖前一天那条历史，通知中心里永远只剩一条晨报记录。
+      key: `brief-delivered-${d.brief_date || "today"}`,
       level: "high",
       title: `晨报${vTag}已送达`,
       text: d.new_version
@@ -1647,9 +1650,16 @@ async function bindShellEvents() {
     if (state.view === "brief") reload();
     // 晨报到达 → 电台接通音（字幕条播报时音效延后 80ms，视觉主导）
     sfxReportIn();
-    if (d.voice_enabled && !d.notification_suppressed && $("#f10-master").checked && d.speech) {
+    if (shouldSpeakBrief({
+      voice_enabled: d.voice_enabled,
+      notification_suppressed: d.notification_suppressed,
+      master_checked: $("#f10-master").checked,
+      speech: d.speech,
+    })) {
       // v2.2 语音包场景推导：新版本即时晨报 → S1；迟到补发 → S2；
       // 周一带周聚合 → S3；其余 → S1 晨报准点。
+      // 注：场景只决定「是否保留音色开场」，播报内容一律是 d.speech 这份实时文案
+      //（2026-10-30 修正：此前 pack 模式会整条丢文案，只播样音里的示例数字）。
       const scene = d.new_version ? "version_boot"
         : (d.late_minutes > 0 ? "brief_late"
           : (d.counts && d.counts.weekly ? "weekly" : "brief"));
@@ -1760,8 +1770,8 @@ async function bindShellEvents() {
         },
       },
     });
-    // v2.2 语音包 S8（银刃）：更新提示语音。口径与晨报一致——
-    // 免打扰时段只滚动不播报、跟随 F10 总开关。
+    // v2.2 语音包 S8（银刃）：更新提示语音。免打扰时段只滚动不播报、跟随 F10 总开关。
+    // 注：该场景样音含固定旧版本号，故不再播放样音，直接由 TTS 读当前版本号。
     if (state.prefs?.voice_enabled && !inQuietNow() && $("#f10-master").checked) {
       speakBrief(`发现新版本 v${d.version}，可以更新。`, "update");
     }
@@ -2249,42 +2259,83 @@ function inQuietNow() {
   return s <= e ? (cur >= s && cur < e) : (cur >= s || cur < e);
 }
 
-/** F10 语音播报：v2.2 语音包 · 按场景选包。
- * 两档模式（voice_pack 偏好键，sync_state 键值表为唯一事实源）：
- * - "system"（默认）：WebView2 speechSynthesis 选系统 zh 语音朗读实时文案；
- * - "pack"：播 2026-10-28 定稿样音（S1–S9 场景映射见 VOICE_PACK_SCENES）。
- *   C 档（破阵·浑厚版）金属电子音系统 TTS 无法合成，必须预录 WAV 随包分发
- *   （apps/desktop/src/voice/，16bit/40kHz/立体声，9 条共约 10.3MB）。
- * 边界（voice.md 第六章）：定稿样音验证的是音色，内容为示例句；
- * 实时动态数字以字幕与界面文案为准——pack 模式下字幕/通知照发真实文案。
- * 播放失败（资源缺失/被策略拦截）回落系统 TTS，语音失败绝不阻断主流程。
- * 红线：不做真人声纹克隆；样音均为合成音色。 */
-const VOICE_PACK_SCENES = {
-  brief: "s1_brief",           // S1 晨报准点（破阵·浑厚版）
-  version_boot: "s1_brief",    // FR-6 新版本即时晨报：内容仍是晨报 → S1 音色
-  brief_late: "s2_brief_late", // S2 晨报迟到补发（银刃）
-  weekly: "s3_weekly",         // S3 周一·周聚合（破阵·浑厚版）
-  overdue: "s4_overdue",       // S4 逾期提醒（破阵·浑厚版；触发链路待后续版本接入）
-  duesoon: "s5_duesoon",       // S5 临期提醒（破阵·浑厚版；触发链路待后续版本接入）
-  behind: "s6_behind",         // S6 进度预警（银刃；P1 默认关闭）
-  schedule: "s7_schedule",     // S7 今日行程（银刃；schedule_block 落地前恒空）
-  update: "s8_update",         // S8 新版本更新提示（银刃）
-  todos: "s9_todos",           // S9 待办主动推送（银刃；触发链路待后续版本接入）
-};
+/** 是否播出语音（P1 缺陷第 3 条「保留全部兜底」的判定点）。
+ *
+ * 为什么单独抽成函数：这个判定此前是 brief-delivered 回调里的一串 inline 条件，
+ * 而它是「免打扰只通知不播报」这条兜底的唯一守卫——藏在事件回调里就没有任何
+ * 测试能碰到，等于没验。抽出来后 speech-guard.test.cjs 可以直接覆盖四种否决赛。
+ *
+ * 四个条件缺一不播（AND 关系，不是「三重否决」）：
+ *   voice_enabled          用户偏好里语音播报是否开启（来自 Rust 侧 payload）
+ *   notification_suppressed 是否处于免打扰（由 Rust 按 quiet_hours 算好，界面不自行改写）
+ *   master_checked         界面右上角总开关（实时跟随，不等偏好下次生效）
+ *   speech                 实时文案；空则静默，宁可没声音也不播可能过期的预录音
+ */
+function shouldSpeakBrief(v) {
+  const o = v || {};
+  const text = typeof o.speech === "string" ? o.speech.trim() : "";
+  if (!text) return false;
+  if (!o.voice_enabled) return false;
+  if (o.notification_suppressed) return false;
+  return !!o.master_checked;
+}
 
+/** F10 语音播报：v2.2 语音包 · 分层播报（2026-10-30 修正 P1 缺陷）。
+ *
+ * 缺陷：此前 pack 模式 new Audio(固定 WAV) 后直接 return，text 参数被整段丢弃，
+ * 用户听到的永远是样音里那组示例数字（「今日到期三项」），与实际数据不符。
+ *
+ * 修正后的分层结构（编排见 speech-plan.js，本文件只负责执行）：
+ *   1) 音色开场：仅当该场景样音存在 >=0.4s 的句间静音、且切点之前不含数值时，
+ *      播放截到切点的样音（保留 C 档破阵/银刃音色）。实测仅 brief_late 满足。
+ *   2) 实时要点：系统 TTS 读 text（当日日期、条数、重点标题等真实数据）。
+ *      9 条定稿样音逐条转写后每条都含固定示例数值，故不得整条参与播报。
+ *
+ * 兜底全部保留：样音缺失/播放失败 → 直接转 TTS，绝不丢文案；
+ * 语音任何异常 → try/catch 吞掉，不阻断晨报主流程；免打扰只通知不播报（调用点负责）。
+ * 红线：不做真人声纹克隆；样音均为合成音色。 */
 function speakBrief(text, scene) {
   try {
     if (scene) window.__briefScene = scene;
     const sc = scene || window.__briefScene;
-    const pack = !!(state.prefs && state.prefs.voice_pack === "pack");
-    const wav = pack && sc ? VOICE_PACK_SCENES[sc] : null;
-    if (wav) {
-      const a = new Audio(`./voice/${wav}.wav`);
-      a.play().catch(() => speakTts(text)); // 资源缺失/播放失败 → 系统 TTS 兜底
+    // 编排模块是独立脚本（index.html 在 app.js 之前加载）。若它因打包遗漏/
+    // 加载失败而缺席，绝不静默：直接走系统 TTS 读实时文案——宁可没音色，也不能没声。
+    const planner = window.WbSpeechPlan;
+    if (!planner || typeof planner.planSpeech !== "function") {
+      speakTts(text);
       return;
     }
-    speakTts(text);
+    const pack = !!(state.prefs && state.prefs.voice_pack === "pack");
+    const plan = planner.planSpeech({ pack, scene: sc, text });
+    if (!plan.length) return; // 无实时文案 → 不播（宁可静默，也不播可能过期的样音）
+    const go = (i) => {
+      if (i >= plan.length) return;
+      const step = plan[i];
+      if (step.kind === "wav") playWavHead(step.src, step.until, () => go(i + 1));
+      else { speakTts(step.text); go(i + 1); }
+    };
+    go(0);
   } catch (_) { /* 语音失败绝不阻断晨报主流程 */ }
+}
+
+/** 播一段被裁切的样音，播到 until 秒即停并回调。
+ *  任何失败（资源缺失/被策略拦截/播放 promise 拒绝/解码错误）都当作「没有开场」，
+ *  直接把控制权交给 TTS——绝不因为音频问题丢掉实时文案。 */
+function playWavHead(src, until, onDone) {
+  let finished = false;
+  const done = () => { if (!finished) { finished = true; onDone(); } };
+  try {
+    const a = new Audio(src);
+    a.addEventListener("timeupdate", () => {
+      if (until && a.currentTime >= until) { try { a.pause(); } catch (_) {} done(); }
+    });
+    a.addEventListener("ended", done);
+    a.addEventListener("error", done);
+    const p = a.play();
+    if (p && typeof p.catch === "function") p.catch(done);
+    // 兜底：若 timeupdate 未按时触发（极少见），按 until 计时收口，避免卡住后续 TTS
+    if (until) setTimeout(done, Math.round((until + 0.6) * 1000));
+  } catch (_) { done(); }
 }
 
 /** 系统 TTS 路径（v2.1 原实现）：选系统 zh 语音读实时文案。 */

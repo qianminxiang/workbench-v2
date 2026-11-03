@@ -273,25 +273,39 @@ pub fn speech_text(brief: &MorningBrief, decision: &BriefDecision) -> String {
     } else {
         parts.push("早上好。今日晨报。".to_string());
     }
+    // 当日日期：来源是 brief.brief_date（与界面晨报标题同源），解析后转口语读法。
+    // 解析失败（理论上不会发生，brief_date 由 CivilDate::to_iso 生成）时退回 ISO
+    // 原串——宁可读得生硬，也不能默默不念日期。
+    let spoken_date = CivilDate::parse(&brief.brief_date)
+        .map(|d| d.spoken_zh())
+        .unwrap_or_else(|| brief.brief_date.clone());
+    parts.push(format!("{}。", spoken_date));
     parts.push(format!(
         "今日到期 {} 项，临期 {} 项，逾期 {} 项。",
         brief.due_today.len(),
         brief.due_soon.len(),
         brief.overdue.len()
     ));
+    // 要点按界面的栏序取：① 当日到期 → ② 临期 → ② 逾期，最多 3 条。
+    // 旧实现漏了临期栏：界面明明列出「临期 2 项」，播报却只念计数不念任何标题，
+    // 用户听到的就是「说了 2 项、一条都没提」——这正是「播报与实际数据不符」。
     let mut picks: Vec<String> = Vec::new();
-    for a in brief.due_today.iter() {
-        picks.push(format!("今日到期：{}。", a.title));
-        if picks.len() >= 3 {
-            break;
-        }
-    }
-    if picks.len() < 3 {
-        for a in brief.overdue.iter() {
-            picks.push(format!("逾期：{}。", a.title));
+    let mut seen: Vec<&str> = Vec::new();
+    for (label, arr) in [
+        ("今日到期", &brief.due_today),
+        ("临期", &brief.due_soon),
+        ("逾期", &brief.overdue),
+    ] {
+        for a in arr.iter() {
             if picks.len() >= 3 {
                 break;
             }
+            // 同一事项可能同时出现在两栏（界面也两份），但念两遍听感上就是故障。
+            if seen.contains(&a.title.as_str()) {
+                continue;
+            }
+            seen.push(a.title.as_str());
+            picks.push(format!("{}：{}。", label, a.title));
         }
     }
     if !picks.is_empty() {
@@ -442,13 +456,190 @@ mod tests {
     }
 
     #[test]
+    fn speech_text_stays_under_design_time_budget() {
+        // 模块文档写明「播报超过 30 秒就变成打扰」。这里守的是字数上限：
+        // 按中文 5 字/秒折算（**经验估算，未在真机实测**），150 字 ≈ 30 秒。
+        // 加日期后单条播报 89 字（测试实测字符数），仍有余量；此断言用于
+        // 防止后续再往播报里塞内容时无声超时。
+        let d = CivilDate::new(2026, 10, 30);
+        let mut items = vec![];
+        for i in 0..9 {
+            items.push(item(
+                &format!("第{}项需要今天处理的事项标题", i),
+                "2026-10-30",
+                "2026-10-30",
+                50,
+                ItemStatus::Active,
+            ));
+        }
+        let brief = morning_brief(d, &items, &Ruleset::default());
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        let n = s.chars().count();
+        assert!(n <= 150, "播报字数 {} 超出 30 秒预算（按 5 字/秒估算）：{}", n, s);
+    }
+
+    #[test]
+    fn speech_text_does_not_repeat_same_title_across_sections() {
+        // 同一事项可同时落在「今日到期」与「临期」两栏（界面也分别列出）。
+        // 界面重复是合理的（两栏各有语义），但念出来会变成「同一句话念两遍」，
+        // 听众只会以为出错了。播报去重，不改变播报内容与界面的一致性。
+        let d = CivilDate::new(2026, 10, 30);
+        let items = vec![
+            item("政府数据共享平台验收", "2026-10-30", "2026-10-30", 60, ItemStatus::Active),
+        ];
+        let brief = morning_brief(d, &items, &Ruleset::default());
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        let n = s.matches("政府数据共享平台验收").count();
+        assert_eq!(n, 1, "同一标题在播报里只能出现一次，实际 {} 次：{}", n, s);
+    }
+
+    #[test]
+    fn speech_text_reads_duesoon_titles_when_only_duesoon_exists() {
+        // 验收第 4 条要求「至少 2 条公告要点」与界面一致。界面四个列表里
+        // ② 临期 是独立一栏，但旧实现只从 due_today / overdue 取标题，
+        // 于是「界面有两条临期、播报一条标题都不念」——计数说 2 项，内容却空。
+        let d = CivilDate::new(2026, 10, 30);
+        let items = vec![
+            item("临期事项甲", "2026-09-01", "2026-11-02", 50, ItemStatus::Active),
+            item("临期事项乙", "2026-09-01", "2026-11-03", 50, ItemStatus::Active),
+        ];
+        let brief = morning_brief(d, &items, &Ruleset::default());
+        assert_eq!(brief.due_soon.len(), 2, "前置：两天后到期应先落入临期栏");
+        assert!(brief.due_today.is_empty() && brief.overdue.is_empty(), "前置：不得到期/逾期");
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        assert!(s.contains("临期事项甲"), "临期标题必须念出，否则计数与内容对不上：{}", s);
+    }
+
+    #[test]
+    fn speech_text_reads_today_date_and_weekday() {
+        // P1 缺陷（用户 2026-10-30：「播报语音和实际数据不符合」）的验收第 4 条：
+        // 播报内容必须与界面晨报数据逐项一致，其中「日期」是点名项。
+        // 界面晨报标题渲染的是 brief.date（= brief_date），播报若不念日期，
+        // 用户听到的就是一段没有任何时间锚点的话——这是实现漏项，不是规格。
+        let d = CivilDate::new(2026, 10, 30); // 周五
+        let brief = morning_brief(d, &[], &Ruleset::default());
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        // 断言「念出来的那一天」必须就是界面显示的那一天：
+        // 从 brief_date 反解出的口语串必须原样出现在播报里，而不是另算一个日期。
+        let spoken = CivilDate::parse(&brief.brief_date)
+            .expect("brief_date 必须是合法 ISO 日期")
+            .spoken_zh();
+        assert!(
+            s.contains(&spoken),
+            "播报必须读出当日日期（与界面同源的 brief_date → {}）：{}",
+            spoken,
+            s
+        );
+        assert_eq!(spoken, "2026年10月30日，周五", "口语日期口径固定：{}", spoken);
+        assert!(s.starts_with("早上好。今日晨报。"), "日期应紧跟问候，不打断原开场：{}", s);
+    }
+
+    #[test]
     fn speech_text_marks_late_catch_up() {
         let d = CivilDate::new(2026, 10, 27);
         let brief = morning_brief(d, &[], &Ruleset::default());
         let dec = decide(d, 14 * 60 + 30, &DeliveryState::default());
         let s = speech_text(&brief, &dec);
         assert!(s.starts_with("早上好。现在是补发晨报。"), "补发播报开头必须说明：{}", s);
+        // 补发分支同样必须念出当日日期：补发的意义是「补哪一天」，没日期等于白补。
+        let spoken = CivilDate::parse(&brief.brief_date)
+            .expect("brief_date 必须是合法 ISO 日期")
+            .spoken_zh();
+        assert!(s.contains(&spoken), "补发播报必须读出当日日期（{}）：{}", spoken, s);
     }
+
+
+    #[test]
+    fn speech_text_matches_ui_brief_on_date_counts_and_titles() {
+        // 用户 2026-10-30 P1 缺陷「播报语音和实际数据不符合」的验收第 4 条原文：
+        // 「开启语音包播一次晨报，验证日期、条数、≥2 条公告要点与 UI 一致」。
+        // 现有测试是拆开守的（日期一条、计数一条、临期标题一条），但它们分别成立
+        // 不代表「同一次播报里三样都对得上」。这条测试把三样放在同一次调用里核，
+        // 且核的是 UI 真正渲染的那三个数组（app.js:342/344/346 → b.due_today /
+        // b.due_soon / b.overdue），不是另算一遍规则口径——否则测的是规则，不是一致性。
+        let d = CivilDate::new(2026, 10, 30); // 周五
+        let items = vec![
+            item("当日到期甲", "2026-10-01", "2026-10-30", 40, ItemStatus::Active),
+            item("当日到期乙", "2026-10-02", "2026-10-30", 20, ItemStatus::Pending),
+            item("临期丙", "2026-10-05", "2026-11-01", 50, ItemStatus::Active),
+            item("远期丁", "2026-11-01", "2026-12-31", 0, ItemStatus::Pending),
+        ];
+        let brief = morning_brief(d, &items, &Ruleset::default());
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+
+        // ① 日期：必须与界面晨报标题同源（brief_date），不能另算一个日期
+        let spoken = CivilDate::parse(&brief.brief_date)
+            .expect("brief_date 必须是合法 ISO 日期")
+            .spoken_zh();
+        assert!(s.contains(&spoken), "播报日期必须与界面一致（{}）：{}", spoken, s);
+
+        // ② 条数：三个桶的计数必须逐个按 UI 数组长度念出，一个都不能错位
+        let ui_counts = format!(
+            "今日到期 {} 项，临期 {} 项，逾期 {} 项。",
+            brief.due_today.len(),
+            brief.due_soon.len(),
+            brief.overdue.len()
+        );
+        assert!(
+            s.contains(&ui_counts),
+            "播报条数必须与 UI 三个列表逐项一致：期望「{}」，实际播报「{}」",
+            ui_counts,
+            s
+        );
+
+        // ③ 要点：至少 2 条标题要念出来，且每条都必须真的在 UI 列表里
+        let ui_titles: Vec<&str> = brief
+            .due_today
+            .iter()
+            .chain(brief.due_soon.iter())
+            .chain(brief.overdue.iter())
+            .map(|a| a.title.as_str())
+            .collect();
+        let spoken_count = ui_titles.iter().filter(|t| s.contains(**t)).count();
+        assert!(
+            spoken_count >= 2,
+            "验收要求至少念出 2 条要点，实际念出 {} 条（UI 共 {} 条）：{}",
+            spoken_count,
+            ui_titles.len(),
+            s
+        );
+        // 反向也要成立：同一标题不得念两遍（听感上就是故障）
+        for t in &ui_titles {
+            let n = s.matches(t).count();
+            assert!(n <= 1, "同一标题最多念一次，{} 念了 {} 次：{}", t, n, s);
+        }
+    }
+
+
+    #[test]
+    #[ignore = "已知规格冲突（见交付文档 4.25）：长标题会突破 30 秒预算，待用户裁决截断口径后启用"]
+    fn long_titles_exceed_time_budget_known_gap() {
+        // 用户 P1 缺陷验收第 4 条要求「≥2 条要点与 UI 一致」，实现按条数截断（最多 3 条），
+        // 但**没有约束单条标题长度**。既有预算测试 speech_text_stays_under_design_time_budget
+        // 用的标题只有 15 字，所以一直绿。用真实长度的业务标题（50 字上下）就会突破：
+        //   不截断 → 187 字 ≈ 37.4 秒（超）；单条截 30 字 → 155 字 ≈ 31.0 秒（仍超）；
+        //   单条截 25 字 → 140 字 ≈ 28.0 秒（达标）；截 20 字 → 125 字；截 15 字 → 110 字。
+        // 按 5 字/秒折算（与既有预算测试同一口径，属经验估算、未真机实测）。
+        // 这条测试先以 #[ignore] 落库，作为缺口的可复核证据；截断口径由用户定后启用。
+        let d = CivilDate::new(2026, 10, 30);
+        let items = vec![
+            item("关于推进全省政务数据共享交换平台二期工程建设并完成省级部门数据目录编制与质量核查工作的专项事项", "2026-10-30", "2026-10-30", 60, ItemStatus::Active),
+            item("关于开展2026年度长三角一体化发展重点项目资金申报材料汇总审核并完成上报工作的专项事项", "2026-10-30", "2026-10-30", 60, ItemStatus::Active),
+            item("关于组织市级政务云资源池扩容改造并完成等保三级测评整改闭环的专项事项", "2026-10-30", "2026-10-30", 60, ItemStatus::Active),
+        ];
+        let brief = morning_brief(d, &items, &Ruleset::default());
+        let dec = decide(d, 9 * 60, &DeliveryState::default());
+        let s = speech_text(&brief, &dec);
+        let n = s.chars().count();
+        assert!(n <= 150, "三条真实长度标题的播报 {} 字，超出 30 秒预算：{}", n, s);
+    }
+
+
 
     // ── FR-6 晨报随新版本即时启动（AC-6-1 ~ AC-6-7 纯函数部分）──
 
