@@ -237,8 +237,6 @@ fn alerts(
             "due_today": brief.due_today,
             "due_soon": brief.due_soon,
             "overdue": brief.overdue,
-            "today_schedule": brief.today_schedule,
-            "weekly": brief.weekly,
         },
     }))
 }
@@ -638,7 +636,6 @@ fn deliver_brief(
             "due_today": b.due_today.len(),
             "due_soon": b.due_soon.len(),
             "overdue": b.overdue.len(),
-            "weekly": b.weekly.is_some(),
         },
     }))
 }

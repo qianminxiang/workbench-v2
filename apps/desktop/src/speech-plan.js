@@ -36,7 +36,8 @@
     brief: "s1_brief",
     version_boot: "s1_brief",
     brief_late: "s2_brief_late",
-    weekly: "s3_weekly",
+    // weekly（s3_weekly）场景已随周聚合整体下线移除（2026-11-03 用户拍板）：
+    // 核心层不再计算 weekly，前端也不再派发该场景，保留映射只会误导后来者。
     overdue: "s4_overdue",
     duesoon: "s5_duesoon",
     behind: "s6_behind",

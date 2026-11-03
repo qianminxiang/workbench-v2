@@ -1656,13 +1656,12 @@ async function bindShellEvents() {
       master_checked: $("#f10-master").checked,
       speech: d.speech,
     })) {
-      // v2.2 语音包场景推导：新版本即时晨报 → S1；迟到补发 → S2；
-      // 周一带周聚合 → S3；其余 → S1 晨报准点。
+      // v2.2 语音包场景推导：新版本即时晨报 → S1；迟到补发 → S2；其余 → S1 晨报准点。
+      // （S3「周一带周聚合」场景已随周聚合整体下线移除，2026-11-03 拍板。）
       // 注：场景只决定「是否保留音色开场」，播报内容一律是 d.speech 这份实时文案
       //（2026-10-30 修正：此前 pack 模式会整条丢文案，只播样音里的示例数字）。
       const scene = d.new_version ? "version_boot"
-        : (d.late_minutes > 0 ? "brief_late"
-          : (d.counts && d.counts.weekly ? "weekly" : "brief"));
+        : (d.late_minutes > 0 ? "brief_late" : "brief");
       speakBrief(d.speech, scene);
     }
   });

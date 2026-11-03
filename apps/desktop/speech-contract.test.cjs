@@ -105,9 +105,13 @@ test("Rust 返回体必须含播报修复依赖的关键字段", () => {
   }
 });
 
-test("counts 子对象必须含 weekly（S3 周聚合场景判定依赖它）", () => {
+test("counts 子对象不得再含 weekly（周聚合已整体下线，S3 场景随之移除）", () => {
   const src = fs.readFileSync(LIB_RS, "utf8");
   const i = src.indexOf("fn deliver_brief(");
   const blk = src.slice(i, i + 4000);
-  assert.ok(blk.includes('"weekly"'), "counts 里必须有 weekly 字段，否则周一永远走不到 S3");
+  assert.ok(
+    !blk.includes('"weekly"'),
+    "counts 里不得再有 weekly 键——周聚合已于 2026-11-03 拍板整体下线（用户选「两边都去掉」），" +
+      "保留该键只会让前端误以为还存在 S3 周聚合场景"
+  );
 });

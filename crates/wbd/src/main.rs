@@ -297,9 +297,8 @@ fn cmd_rules(args: &[String]) -> ExitCode {
     println!("打开落后判定后：落后 {} 条（待启动/未筹备项必须为 0，否则首启即误报）", behind_cnt);
 
     let brief = rules::morning_brief(today, &items, &rs);
-    println!("晨报 {}：当日到期 {} · 临期 {} · 逾期 {} · 周一聚合 {}",
-        brief.brief_date, brief.due_today.len(), brief.due_soon.len(), brief.overdue.len(),
-        brief.weekly.as_ref().map(|w| w.should_close.len() + w.should_start.len()).unwrap_or(0));
+    println!("晨报 {}：当日到期 {} · 临期 {} · 逾期 {}",
+        brief.brief_date, brief.due_today.len(), brief.due_soon.len(), brief.overdue.len());
     let quota = rs.daily_quota;
     println!("日配额 {}：托盘类提醒实际投递 {} 条，其余降级应用内", quota, alerts.len().min(quota));
     ExitCode::SUCCESS

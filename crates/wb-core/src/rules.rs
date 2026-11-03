@@ -308,7 +308,10 @@ pub fn month_bounds(today: CivilDate) -> (CivilDate, CivilDate) {
     (first, last)
 }
 
-/// 晨报四段结构（架构 §6.2 D）
+/// 晨报结构（架构 §6.2 D；2026-11-03 用户拍板收口）：
+/// ③ 今日行程与 ④ 周一附加周聚合（weekly）已整体下线——前者自始恒空
+/// （schedule_block 建表后全仓零读写），后者界面从不渲染、播报却在念，
+/// 「说了界面上没有的数」。今日行程功能排 v3.x 再做。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MorningBrief {
     /// ① 当日到期 / 当日应启动
@@ -316,29 +319,13 @@ pub struct MorningBrief {
     /// ② 临期与逾期汇总
     pub due_soon: Vec<Alert>,
     pub overdue: Vec<Alert>,
-    /// ③ 今日行程（首版由 schedule_block 提供，此处只留结构）
-    pub today_schedule: Vec<String>,
-    /// ④ 周一时附加的周待办聚合
-    pub weekly: Option<WeeklyAggregate>,
     /// 生成日
     pub brief_date: String,
-}
-
-/// 周待办聚合（动态派生，不落存储）
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WeeklyAggregate {
-    /// 本周应闭环
-    pub should_close: Vec<String>,
-    /// 本周应启动
-    pub should_start: Vec<String>,
-    pub week_start: String,
-    pub week_end: String,
 }
 
 /// 生成晨报。`today` 由 Rust 时钟注入（前端领域层不读时钟，架构 §4.11-4）。
 pub fn morning_brief(today: CivilDate, items: &[WorkItem], ruleset: &Ruleset) -> MorningBrief {
     let alerts = evaluate(today, items, ruleset);
-    let (ws, we) = week_bounds(today);
 
     let due_today: Vec<Alert> = alerts
         .iter()
@@ -358,43 +345,13 @@ pub fn morning_brief(today: CivilDate, items: &[WorkItem], ruleset: &Ruleset) ->
         .cloned()
         .collect();
 
-    // 周一只出周聚合（ISO 周一 = 1）
-    // 1970-01-01 是周四 → 距 1970-01-01 的天数模 7：0=周四 1=周五 2=周六 3=周日 4=周一 5=周二 6=周三
-    let is_monday = today.to_days().rem_euclid(7) == 4;
-    let weekly = if is_monday {
-        let mut should_start = Vec::new();
-        let mut should_close = Vec::new();
-        for item in items {
-            if item.status.map(|s| s.is_closed()).unwrap_or(false) {
-                continue;
-            }
-            if let Some(s) = item.start_date() {
-                if s >= ws && s <= we && item.status.map(|st| st.is_not_started()).unwrap_or(true) {
-                    should_start.push(item.title.clone());
-                }
-            }
-            if let Some(e) = item.end_date() {
-                if e >= ws && e <= we {
-                    should_close.push(item.title.clone());
-                }
-            }
-        }
-        Some(WeeklyAggregate {
-            should_close,
-            should_start,
-            week_start: ws.to_iso(),
-            week_end: we.to_iso(),
-        })
-    } else {
-        None
-    };
+    // 周一附加的周聚合计算已随 2026-11-03 拍板整体移除：界面从不渲染、
+    // 播报不再念、核心层不再算，三端两侧都干净（反向断言见 brief-coverage.test.cjs）。
 
     MorningBrief {
         due_today,
         due_soon,
         overdue,
-        today_schedule: Vec::new(),
-        weekly,
         brief_date: today.to_iso(),
     }
 }
@@ -501,11 +458,15 @@ mod tests {
     }
 
     #[test]
-    fn weekly_aggregate_only_on_monday() {
+    fn brief_payload_no_longer_carries_today_schedule_or_weekly() {
+        // 口径（2026-11-03 用户拍板）：today_schedule 恒空字段从接口删除（今日行程排 v3.x），
+        // 周聚合整体下线。序列化产物里不得再出现这两个键——接口声称有数据、
+        // 实际永远为空/不再计算，就是「播报与实际数据不符」的温床。
         let it = item(1, "2026-10-27", "2026-10-30", "day", "day", ItemStatus::Pending, 0);
-        let brief_mon = morning_brief(CivilDate::new(2026, 10, 26), &[it.clone()], &Ruleset::default());
-        assert!(brief_mon.weekly.is_some());
-        let brief_tue = morning_brief(CivilDate::new(2026, 10, 27), &[it], &Ruleset::default());
-        assert!(brief_tue.weekly.is_none());
+        // 取周一验证：旧实现周一会附加 weekly，反向断言在周一上才最有 teeth
+        let brief = morning_brief(CivilDate::new(2026, 10, 26), &[it], &Ruleset::default());
+        let v = serde_json::to_value(&brief).expect("MorningBrief 可序列化");
+        assert!(v.get("today_schedule").is_none(), "today_schedule 已从接口删除：{}", v);
+        assert!(v.get("weekly").is_none(), "weekly 已整体下线（周一也不得再带）：{}", v);
     }
 }
