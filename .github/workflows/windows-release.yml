@@ -26,6 +26,11 @@ jobs:
       # 该步骤不干活，却是一个额外的失败面（apt 源抖动就会让整条流水线红），删除。
       - name: 核心单测（wb-core + wbd）
         run: cargo test -p wb-core -p wbd --locked
+      - name: 前端守卫单测（node --test，零依赖）
+        # v3.0 集成后语音播报/音效已整体移除，原两条 speech 测试退役；
+        # 现守两件事：① 晨报「播报↔界面」口径（周聚合/today_schedule 不得回归）；
+        # ② 商务风 29 项对比度配对（色值从 tokens.css 现场解析）+ 机械风变量防回归。
+        run: node --test apps/desktop/brief-coverage.test.cjs apps/desktop/contrast-tokens.test.cjs
       - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
         # 硬门：测试失败即构建失败。此前写成 `npm test || echo ...` 会把失败吞掉，
         # 门禁形同虚设——复核方指出的「说全绿但无法复验」有一半源于此。
@@ -84,6 +89,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "图标质量门禁未通过（见上方逐项 FAIL）" }
           Write-Host "图标质量门禁通过：7 档与已签署基线逐像素一致（掩膜交并比 >=99.5% + 逐档摘要相等）、托盘图标与 ICO 256 档字节一致"
           Write-Host "注：本条只证明「和签署的那张一模一样」，不证明「那张图本身没有水印」——后者由签署人负责。"
+      # ── 桌面适配层单测（v2.2.3 P0 新增）───────────────────────────
+      # test-core 只跑 wb-core/wbd（ubuntu 无 GTK 编不了 wb-desktop），
+      # 而 P0 时区偏移修复点恰在 wb-desktop 的 lib.rs：秒→分钟换算必须在这里被
+      # 真实执行到，否则「补了测试」只是口头声明。Windows runner 编 app crate
+      # 无额外依赖（WebView2 自带），代价是一次额外编译，值得。
+      - name: 桌面适配层单测（wb-desktop，含时区偏移回归）
+        shell: pwsh
+        run: |
+          cargo test -p wb-desktop --locked
+          if ($LASTEXITCODE -ne 0) { throw "wb-desktop 单测失败（含 v2.2.3 时区偏移回归）" }
       - name: 构建 NSIS 安装包（签名私钥走环境变量，绝不进仓库）
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -556,6 +571,14 @@ jobs:
 
           Write-Host "① 发布二进制资产："
           $bins | ForEach-Object { Write-Host "   $_" }
+          # 发布说明只认仓库根这一份文件：Release 正文与更新清单的 notes 都读它。
+          # 原先两处各写一段（Release 用 --notes 硬编码、清单里另有一段），
+          # 改一处漏另一处就会出现「Release 说得全、清单只留半截」这类不一致。
+          $noteFile = Join-Path (Get-Location).Path "RELEASE_NOTES.md"
+          if (-not (Test-Path $noteFile)) { throw "缺少发布说明文件 RELEASE_NOTES.md（仓库根）" }
+          $noteText = (Get-Content $noteFile -Raw).Trim()
+          if ($noteText.Length -lt 20) { throw "RELEASE_NOTES.md 内容过短（$($noteText.Length) 字），请补全发布说明" }
+          Write-Host "   发布说明取自 RELEASE_NOTES.md（$($noteText.Length) 字）"
           # 重跑同一 tag 时 gh release create 会因 Release 已存在而失败（exit 1）。
           # 先删旧 Release（保留 tag），保证「清单与资产」每次都从同一次构建重新派生；
           # 旧 Release 的资产是上一次构建的产物，留着只会让资产表出现同名多份。
@@ -567,7 +590,7 @@ jobs:
           }
           $global:LASTEXITCODE = 0
           gh release create $tag --title $tag `
-            --notes "个人工作台 v2.1.0：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正、免打扰可编辑。" `
+            --notes-file $noteFile `
             @bins
           if ($LASTEXITCODE -ne 0) { throw "gh release create 失败（exit $LASTEXITCODE）" }
 
@@ -589,6 +612,8 @@ jobs:
           # 而变量其实已经算出来了，只是写错了地方。
           $env:WB_SIGNATURE     = $sigBody
           $env:WB_RELEASE_ASSET = $exe[0]
+          # 清单里的 notes 与 Release 正文同源：都读上面那份 RELEASE_NOTES.md
+          $env:WB_RELEASE_NOTES = $noteFile
 
           Write-Host "③ 按真实资产名重新生成清单"
           node scripts/make-manifest.cjs
@@ -638,6 +663,18 @@ jobs:
             throw "资产大小与构建产物不一致：Release=$($hit[0].size) / 本地=$($local.Length)"
           }
           Write-Host "清单 URL 与 Release 资产一致：$name（$($hit[0].size) 字节）"
+
+          # 发布说明一致性（实证，不靠结构推断）：清单 notes 必须与 Release 正文逐字相同。
+          # 这两处原本各写一段硬编码，v2.2.4 就是这样漂移成「Release 568 字 / 清单 138 字」；
+          # 现在都从 RELEASE_NOTES.md 派生，这里回读一次确认真的同源。
+          $relBody = (gh release view "$env:GITHUB_REF_NAME" --json body | ConvertFrom-Json).body
+          $relNorm = ($relBody -replace "`r`n", "`n").Trim()
+          $mNorm = ($m.notes -replace "`r`n", "`n").Trim()
+          if ($mNorm.Length -lt 20) { throw "清单 notes 过短（$($mNorm.Length) 字），发布说明可能没写" }
+          if ($mNorm -ne $relNorm) {
+            throw "清单 notes 与 Release 正文不一致（清单 $($mNorm.Length) 字 / Release $($relNorm.Length) 字）——发布说明又分叉了"
+          }
+          Write-Host "清单 notes 与 Release 正文逐字一致（$($mNorm.Length) 字）"
 
           $anon = 0
           try {

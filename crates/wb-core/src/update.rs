@@ -553,6 +553,42 @@ mod tests {
     }
 
     #[test]
+    fn release_upgrade_path_v225_to_v226_to_v230_is_not_blocked() {
+        // v2.2.6 先行版的核心承诺：沿用既有静态 JSON 清单通道，
+        // 后续 v2.2.6 → v2.3.0 的升级不会被版本号卡住。
+        // 这里用两份真实形态的清单，验证三段升级各自判定为「有更新」。
+        let m226 = parse_manifest(&manifest_with(|v| {
+            v["version"] = serde_json::json!("2.2.6");
+            v["notes"] = serde_json::json!("v2.2.6 情报先行版");
+        }))
+        .unwrap();
+        let m230 = parse_manifest(&manifest_with(|v| {
+            v["version"] = serde_json::json!("2.3.0");
+            v["notes"] = serde_json::json!("v2.3.0 全量收敛版");
+        }))
+        .unwrap();
+
+        // ① v2.2.5 装了 v2.2.6 的清单 → 必须判定有可用更新
+        match decide("2.2.5", &m226, "windows-x86_64") {
+            UpdateDecision::Available { version, .. } => assert_eq!(version.to_string(), "2.2.6"),
+            other => panic!("v2.2.5 应能升到 v2.2.6，实际 {other:?}"),
+        }
+        // ② 已装 v2.2.6、清单仍是 v2.2.6 → 不应重复提示
+        assert_eq!(decide("2.2.6", &m226, "windows-x86_64"), UpdateDecision::UpToDate);
+        // ③ 已装 v2.2.6、清单换成 v2.3.0 → 必须判定有可用更新（不被 2.2.6 这个号段卡住）
+        match decide("2.2.6", &m230, "windows-x86_64") {
+            UpdateDecision::Available { version, .. } => assert_eq!(version.to_string(), "2.3.0"),
+            other => panic!("v2.2.6 应能升到 v2.3.0，实际 {other:?}"),
+        }
+        // ④ 四平台键在 v2.2.6 清单里同样齐全（缺键即整份无效，不能只写当前平台）
+        assert_eq!(m226.platforms.len(), 4);
+        for req in REQUIRED_PLATFORMS {
+            assert!(m226.platforms.contains_key(req), "v2.2.6 清单缺平台键 {req}");
+        }
+    }
+
+
+    #[test]
     fn real_ed25519_roundtrip_verifies_and_tamper_fails() {
         // 真实密钥对：私钥仅存在于测试内，模拟「签名 → 分发 → 客户端验签」全链路
         let sk = SigningKey::from_bytes(&[7u8; 32]);
@@ -645,7 +681,7 @@ mod tests {
     fn make_manifest_script_output_form_parses() {
         let script_output = r#"{
   "version": "2.1.0",
-  "notes": "个人工作台 v2.1：桌面自动更新上线、单机化（移除多端同步 UI）、晨报语音播报、UTC+8 晨报送达修正与免打扰可编辑。",
+  "notes": "综合工作台 v2.2.1：产品名全面对齐（窗口标题/快捷方式/安装包显示名/界面标题/描述）、存量迁移（旧名卸载项与旧目录清理）、升级后单份安装。",
   "pub_date": "2026-10-27T08:39:56.169Z",
   "platforms": {
     "windows-x86_64": {

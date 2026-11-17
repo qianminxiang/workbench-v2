@@ -1,624 +1,524 @@
-/* 个人工作台 v2.1 · Design Token（档位 B+「变形金刚·鲜明」，UI 升级规范第二章定稿值）
-   两套模式独立校准而非反色：亮色=办公态（靠结构缝 seam 建层级），暗色=机甲态（靠明度阶梯建层级）。
-   所有对比度值来自 UI 规范文档第二章实测表，不要凭感觉改值。
-   关键纪律：
-   - 五层表面栈 canvas→panel→plate→inset→groove；卡片从面板里「抬起来」：
-     亮色靠 1px seam 描边（对 plate 1.97），暗色靠 plate/panel 明度差（1.16）——两者都要。
-   - 语义色（brand/amber/red/ok）禁止出现在 groove 深槽面上（实测亮色 groove 上 brand 仅 4.19）。
-   - 文字三级 v2.1 修正：text-3 压深到 #585D62，对全部 5 表面 ≥4.66，「凹陷底不用三文字」的旧限制取消。
-   - 警示块文字取色必须按底色定：亮色琥珀底深字（8.43）、亮色红底白字（5.26）、暗色红底深字（6.75）。
-   - 板块色仅作色条与行程块，不作正文文字色（与 v2.0 完全一致，一个值都没改）。 */
+/* 综合工作台 v2.3.0 · Design Token（商务风 · 亮蓝 B「内衬层叠轻拟物」）
+   2026-11-04 拍板：舍弃机甲风格与语音播报的全部相关内容（基线文档第十节移除清单），
+   本文件即 token 层的全量重建——机甲的 25 个 --mech-* 变量、五层表面栈、装甲渐变、
+   气闸转场、扫描线/雷达/舱段标头/铆钉/HUD 角码等装饰体系零进入。
+   主色为亮蓝 #4992F1 家族（用户参照图：外层 #4992F1 / 内衬 #E0EDFD / 深部 #2A7AE2）。
+   对比度口径（与预览版 B 基线一致，逐对实测见交付包 contrast-report）：
+   - 正文 ≥4.5:1；图形与大字 ≥3:1；
+   - 角色分工勿混用：
+     · 图形色落地值为 #4689E4（基准 #4992F1 微调 4%，画布上 3.26 / 对白 3.52），
+       仅作图形（焦点环/色条/描边），不承载文字；
+     · #1E63C4 为文字成员（对白 5.77 / 内衬 #E0EDFD 上 4.87）；
+     · 实心底家族 #256FCE / #2468C9 / #1F5FBF（配白字 4.95 / 5.39 / 6.09）；
+     · #2A7AE2 深部仅图形（对白 4.22，不得承载文字）。
+   动效规范：同层切换 160ms 透明度过渡；跨层下钻 8~12px 位移；
+   无装饰动画、无呼吸灯、无音效（音效体系随第十章移除清单整体下线）。 */
 
-/* 亮色（办公态，默认跟随系统） */
 :root {
-  /* ── 五层表面栈（2.1）── */
-  --mech-canvas: #E8ECF1;
-  --mech-panel: #F9FBFC;
-  --mech-plate: #FFFFFF;
-  --mech-inset: #DBE2E9;
-  --mech-groove: #D1D9E1;
-  --mech-seam: #AEBAC8;          /* 结构缝：亮色卡片边界感的主力（对 plate 1.97） */
-  --mech-seam-hover: #829CCC;    /* 派生值：seam 与 brand 30% 混色（hover 态，4.1） */
-  --mech-ctl: #7B8694;           /* 控件描边（2.5 --w-ctl 用色，对 plate ≥3:1） */
-  /* ── 文字三级（2.2）── */
-  --mech-text-1: #151A20;
-  --mech-text-2: #48525C;
-  --mech-text-3: #585D62;        /* v2.1 修正：原 #646E79 在凹陷底仅 4.42，现对 5 表面最低 4.66 */
-  /* ── 交互与语义色（2.3）── */
-  --mech-brand: #1B5BD6;
-  --mech-brand-hover: #1749AE;   /* 悬停纯色（不用 filter） */
-  --mech-brand-pressed: #123C8F;  /* v2.1 新增：按下纯色 */
-  --mech-warn-amber: #854F00;     /* 仅临期（≤3 天） */
-  --mech-warn-red: #B22C24;      /* 仅逾期 */
-  --mech-ok: #0D6F63;            /* 已闭环 / 数据源正常 */
-  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;  /* 亮琥珀底必须深字（白字仅 2.16） */
-  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;     /* 亮红底必须白字（深字仅 3.46） */
-  /* ── 板块识别色（2.4，仅色条与行程块）── */
-  --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
-  --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
-  /* ── 字体（2.5）── */
-  --font-ui: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  /* ── 表面（8px 栅格 · 卡片圆角 6px · 1px 细边框 + 极浅阴影） ── */
+  --bg-canvas: #F5F6F8;
+  --bg-card: #FFFFFF;
+  --bg-inset: #F2F3F5;        /* 输入框 / 详情条 / 表头 */
+  --bg-groove: #E9EBEE;       /* 按下态 / 仪表轨道 */
+  --border-default: #E5E6EB;
+  --border-strong: #C9CDD4;   /* 控件描边（对 #FFF ≈ 1.7，仅结构线，不承载文字） */
+  /* ── 文字三级 ── */
+  --text-1: #1F2329;          /* 正文（对 #FFF 15.9） */
+  --text-2: #4E5560;          /* 次级（对 #FFF ≈ 7.2） */
+  --text-3: #687078;          /* 弱化（对最浅浅底 #F2F3F5 4.53，全部浅表面上 ≥4.5） */
+  /* ── 主色（亮蓝 B 家族） ── */
+  --brand: #4689E4;           /* 图形：焦点环 / 色条 / 悬浮描边（画布上 3.26；基准 #4992F1 微调 4% 以过 WCAG 图形 ≥3） */
+  --brand-deep: #2A7AE2;      /* 图形：渐变深端 */
+  --brand-liner: #E0EDFD;     /* 内衬：选中底 / 悬浮底 */
+  --brand-text: #1E63C4;      /* 文字：链接式文案 / ghost 按钮 */
+  --brand-solid: #256FCE;     /* 实心底（配白字 4.95） */
+  --brand-hover: #2468C9;     /* 悬停（白字 5.39） */
+  --brand-pressed: #1F5FBF;   /* 按下（白字 6.09） */
+  --brand-line: #B7CFF0;      /* 内衬描边 */
+  /* ── 状态色（第十章商务语义色；色条为图形口径 ≥3，文字成员对浅底 ≥4.5） ── */
+  --ok: #2E9E5B;              /* 成功 / 数据源正常（图形） */
+  --ok-text: #1E7A4A;         /* 成功文字（对 #FFF 5.1+） */
+  --warn-amber: #C77D0A;      /* 临期色条（承继警示语义，图形） */
+  --warn-red: #D93F3F;        /* 逾期色条（图形） */
+  --amber-bg: #FBF0DC; --amber-fg: #7A4E00;   /* 临期徽标：浅琥珀底 + 深字 */
+  --red-bg: #FBEAEA; --red-fg: #B02626;       /* 逾期徽标：浅红底 + 深字 */
+  --green-bg: #E9F5EE; --green-fg: #1E7A4A;   /* 相关标记 */
+  --danger: #B02626;          /* 内联警示文字（对 #FFF 5.5+） */
+  /* ── 板块识别色（低饱和商务色板：仅左侧条 + 8% 底色，不作正文色） ── */
+  --board-b1: #3D6BE0; --board-b2: #0E7C86; --board-b3: #7A5CC0;
+  --board-b4: #A06B14; --board-b5: #2E8B57; --board-b6: #5A7A99;
+  /* ── 字体（系统 UI 栈；数字 tabular；对齐用途保留等宽） ── */
+  --font-ui: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
   --fs-body: 13px; --lh-body: 20px;
   --fs-card-title: 12.5px;
   --fs-th: 12px;
   --fs-mini: 11px;
   --fs-kpi: 28px;
-  /* ── 间距 / 圆角 / 切角（2.5）── */
+  font-variant-numeric: tabular-nums;
+  /* ── 间距 / 圆角 ── */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
-  --radius-panel: 4px;
-  --radius-card: 4px;             /* v2.0 是 6px；v2.1 收紧，配合切角更「硬」 */
-  --radius-badge: 2px;
-  --chamfer-panel: 8px;
-  --chamfer-card: 6px;            /* 仅临期/逾期卡右上 */
-  /* ── 描边与条纹（2.5 / L6 / L7）── */
-  --w-seam: 1px;
+  --radius-panel: 6px;
+  --radius-card: 6px;
+  --radius-badge: 4px;
+  /* ── 描边 ── */
   --w-rule: 1px;
   --w-ctl: 1px;
   --w-board-strip: 4px;
   --w-alert-strip: 3px;
-  --card-h: 82px;                /* L2 标准档卡高（紧凑 70 / 展开 98 由 data-density 切换） */
+  --card-h: 82px;
   --card-h-compact: 70px;
   --card-h-expanded: 98px;
-  /* ── 阴影（2.5：1 层、模糊 ≤8px、禁止双层）── */
-  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-focus: 0 0 0 2px var(--mech-brand);  /* 实色环，非 glow */
-  /* ── 动效（2.5）── */
-  --motion-morph: 240ms;      /* 形态切换硬上限 */
+  /* ── 图标（图标本体归图标替换单 7704272421624220934，此处只给商务配色） ── */
+  --icon-size: 16px;
+  --icon-stroke: 1.8px;
+  --icon-line: #4E5560;
+  --icon-fill: #256FCE;
+  /* ── 阴影（轻：卡片 1 层，悬浮 2 层；层级靠边框 + 标题字重 + 留白） ── */
+  --shadow-card: 0 1px 2px rgba(15, 22, 36, 0.04);
+  --shadow-lift: 0 2px 6px rgba(15, 22, 36, 0.10);
+  --shadow-focus: 0 0 0 2px var(--brand);
+  /* ── 动效（无装饰动画；交互只做颜色/透明度/小位移） ── */
+  --motion-micro: 100ms;     /* hover 颜色 */
   --motion-item: 140ms;      /* 卡片位移 */
-  --motion-reflow: 120ms;    /* 列表重排（沿用 v2.0） */
-  --motion-micro: 60ms;      /* hover */
-  --motion-press: 40ms;      /* 按下（必须 ≤100ms 出首个反馈） */
-  --motion-gauge: 200ms;     /* 进度填充（5 段 × 40ms 顺序点亮） */
-  --motion-lock: 180ms;      /* 完成锁定 */
-  --motion-degraded: 80ms;   /* 降级：交叉淡入，零位移零 clip-path */
-  --ease-morph-in: cubic-bezier(0.16, 0.84, 0.24, 1);    /* decelerate 前快后慢 */
-  --ease-morph-out: cubic-bezier(0.4, 0, 0.84, 0.32);    /* accelerate 前慢后快 */
+  --motion-reflow: 120ms;    /* 列表重排淡入 */
+  --motion-view: 160ms;      /* 同层视图切换透明度过渡 */
+  --motion-press: 60ms;      /* 按下（≤100ms 出首个反馈） */
   --ease-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
-  --ease-micro: linear;      /* 仅颜色与描边，不做位移 */
-  /* v2.0 兼容别名：index.html 旧引用走新 Token，var() 动态解析、暗色自动跟随 */
-  --mech-border: var(--mech-seam);
-  --ease-in-quad: var(--ease-standard);
-}
-
-/* 暗色（机甲态）：层级靠明度阶梯（panel→plate 必须 ≥1.10 才可感知） */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --mech-canvas: #0C1015;
-    --mech-panel: #181E25;
-    --mech-plate: #222A32;
-    --mech-inset: #14191E;
-    --mech-groove: #0A0E12;
-    --mech-seam: #303A45;
-    --mech-seam-hover: #475B7A;  /* 派生值：seam 与暗色 brand 30% 混色 */
-    --mech-ctl: #4A5560;
-    --mech-text-1: #E8ECEF;
-    --mech-text-2: #A9B3BC;
-    --mech-text-3: #93A0AA;
-    --mech-brand: #7CA9F5;
-    --mech-brand-hover: #A6C6FF;
-    --mech-brand-pressed: #5F8FE0;
-    --mech-warn-amber: #E0A13A;
-    --mech-warn-red: #F27A72;
-    --mech-ok: #4FC3AE;
-    --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
-    --mech-red-bg: #F27A72; --mech-red-fg: #12161A;      /* 暗红底必须深字（白字仅 2.69）——与亮色红底白字相反，最易统一错 */
-    --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
-    --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
-    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
-  }
-}
-
-/* 手动锁定（设置页） */
-:root[data-theme="light"] {
-  --mech-canvas: #E8ECF1; --mech-panel: #F9FBFC; --mech-plate: #FFFFFF;
-  --mech-inset: #DBE2E9; --mech-groove: #D1D9E1;
-  --mech-seam: #AEBAC8; --mech-seam-hover: #829CCC; --mech-ctl: #7B8694;
-  --mech-text-1: #151A20; --mech-text-2: #48525C; --mech-text-3: #585D62;
-  --mech-brand: #1B5BD6; --mech-brand-hover: #1749AE; --mech-brand-pressed: #123C8F;
-  --mech-warn-amber: #854F00; --mech-warn-red: #B22C24; --mech-ok: #0D6F63;
-  --mech-amber-bg: #E8A33D; --mech-amber-fg: #12161A;
-  --mech-red-bg: #C7362E; --mech-red-fg: #FFFFFF;
-  --board-b1: #3A4ECB; --board-b2: #116C72; --board-b3: #6B4FC0;
-  --board-b4: #8A5A12; --board-b5: #1B7241; --board-b6: #4C6B86;
-  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06);
-}
-:root[data-theme="dark"] {
-  --mech-canvas: #0C1015; --mech-panel: #181E25; --mech-plate: #222A32;
-  --mech-inset: #14191E; --mech-groove: #0A0E12;
-  --mech-seam: #303A45; --mech-seam-hover: #475B7A; --mech-ctl: #4A5560;
-  --mech-text-1: #E8ECEF; --mech-text-2: #A9B3BC; --mech-text-3: #93A0AA;
-  --mech-brand: #7CA9F5; --mech-brand-hover: #A6C6FF; --mech-brand-pressed: #5F8FE0;
-  --mech-warn-amber: #E0A13A; --mech-warn-red: #F27A72; --mech-ok: #4FC3AE;
-  --mech-amber-bg: #E0A13A; --mech-amber-fg: #12161A;
-  --mech-red-bg: #F27A72; --mech-red-fg: #12161A;
-  --board-b1: #8C9CF2; --board-b2: #4FBEB0; --board-b3: #B49AE8;
-  --board-b4: #D9A45A; --board-b5: #63C08A; --board-b6: #93AEC4;
-  --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-
-/* 减少动效：降级 80ms 交叉淡入，零位移零 clip-path（规范 2.5 --motion-degraded） */
-@media (prefers-reduced-motion: reduce) {
-  :root { --motion-morph: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
+  --ease-micro: linear;
+  /* ── 滚动字幕条 / 通知中心 / 指令条（保留 L0，商务化取值） ── */
+  --marquee-height: 32px;
+  --marquee-speed: 40px;
+  --motion-marquee-blink: 200ms;
+  --motion-marquee-detail: 120ms;
+  --marquee-detail-height: 88px;
+  --marquee-queue-cap: 5;
+  --bar-height: 44px;
+  --motion-bar-in: 160ms;
+  --motion-bar-out: 120ms;
+  --bar-timeout: 8s;
 }
 
 * { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0;
-  background: var(--mech-canvas);
-  color: var(--mech-text-1);
+  color: var(--text-1);
   font: var(--fs-body)/var(--lh-body) var(--font-ui);
 }
+body { background: var(--bg-canvas); min-height: 100vh; }
 
-/* ── 五层表面栈（2.1）：panel 容器 / plate 卡片 / inset 凹陷 / groove 深槽 ── */
+/* ── 面板（白色卡片容器）：1px 细边框 + 极浅阴影 ── */
 .panel {
-  background: var(--mech-panel);
-  border: var(--w-rule) solid var(--mech-seam);
+  background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default);
   border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-card);
   position: relative;
   margin-bottom: var(--sp-4);
 }
-/* 面板右上 8px 切角（L6：单屏切角总数 ≤8 处） */
-.panel--chamfer {
-  clip-path: polygon(0 0, calc(100% - var(--chamfer-panel)) 0, 100% var(--chamfer-panel), 100% 100%, 0 100%);
-}
-/* 顶部 2px 状态灯带：用板块色，仅作识别、不表现异常（P6） */
+/* 语义顶条：3px、随面板语义（板块/成功），无发光 */
 .panel::before {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 2px;
-  background: var(--panel-strip, var(--mech-brand));
-  opacity: 0.9;
+  height: 3px;
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  background: var(--panel-strip, transparent);
+  pointer-events: none;
 }
 
-/* 卡片（装甲板）：plate 抬起。亮色边界感来自 seam 描边、暗色来自 plate/panel 明度差——两者都要（2.1 callout）。
-   hover 只改颜色与描边（4.1 硬规则），唯一允许的尺寸变化是板块条 4→5px。 */
+/* ── 卡片：白底 + 1px 边框；hover 轻抬升（-1px + 2 层阴影）；按下微缩 ── */
 .card {
-  background: var(--mech-plate);
-  border: var(--w-seam) solid var(--mech-seam);
+  background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default);
   border-radius: var(--radius-card);
-  padding: var(--sp-3) var(--sp-4) var(--sp-3) 18px;  /* L7：板块条4+gap2+警示条3=9px 共享左内边距 → 18px */
+  box-shadow: var(--shadow-card);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) 18px; /* 左侧共享：板块条4+gap2+警示条3=9px */
   min-height: var(--card-h);
   display: flex;
   align-items: flex-start;
   transition: border-color var(--motion-micro) var(--ease-micro),
               box-shadow var(--motion-micro) var(--ease-micro);
 }
-.card:hover {
-  border-color: var(--mech-seam-hover);
-  box-shadow: var(--shadow-lift);  /* 0 层 → 1 层，仅 1 层 */
-}
-.card:active {
-  transform: scale(0.994);         /* 4.1 按下：40ms 内完成，无位移 */
-  transition: transform var(--motion-press) var(--ease-micro);
-}
-/* 卡标题：单行截断（L3 四件套固定扫读路径） */
 .card b {
   font-size: var(--fs-card-title); font-weight: 600;
   display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* 临期/逾期卡：右上 6px 切角 + 左侧警示条（4.4 第四通道——位置即异常语义） */
-.card--alert {
-  clip-path: polygon(0 0, calc(100% - var(--chamfer-card)) 0, 100% var(--chamfer-card), 100% 100%, 0 100%);
+@media (hover: hover) and (pointer: fine) {
+  .card { cursor: pointer; }
+  .card:hover {
+    border-color: var(--brand-line);
+    box-shadow: var(--shadow-lift);
+    transform: translateY(-1px);
+    transition: transform var(--motion-item) var(--ease-standard);
+  }
 }
-.card--amber .alert-strip { background: var(--mech-amber-bg); }
-.card--red   .alert-strip { background: var(--mech-red-bg); }
+.card:active { transform: scale(0.996); transition-duration: var(--motion-press); }
+/* 选中：2px 主色描边（静态，无呼吸动画） */
+.card--selected { outline: 2px solid var(--brand); outline-offset: -1px; }
+.card:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+/* 完成态：降饱和，弱化在屏存在感 */
+.card--done { filter: saturate(0.75); }
+/* 表单控件不吃卡片交互态的位移：编辑时卡片不抬升 */
+.kanban .card:focus-within { transform: none; }
+
+/* 警示卡：左侧 3px 语义条 + 同色描边（临期琥珀 / 逾期红，图形口径） */
+.card--amber .alert-strip { background: var(--warn-amber); }
+.card--red   .alert-strip { background: var(--warn-red); }
+.card--alert.card--amber, .card--alert.card--amber:hover { border-color: var(--warn-amber); }
+.card--alert.card--red,   .card--alert.card--red:hover   { border-color: var(--warn-red); }
 .alert-strip {
   display: inline-block; width: var(--w-alert-strip);
   align-self: stretch; border-radius: 1px; margin-right: var(--sp-2);
 }
-/* 板块条：4px，悬停该卡时 5px（唯一允许的尺寸变化，不参与布局流感知） */
+/* 板块条：4px 实色左侧条（悬停不加宽，无尺寸变化） */
 .board-strip {
   display: inline-block; width: var(--w-board-strip);
   align-self: stretch; border-radius: 2px; margin-right: var(--sp-2);
-  transition: width var(--motion-micro) var(--ease-micro);
 }
-.card:hover .board-strip { width: 5px; }
+[data-board="b1"] { --board-accent: var(--board-b1); }
+[data-board="b2"] { --board-accent: var(--board-b2); }
+[data-board="b3"] { --board-accent: var(--board-b3); }
+[data-board="b4"] { --board-accent: var(--board-b4); }
+[data-board="b5"] { --board-accent: var(--board-b5); }
+[data-board="b6"] { --board-accent: var(--board-b6); }
+.board-strip[data-board] { background: var(--board-accent); }
+/* 板块面板：8% 底色 + 实色顶条（语义保留、取色商务化） */
+.panel[data-board] {
+  --panel-strip: var(--board-accent);
+  background: color-mix(in srgb, var(--board-accent) 8%, var(--bg-card));
+}
 
-.divider { border: 0; border-top: var(--w-rule) solid var(--mech-seam); margin: var(--sp-4) 0; }
-.text-2 { color: var(--mech-text-2); }
-.text-3 { color: var(--mech-text-3); }
-.mono { font-family: var(--font-mono); }  /* L9：数字、日期、KPI 统一 mono，纵向对齐 */
+.divider { border: 0; border-top: var(--w-rule) solid var(--border-default); margin: var(--sp-4) 0; }
+.text-2 { color: var(--text-2); }
+.text-3 { color: var(--text-3); }
+.mono { font-family: var(--font-mono); }
 
-/* 警示灯（4.4：色 + 形 + 文字三通道冗余，色弱不丢信息；不循环闪烁） */
+/* ── 警示徽标（色 + 形 + 文字三通道冗余；不循环闪烁） ── */
 .lamp {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--fs-th); padding: 2px 8px; border-radius: var(--radius-badge);
+  border: 1px solid transparent;
 }
-.lamp--amber { background: var(--mech-amber-bg); color: var(--mech-amber-fg); }
-.lamp--red   { background: var(--mech-red-bg); color: var(--mech-red-fg); }
+.lamp--amber { background: var(--amber-bg); color: var(--amber-fg); border-color: var(--warn-amber); }
+.lamp--red   { background: var(--red-bg); color: var(--red-fg); border-color: var(--warn-red); }
 .lamp--amber::before { content: "▮"; }
 .lamp--red::before   { content: "◆"; }
-/* 警示进入：每卡每次会话只播 1 次 180ms 脉冲（opacity .7→1），不循环（4.4 警报疲劳控制） */
-@keyframes lamp-pulse { from { opacity: 0.7; } to { opacity: 1; } }
-.lamp--pulse { animation: lamp-pulse var(--motion-lock) var(--ease-standard); }
-/* v2.2 FR-2：相关性标记（非颜色冗余——绿灯带 ▲ 前缀，无障碍口径同灯带） */
-.lamp--green { background: rgba(13, 111, 99, .16); color: var(--mech-ok); }
+.lamp--green { background: var(--green-bg); color: var(--green-fg); border-color: var(--ok); }
 .lamp--green::before { content: "▲"; }
-/* v2.2 FR-2：源站状态表 / 改判小按钮 */
+/* 4.4 警报疲劳控制：警示标签入场强调每卡每会话只做 1 次（JS 侧去重），
+   动画本身是克制的同层淡入，符合商务风「无装饰动效」口径。 */
+.lamp--pulse { animation: lamp-pulse var(--motion-item) var(--ease-standard); }
+@keyframes lamp-pulse { from { opacity: 0; } to { opacity: 1; } }
+
+/* 源站状态表 / 改判小按钮 */
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--seam, rgba(127,127,127,.25)); }
-.tbl th { color: var(--mech-brand); font-weight: 600; }
-.btn--sm { padding: 2px 10px; font-size: 12px; }
+.tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-default); }
+.tbl th { color: var(--text-2); font-weight: 600; }
 
-/* 分段式能量槽（4.2）：groove 深槽为轨道（语义色不进 groove 作文字），ok 点亮，每段 40ms */
-.gauge { display: flex; gap: 2px; height: 8px; }
-.gauge i { flex: 1; background: var(--mech-groove); border-radius: 1px; transition: background 40ms var(--ease-micro); }
-.gauge i.on { background: var(--mech-ok); }
+/* ── 进度条（5 段 → 商务细条）：轨道 groove、点亮 ok ── */
+.gauge { display: flex; gap: 2px; height: 5px; align-items: center; }
+.gauge i { flex: 1; max-width: 26px; background: var(--bg-groove); border-radius: 2px; height: 4px;
+  transition: background 40ms var(--ease-micro); }
+.gauge i.on { background: var(--ok); }
 
-/* 完成态锁定（4.3：180ms，切角先张后收 + ✓ 徽标；不弹窗、不阻塞输入） */
-@keyframes lock-chamfer {
-  0%   { clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); }
-  40%  { clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%); }
-  100% { clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); }
-}
-.card--done { animation: lock-chamfer var(--motion-lock) var(--ease-morph-in); filter: saturate(0.6); }
-/* 注意：filter 只允许 1 层（红线：禁止双层 filter/glow 堆叠），且仅作用于完成卡本身 */
-
-/* 时间线区间带（F6：月粒度画整月带，不编日精度） */
-.tl-band { height: 14px; border-radius: 2px; opacity: 0.85; }
-.tl-band--month {
-  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0, 0, 0, 0.18) 4px 6px);
-}
-
-/* ── 导航（4.1）：tab hover 文字 text-2→text-1、底 inset→panel，不做下划线滑动 ── */
-.nav { display: flex; gap: var(--sp-1); padding: var(--sp-2); background: var(--mech-inset); border-radius: var(--radius-panel); }
+/* ── 导航：tab 悬浮文字加深；激活 = 内衬底 + 主色文字 + 2px 底线 ── */
+.nav { display: flex; gap: var(--sp-1); padding: var(--sp-2);
+  background: var(--bg-inset); border-radius: var(--radius-panel); }
 .nav button {
   all: unset; cursor: pointer; padding: 6px 14px; border-radius: var(--radius-badge);
-  color: var(--mech-text-2);
+  color: var(--text-2);
   transition: background var(--motion-micro) var(--ease-micro), color var(--motion-micro) var(--ease-micro);
 }
-.nav button:hover { color: var(--mech-text-1); }
+.nav button:hover { color: var(--text-1); background: var(--bg-card); }
+.nav button:active { background: var(--bg-groove); }
 .nav button[aria-current="true"] {
-  background: var(--mech-panel);
-  color: var(--mech-text-1);
-  box-shadow: inset 0 0 0 var(--w-rule) solid var(--mech-seam);
+  background: var(--brand-liner);
+  color: var(--brand-text);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--brand-solid);
 }
-.nav button:active { background: var(--mech-inset); }
 
-/* ── 形态切换（第三章：四阶段 240ms，由 app.js 驱动时序，这里只放每阶段的关键帧）──
-   容器层只做 transform/opacity（合成器路径），严禁容器 clip-path（规范 3.3 红线）；
-   逐卡变形只允许 ≤6 张（规范 3.5 并发上限），由 JS 加 .morph-card 标记。 */
-.morph-out {                 /* ① 拆解 72ms（accelerate）→ ② 传递续淡出至 156ms */
-  animation: morph-container-out 156ms var(--ease-morph-out) forwards;
-}
-@keyframes morph-container-out {
-  0%   { opacity: 1; transform: none; }
-  46%  { opacity: 0.35; transform: scale(0.98); }   /* 72ms 处：拆解到位 */
-  100% { opacity: 0; }                                /* 156ms 处：旧形态退场完毕 */
-}
-.morph-in {                  /* ③ 重组 84ms（decelerate），与旧形态淡出尾部重叠 24ms */
-  animation: morph-container-in 84ms var(--ease-morph-in) forwards;
-}
-@keyframes morph-container-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-.morph-lock {                /* ④ 锁定 24ms：描边短暂提到 brand 后回常态 */
-  outline: 2px solid var(--mech-brand);
-  outline-offset: -2px;
-}
-/* 逐卡变形（3.3 参数：横向=时间尺度 scaleX(.32) scaleY(.28)；纵向=明细 scaleY(.42)）。
-   只加在 ≤6 张卡上（JS 控制），其余卡直接终态。 */
-.morph-card { animation: card-morph-in 60ms var(--ease-morph-in) both; }
-main[data-morph="h"] .morph-card { animation-name: card-morph-in-h; }
-main[data-morph="v"] .morph-card { animation-name: card-morph-in-v; }
-@keyframes card-morph-in-h {
-  from { opacity: 0; transform: scaleX(0.32) scaleY(0.28); clip-path: inset(32% 34% 32% 34%); }
-  to   { opacity: 1; transform: scaleX(1) scaleY(1); clip-path: inset(0); }
-}
-@keyframes card-morph-in-v {
-  from { opacity: 0; transform: scaleY(0.42); clip-path: inset(0 0 58% 0); }
-  to   { opacity: 1; transform: scaleY(1); clip-path: inset(0); }
-}
-@keyframes card-morph-in { from { opacity: 0; } to { opacity: 1; } }
-/* 筛选重排（3.4）：≤120ms，只位移不变形；命中数 80ms 数字滚动→v2.1 取 0ms 直替 */
+/* ── 视图切换：同层 160ms 透明度过渡（无位移、无 clip-path） ── */
+.view-fade { animation: view-fade var(--motion-view) var(--ease-standard); }
+@keyframes view-fade { from { opacity: 0; } to { opacity: 1; } }
+/* 筛选重排：120ms 淡入 */
 .reflow-fade { animation: reflow-fade var(--motion-reflow) var(--ease-standard); }
 @keyframes reflow-fade { from { opacity: 0.6; } to { opacity: 1; } }
-/* 降级（prefers-reduced-motion）：80ms 交叉淡入，零位移零 clip-path */
-@media (prefers-reduced-motion: reduce) {
-  .morph-out { animation: reflow-fade var(--motion-degraded) linear forwards; }
-  .morph-in { animation: reflow-fade var(--motion-degraded) linear forwards; }
-  .morph-card { animation: card-morph-in var(--motion-degraded) linear both; }
-}
 
+/* ── 表格 ── */
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 6px 10px; border-bottom: var(--w-rule) solid var(--mech-seam); }
-th { background: var(--mech-inset); color: var(--mech-text-2); font-weight: 600; font-size: var(--fs-th); position: sticky; top: 0; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: var(--w-rule) solid var(--border-default); }
+th { background: var(--bg-inset); color: var(--text-2); font-weight: 600; font-size: var(--fs-th); position: sticky; top: 0; }
 th.mono, td.mono { font-family: var(--font-mono); }
-/* L10：表格首列吸附（横向滚动不丢「这行是哪一项」） */
-td:first-child, th:first-child { position: sticky; left: 0; background: var(--mech-plate); }
-tr:hover td { background: color-mix(in srgb, var(--mech-plate) 92%, var(--mech-seam)); }
+td:first-child, th:first-child { position: sticky; left: 0; background: var(--bg-card); }
+tr:hover td { background: color-mix(in srgb, var(--bg-card) 94%, var(--border-default)); }
 
+/* ── 筛选 chip ── */
 .chip {
   all: unset; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
-  background: var(--mech-inset); color: var(--mech-text-2);
+  background: var(--bg-card); color: var(--text-2);
   padding: 4px 12px; border-radius: var(--radius-badge);
-  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl);
-  transition: box-shadow var(--motion-micro) var(--ease-micro), background var(--motion-micro) var(--ease-micro);
+  border: var(--w-ctl) solid var(--border-strong);
+  transition: border-color var(--motion-micro) var(--ease-micro), background var(--motion-micro) var(--ease-micro);
 }
-.chip:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
-.chip:active { background: var(--mech-groove); }
+.chip:hover { border-color: var(--brand); color: var(--text-1); }
+.chip:active { background: var(--bg-groove); }
 .chip[data-active="true"] {
-  box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand), inset 2px 0 0 var(--mech-brand);
+  background: var(--brand-liner); color: var(--brand-text);
+  border-color: var(--brand);
 }
+.chip--sm { padding: 2px 8px; font-size: 12px; }
 
+/* ── 按钮：主按钮 = 实心底渐变 + 顶内高光 + 硬底边（B 方向层叠轻拟物） ── */
 .btn {
   all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 16px; border-radius: var(--radius-badge);
-  background: var(--mech-brand); color: #FFFFFF;
-  /* 无滤镜（P6）：hover/press 走纯色，不用 filter、不改尺寸 */
-  transition: background-color var(--motion-micro) var(--ease-micro);
+  background: linear-gradient(180deg, var(--brand-solid) 0%, var(--brand-hover) 55%, var(--brand-pressed) 100%);
+  color: #FFFFFF;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
+              inset 0 -1px 0 rgba(9, 30, 66, 0.35),
+              var(--shadow-card);
+  transition: filter var(--motion-micro) var(--ease-micro);
 }
-.btn:hover   { background: var(--mech-brand-hover); }
-.btn:active  { background: var(--mech-brand-pressed); transition-duration: var(--motion-press); }
-.btn--ghost { background: transparent; color: var(--mech-brand); box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-ctl); }
-.btn--ghost:hover { box-shadow: inset 0 0 0 var(--w-ctl) var(--mech-brand); }
+.btn:hover { filter: brightness(1.06); }
+.btn:active { transform: translateY(1px); transition-duration: var(--motion-press); }
+.btn--ghost {
+  background: var(--bg-card); color: var(--brand-text);
+  border: var(--w-ctl) solid var(--border-strong);
+  box-shadow: none;
+}
+.btn--ghost:hover { border-color: var(--brand); filter: none; }
+.btn--sm { padding: 2px 10px; font-size: 12px; }
 
-:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.focus-ring:focus-visible, .chip:focus-visible, .btn:focus-visible, .btn--ghost:focus-visible {
+  outline: none; box-shadow: var(--shadow-focus);
+}
 
-/* L2：卡高密度三档（紧凑 70 / 标准 82 / 展开 98），默认标准 */
+/* ── 卡高密度三档（紧凑 70 / 标准 82 / 展开 98） ── */
 :root[data-density="compact"] { --card-h: var(--card-h-compact); }
 :root[data-density="expanded"] { --card-h: var(--card-h-expanded); }
 
-/* ── 红色警戒参照交互（v2.1 追加评论）：单位选中角标框 + 雷达扫掠 ──
-   RA 三个最有辨识度的交互映射进档位 B+，红线不破：
-   - 选中括号 = 静态 8 段渐变（零动画成本，出场即到位，与 RA 同为瞬时）；
-   - 雷达扫掠只旋转一根 1.5px 合成层（transform 路径，不整屏重绘）；
-     循环扫掠是「运行中」状态指示，不是警示闪烁——警示灯仍不循环（4.4）。 */
-.card { cursor: pointer; }
-.card--selected {
-  background:
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px top 5px / 10px 2px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px top 5px / 2px 10px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px top 5px / 10px 2px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px top 5px / 2px 10px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px bottom 5px / 10px 2px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) left 5px bottom 5px / 2px 10px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px bottom 5px / 10px 2px no-repeat,
-    linear-gradient(var(--mech-text-1), var(--mech-text-1)) right 5px bottom 5px / 2px 10px no-repeat,
-    var(--mech-plate);
+/* ── 内联编辑（进度 / 状态 / 动作记录） ── */
+.item-edit {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: var(--w-rule) dashed var(--border-strong);
 }
-/* 雷达：外圈 + 内环 + 扫掠线（RA 小地图语感，绿色扫线呼应 --mech-ok） */
-.radar {
-  position: relative; display: inline-block; width: 22px; height: 22px;
-  border-radius: 50%; border: 1px solid var(--mech-ctl);
-  vertical-align: -5px; margin-left: 8px;
-  background: radial-gradient(circle, var(--mech-groove) 0 32%, transparent 33%);
+.item-edit--compact, .pct-edit--compact { gap: 4px; }
+.pct-edit { display: inline-flex; align-items: center; gap: 4px; }
+.pct-input {
+  all: unset; box-sizing: border-box;
+  width: 56px; padding: 3px 6px; text-align: right;
+  background: var(--bg-inset); color: var(--text-1);
+  font-family: var(--font-mono); font-size: 13px;
+  border-radius: var(--radius-badge);
+  border: var(--w-ctl) solid var(--border-strong);
+  transition: border-color var(--motion-micro) var(--ease-micro);
 }
-.radar::before {
-  content: ""; position: absolute; inset: 28%;
-  border-radius: 50%; border: 1px solid var(--mech-ctl); opacity: 0.5;
+.pct-input:hover { border-color: var(--brand); }
+.pct-input:focus-visible {
+  outline: none;
+  border-color: var(--brand); box-shadow: var(--shadow-focus);
 }
-.radar::after {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 45%; height: 1.5px;
-  background: linear-gradient(90deg, var(--mech-ok), transparent);
-  transform-origin: 0 0;
-  animation: radar-sweep 2.4s linear infinite;
+.pct-edit--compact .pct-input { width: 46px; font-size: 12px; padding: 2px 5px; }
+.pct-stop, .st, .note-add, .hist-toggle {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 2px 8px; border-radius: var(--radius-badge);
+  background: var(--bg-card); color: var(--text-2);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  border: var(--w-ctl) solid var(--border-strong);
+  transition: border-color var(--motion-micro) var(--ease-micro),
+              background var(--motion-micro) var(--ease-micro),
+              color var(--motion-micro) var(--ease-micro);
 }
-/* deprecated v2.2, keep for rollback —— 雷达扫掠与 8 段括号已被锁定框（角码+呼吸描边）替代，本版本不删 */
-@keyframes radar-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .radar::after { animation: none; } }
-
-
-
-/* ══════════════════════════════════════════════════════════════════════
-   v2.2 armor bridge（装甲指挥舱 · UI 升级设计规范 2026-10-28 定稿）
-   纪律：本区块全部为**新增** Token / 关键帧 / 组件样式，v2.1 既有值零改值
-   （规范 8.2 红线）。旧 8 段括号与雷达扫掠 keyframe 保留在上方并标 deprecated，
-   作为回退路径，本版本不删。
-   ══════════════════════════════════════════════════════════════════════ */
-:root {
-  /* ── 阶段2：气闸开合切换（规范第四章）── */
-  --motion-airlock: 360ms;        /* 容器切换硬上限：160+140+60 */
-  --motion-airlock-close: 160ms;  /* ① 合盖 */
-  --motion-airlock-open: 140ms;   /* ② 弹出 */
-  --motion-airlock-lock: 60ms;    /* ③ 锁定脉冲（v2.1 morph-lock 24ms 的升级值） */
-  --stagger-card: 12ms;           /* 全量逐卡交错步长（交错窗封顶 180ms，JS 控制） */
-  /* ── 阶段3：交互细节 ── */
-  --lock-corner: 12px;            /* 锁定框四角 L 形角码边长 */
-  --lock-corner-weight: 2px;      /* 角码线宽（沿用 v2.1 括号线宽基准） */
-  --motion-breathe: 2s;           /* 选中呼吸描边循环 */
-  --plate-bar-hover: 5px;         /* 悬停板块条高度（常态沿用 --w-board-strip: 4px） */
-  --bar-height: 44px;             /* 底部指令条高 */
-  --motion-bar-in: 160ms;         /* 指令条升起 */
-  --motion-bar-out: 120ms;        /* 指令条收起 */
-  --bar-timeout: 8s;              /* 指令条超时自动取消 */
-  /* ── 阶段7（终稿）：面板结构框 ── */
-  --frame-weight: 1.5px;          /* 面板外框描边（卡片层沿用旧 1px，不改值） */
-  /* ── 阶段4：首行滚动字幕 ── */
-  --marquee-height: 32px;
-  --marquee-speed: 40px;          /* px/s；实际时长由 JS 按条目宽度换算写入 --mq-dur */
-  --motion-marquee-blink: 200ms;  /* 灯带闪烁半周期（亮/灭各 200ms ×2 = 800ms） */
-  --motion-marquee-detail: 120ms; /* 详情条展开 */
-  --marquee-detail-height: 88px;
-  --marquee-queue-cap: 5;
-  /* ── 装甲板抬升阴影（5.1：外阴影 y+2/模糊+4 + inset 底缝线）── */
-  --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.09), inset 0 -1px 0 var(--mech-seam);
+.pct-stop:hover, .st:hover, .note-add:hover, .hist-toggle:hover {
+  border-color: var(--brand); color: var(--text-1);
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
+.pct-stop:active, .st:active, .note-add:active { background: var(--bg-groove); }
+.pct-stop:focus-visible, .st:focus-visible, .note-add:focus-visible, .hist-toggle:focus-visible {
+  outline: none; border-color: var(--brand); box-shadow: var(--shadow-focus);
 }
-:root[data-theme="dark"] { --shadow-armor-lift: 0 3px 6px rgba(0, 0, 0, 0.55), inset 0 -1px 0 var(--mech-seam); }
-
-/* ── 气闸开合关键帧（4.1）──
-   容器红线：只做 transform/opacity，严禁容器 clip-path（v2.1 3.3 延续）。
-   合盖 = scaleY 向中线收束；弹出 = 从中线展开带 2% 位移补偿。 */
-.airlock-close { animation: airlock-close var(--motion-airlock-close) var(--ease-morph-out) forwards; }
-@keyframes airlock-close {
-  from { transform: scaleY(1); opacity: 1; }
-  50%  { opacity: 0.4; }
-  to   { transform: scaleY(0.04); opacity: 0; }
+.pct-stop[data-active="true"], .st[data-active="true"] {
+  background: var(--brand-liner); color: var(--brand-text);
+  border-color: var(--brand);
 }
-.airlock-open { animation: airlock-open var(--motion-airlock-open) var(--ease-morph-in) forwards; }
-@keyframes airlock-open {
-  from { transform: scaleY(0.04) translateY(-2%); opacity: 0; }
-  to   { transform: scaleY(1) translateY(0); opacity: 1; }
+.pct-stop[data-active="true"]:hover, .st[data-active="true"]:hover { color: var(--brand-text); }
+.st-row { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.st { font-family: var(--font-ui, inherit); }
+.st-label { color: var(--text-2); }
+.note-row { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 240px; }
+.note-input {
+  all: unset; box-sizing: border-box;
+  flex: 1 1 160px; min-width: 120px;
+  padding: 3px 8px; background: var(--bg-inset); color: var(--text-1);
+  font-size: 12px; border-radius: var(--radius-badge);
+  border: var(--w-ctl) solid var(--border-strong);
 }
-.airlock-lock { animation: airlock-lock var(--motion-airlock-lock) var(--ease-standard); }
-@keyframes airlock-lock {
-  from { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
-  to   { outline: 2px solid transparent; outline-offset: -2px; }
+.note-input::placeholder { color: var(--text-3); }
+.note-input:hover { border-color: var(--brand); }
+.note-input:focus-visible { outline: none; border-color: var(--brand); box-shadow: var(--shadow-focus); }
+.note-add { color: var(--brand-text); }
+.hist-toggle { color: var(--brand-text); font-family: inherit; }
+.edit-msg { flex: 1 1 100%; min-height: 1.2em; color: var(--text-2); }
+.edit-msg[data-bad="1"] { color: var(--danger); }
+.act-hist {
+  margin-top: 6px; padding: 6px 8px;
+  background: var(--bg-inset); border-radius: var(--radius-badge);
+  border: var(--w-ctl) solid var(--border-default);
 }
-/* 全量逐卡装甲翻入（4.2）：卡片自身 clip-path（小面积），交错延迟与 will-change
-   即用即还由 JS 控制；rAF 帧率兜底（连续 2 帧 >24ms → 剩余卡直接终态）也在 JS。 */
-.armor-flip { animation: armor-flip-in var(--motion-airlock-open) var(--ease-morph-in) both; will-change: transform; }
-main[data-morph="h"] .armor-flip { animation-name: armor-flip-in-h; }
-main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
-@keyframes armor-flip-in-h {
-  from { transform: scaleX(0.32) scaleY(0.28); opacity: 0; clip-path: inset(0 50% 0 50%); }
-  to   { transform: none; opacity: 1; clip-path: inset(0 0 0 0); }
+.act-list { display: flex; flex-direction: column; gap: 4px; }
+.act-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding-bottom: 4px; border-bottom: var(--w-rule) solid var(--border-default);
 }
-@keyframes armor-flip-in-v {
-  from { transform: scaleY(0.42); opacity: 0; clip-path: inset(50% 0 50% 0); }
-  to   { transform: none; opacity: 1; clip-path: inset(0 0 0 0); }
+.act-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.act-ts { color: var(--text-3); font-size: 12px; flex: none; }
+.act-pct { color: var(--ok-text); font-size: 12px; flex: none; }
+.act-note { flex: 1; color: var(--text-1); font-size: 12px; overflow-wrap: anywhere; }
+/* 看板卡片内的编辑器默认收起，hover/focus-within 才显现 */
+.kanban .item-edit {
+  max-height: 0; overflow: hidden; opacity: 0; margin-top: 0; padding-top: 0;
+  border-top-color: transparent;
+  transition: max-height var(--motion-micro) var(--ease-micro),
+              opacity var(--motion-micro) var(--ease-micro),
+              margin-top var(--motion-micro) var(--ease-micro);
 }
-@keyframes armor-flip-in { from { opacity: 0; } to { opacity: 1; } }
-
-/* ── 5.1 装甲板抬升（pointer: fine 限定；按下是压入，与抬升方向相反）── */
-@media (hover: hover) and (pointer: fine) {
-  .card { transition: border-color var(--motion-micro) var(--ease-micro),
-                      box-shadow var(--motion-micro) var(--ease-micro),
-                      transform var(--motion-micro) var(--ease-micro); }
-  .card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-armor-lift);
+.kanban .card:hover .item-edit,
+.kanban .card:focus-within .item-edit,
+.kanban .card--selected .item-edit {
+  max-height: 140px; overflow: visible; opacity: 1;
+  margin-top: 8px; padding-top: 8px; border-top-color: var(--border-strong);
+}
+@media (hover: none) {
+  .kanban .item-edit {
+    max-height: none; overflow: visible; opacity: 1;
+    margin-top: 8px; padding-top: 8px; border-top-color: var(--border-strong);
   }
-  .card:active { transform: scale(0.994); }  /* 按下移除抬升保持压入 */
-}
-/* 板块条悬停 4→5px 走新 Token（常态值不变） */
-.card:hover .board-strip { width: var(--plate-bar-hover); }
-
-/* ── 7.1 面板结构框：1.5px seam 描边 + 8 颗铆钉（JS decoratePanels 注入 span）── */
-.panel--frame { border-width: var(--frame-weight); }
-.rivet {
-  position: absolute; width: 6px; height: 6px;
-  background: var(--mech-seam); transform: rotate(45deg);
-  pointer-events: none;
-}
-.rivet[data-pos="tl"] { top: 3px; left: 3px; }
-.rivet[data-pos="tr"] { top: 3px; right: 3px; }
-.rivet[data-pos="bl"] { bottom: 3px; left: 3px; }
-.rivet[data-pos="br"] { bottom: 3px; right: 3px; }
-.rivet[data-pos="tc"] { top: 3px; left: 50%; margin-left: -3px; }
-.rivet[data-pos="bc"] { bottom: 3px; left: 50%; margin-left: -3px; }
-.rivet[data-pos="ml"] { top: 50%; left: 3px; margin-top: -3px; }
-.rivet[data-pos="mr"] { top: 50%; right: 3px; margin-top: -3px; }
-/* 指令脉冲（7.1）：确认执行后对应面板灯带闪 1 次 */
-.panel--pulse::before { animation: panel-pulse 160ms var(--ease-standard); }
-@keyframes panel-pulse { from { opacity: 1; filter: none; } 50% { opacity: 0.35; } to { opacity: 0.9; } }
-
-/* ── 5.2 / 7.3 锁定框：四角 L 形角码 + 呼吸描边 ──
-   角码用背景渐变实现（零 DOM、不占布局流）；描边色取 --mech-ok 系。
-   旧 8 段括号背景（.card--selected 原 text-1 色版本）已被本规则覆盖，
-   旧 radar keyframe 保留在文件尾部标 deprecated 作回退路径。 */
-:root {
-  --lock-color: var(--mech-ok);
-  --armor-lock-bg:
-    linear-gradient(var(--lock-color), var(--lock-color)) left 4px top 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) left 4px top 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) right 4px top 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) right 4px top 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) left 4px bottom 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) left 4px bottom 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) right 4px bottom 4px / var(--lock-corner) var(--lock-corner-weight) no-repeat,
-    linear-gradient(var(--lock-color), var(--lock-color)) right 4px bottom 4px / var(--lock-corner-weight) var(--lock-corner) no-repeat,
-    var(--mech-plate);
-}
-.card--selected {
-  background: var(--armor-lock-bg);
-  outline: 1px solid var(--lock-color);
-  animation: lock-breathe var(--motion-breathe) ease-in-out infinite;
-}
-/* 键盘可达（5.2）：focus-visible 与选中同形态，但不播呼吸 */
-.card:focus-visible {
-  outline: 2px solid var(--mech-brand); outline-offset: 2px;
-  background: var(--armor-lock-bg);
-}
-@keyframes lock-breathe {
-  0%, 100% { outline-color: color-mix(in srgb, var(--lock-color) 55%, transparent); }
-  50%      { outline-color: var(--lock-color); }
 }
 
-/* ── 7.4 底部指令条 ── */
-#cmd-bar {
-  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-  height: var(--bar-height); min-width: 380px; max-width: 720px;
-  display: flex; align-items: center; gap: 12px;
-  background: var(--mech-plate);
-  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-lift); padding-right: 8px; z-index: 90;
+/* ── 源站诊断 ── */
+.diag summary { cursor: pointer; color: var(--text-2); }
+.diag summary:hover { color: var(--text-1); }
+.diag-body { margin: 6px 0 4px; }
+.diag-item { border-left: 2px solid var(--border-strong); padding: 4px 0 4px 8px; margin-bottom: 6px; }
+.diag-item--latest { border-left-color: var(--brand); }
+.diag-item pre {
+  margin: 0; white-space: pre-wrap; word-break: break-all;
+  font: 12px/1.6 var(--font-mono);
+  color: var(--text-1);
 }
-#cmd-bar .cmd-lamp { width: 2px; align-self: stretch; background: var(--mech-amber-bg); margin: 6px 0 6px 10px; flex: none; }
-#cmd-bar .cmd-text { flex: 1; font-weight: 600; font-size: var(--fs-body); }
-#cmd-bar .cmd-actions { display: flex; gap: 8px; flex: none; }
-#cmd-bar.cmd-in { animation: cmd-in var(--motion-bar-in) var(--ease-morph-out); }
-#cmd-bar.cmd-out { animation: cmd-out var(--motion-bar-out) var(--ease-morph-in) forwards; }
-@keyframes cmd-in  { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes cmd-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 14px); } }
 
-/* ── 第六章：首行滚动字幕条 ── */
-#marquee-bar {
-  position: relative; display: flex; align-items: center; gap: 8px;
-  height: var(--marquee-height);
-  background: var(--mech-plate);
-  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+/* ── 时间线 ── */
+.tl-band { height: 14px; border-radius: 2px; opacity: 0.85; }
+.tl-band--month {
+  background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgba(0, 0, 0, 0.12) 4px 6px);
+}
+
+/* ── 情报卡片纵向堆叠 ── */
+.card--intel { flex-direction: column; align-items: stretch; }
+.card--intel .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.card--intel .card-title {
+  font-size: var(--fs-card-title); font-weight: 600;
+  white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere;
+}
+.card--intel .mini { overflow-wrap: anywhere; }
+.card--intel .intel-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.card--intel a { overflow-wrap: anywhere; }
+
+/* ── 轻量浮层提示 ── */
+.wb-toast {
+  position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%);
+  max-width: 520px; padding: 10px 16px; z-index: 120;
+  background: var(--bg-card); color: var(--text-1);
+  border: var(--w-rule) solid var(--border-default); border-radius: var(--radius-card);
+  font-size: var(--fs-body); box-shadow: var(--shadow-lift);
+}
+.wb-toast[hidden] { display: none; }
+
+/* ── 网点三级树 ── */
+.tree-city, .tree-district { margin: 2px 0; }
+.tree-city > summary, .tree-district > summary {
+  cursor: pointer; user-select: none; padding: 4px 8px;
+  border-radius: var(--radius-card); list-style: none;
+}
+.tree-city > summary::-webkit-details-marker,
+.tree-district > summary::-webkit-details-marker { display: none; }
+.tree-city > summary:hover, .tree-district > summary:hover { background: var(--bg-inset); }
+.tree-city > summary { font-weight: 600; }
+.tree-city > summary::before, .tree-district > summary::before {
+  content: "▸"; display: inline-block; width: 14px; color: var(--text-3);
+  transition: transform var(--motion-micro) var(--ease-micro);
+}
+.tree-city[open] > summary::before, .tree-district[open] > summary::before { transform: rotate(90deg); }
+.tree-badge {
+  display: inline-block; min-width: 22px; text-align: center; margin-left: 8px;
+  padding: 0 6px; border-radius: 8px; font-family: var(--font-mono); font-size: 11px;
+  background: var(--bg-inset); border: var(--w-rule) solid var(--border-default);
+  color: var(--text-2); vertical-align: middle;
+}
+.tree-district { margin-left: 18px; }
+.tree-dealers { margin: 2px 0 6px 46px; padding: 0; list-style: none; }
+.tree-dealers li { padding: 2px 0; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* ── 首行滚动字幕条（保留 L0；状态灯带语义化） ── */
+#marquee-bar:not([hidden]) {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  min-height: var(--marquee-height); height: auto;
+  background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default); border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-card);
   margin-bottom: var(--sp-4); padding: 0 10px 0 0;
 }
-/* 底部 2px 状态灯带：常态 ok 绿；有严重级在队/在播 → red 常亮（非颜色冗余靠 ▲ 徽标） */
 #marquee-bar::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-  background: var(--mech-ok); border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  background: var(--ok); border-radius: 0 0 var(--radius-panel) var(--radius-panel);
 }
-#marquee-bar.mq-severe::after { background: var(--mech-red-bg); }
-/* 新消息入队：灯带闪 2 次（200ms 亮 / 200ms 灭 ×2），随后回归常态色 */
+#marquee-bar.mq-severe::after { background: var(--warn-red); }
 #marquee-bar.mq-blink-fx::after { animation: marquee-blink calc(var(--motion-marquee-blink) * 2) linear 2; }
 @keyframes marquee-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.1; } }
-
 .mq-channel {
   flex: none; display: inline-flex; align-items: center; gap: 4px;
   padding-left: 16px; font-family: var(--font-mono); font-size: 10px;
-  letter-spacing: 1px; color: var(--mech-text-3);
+  letter-spacing: 1px; color: var(--text-3);
 }
-.mq-alert-badge { color: var(--mech-red-bg); font-size: 12px; font-weight: 700; }
+.mq-alert-badge { color: var(--warn-red); font-size: 12px; font-weight: 700; }
 .mq-viewport {
-  flex: 1; min-width: 0; height: 100%; position: relative; overflow: hidden;
+  flex: 1; min-width: 0; height: var(--marquee-height); position: relative; overflow: hidden;
   cursor: pointer; border-radius: 2px;
 }
-.mq-viewport:focus-visible { outline: 2px solid var(--mech-brand); outline-offset: -2px; }
+.mq-viewport:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .mq-track {
   position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--mech-text-1);
+  white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text-1);
 }
-.mq-track::after { content: " ▸"; color: var(--mech-text-3); font-weight: 400; }
+.mq-track::after { content: " ▸"; color: var(--text-3); font-weight: 400; }
 .mq-track.mq-run { animation: marquee-scroll var(--mq-dur, 12s) linear forwards; will-change: transform; }
 @keyframes marquee-scroll {
   from { transform: translate(var(--mq-from, 100%), -50%); }
   to   { transform: translate(var(--mq-to, -100%), -50%); }
 }
-/* 悬停即停（6.2，pointer: fine 限定）：animation-play-state 保存位移续播 */
 @media (hover: hover) and (pointer: fine) {
   #marquee-bar:hover .mq-track.mq-run { animation-play-state: paused; }
 }
-/* 详情条展开期间无条件暂停（触屏同样生效） */
 #marquee-bar.mq-open .mq-track.mq-run { animation-play-state: paused; }
 .mq-pos {
   flex: none; font-family: var(--font-mono); font-size: 11px;
-  color: var(--mech-text-3); min-width: 28px; text-align: right;
+  color: var(--text-3); min-width: 28px; text-align: right;
 }
-/* 详情条（6.2）：原位展开至 88px，inset 层，含完整内容 + 主操作 */
-.mq-detail {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+.mq-detail:not([hidden]) {
+  position: static; flex: 0 0 100%; width: auto;
   min-height: var(--marquee-detail-height);
-  background: var(--mech-inset);
-  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
-  padding: 10px 14px; z-index: 40;
+  margin: 4px 0 6px 10px;
+  background: var(--bg-inset);
+  border: var(--w-rule) solid var(--border-default); border-radius: var(--radius-panel);
+  padding: 10px 14px; z-index: auto;
   display: flex; flex-direction: column; gap: 8px; justify-content: center;
-  animation: marquee-detail-open var(--motion-marquee-detail) var(--ease-morph-in);
+  animation: marquee-detail-open var(--motion-marquee-detail) var(--ease-standard);
 }
 @keyframes marquee-detail-open {
   from { opacity: 0; transform: translateY(-6px); }
@@ -627,34 +527,34 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
 .mq-detail-body { font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto; }
 .mq-detail-actions { display: flex; gap: 8px; }
 
-/* ── 7.5 通知中心 ── */
+/* ── 通知中心 ── */
 #nc-btn {
   all: unset; cursor: pointer; position: relative;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: var(--radius-badge); color: var(--mech-text-2);
+  width: 28px; height: 28px; border-radius: var(--radius-badge); color: var(--text-2);
 }
-#nc-btn:hover { background: var(--mech-inset); color: var(--mech-text-1); }
+#nc-btn:hover { background: var(--bg-inset); color: var(--text-1); }
 .nc-badge {
   position: absolute; top: -2px; right: -4px; min-width: 14px; height: 14px;
-  border-radius: 7px; background: var(--mech-red-bg); color: var(--mech-red-fg);
+  border-radius: 7px; background: var(--warn-red); color: #FFFFFF;
   font-size: 10px; font-weight: 700; line-height: 14px; text-align: center; padding: 0 3px;
 }
 .nc-panel {
   position: absolute; top: calc(100% + 10px); right: 0; width: 320px; max-height: 380px;
-  overflow: auto; background: var(--mech-plate);
-  border: var(--w-seam) solid var(--mech-seam); border-radius: var(--radius-panel);
+  overflow: auto; background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default); border-radius: var(--radius-panel);
   box-shadow: var(--shadow-lift); padding: 4px; z-index: 80;
 }
-.nc-item { padding: 8px 10px; border-bottom: var(--w-rule) solid var(--mech-seam); cursor: pointer; }
+.nc-item { padding: 8px 10px; border-bottom: var(--w-rule) solid var(--border-default); cursor: pointer; }
 .nc-item:last-child { border-bottom: 0; }
-.nc-item:hover { background: var(--mech-inset); }
-.nc-item .nc-time { font-family: var(--font-mono); font-size: 10px; color: var(--mech-text-3); margin-right: 6px; }
+.nc-item:hover { background: var(--bg-inset); }
+.nc-item .nc-time { font-family: var(--font-mono); font-size: 10px; color: var(--text-3); margin-right: 6px; }
 .nc-item .nc-badge-lv { font-size: 10px; padding: 1px 5px; border-radius: 2px; margin-right: 6px; }
-.nc-item .nc-lv-severe { background: var(--mech-red-bg); color: var(--mech-red-fg); }
-.nc-item .nc-lv-high { background: var(--mech-amber-bg); color: var(--mech-amber-fg); }
-.nc-item .nc-lv-normal { background: var(--mech-inset); color: var(--mech-text-2); }
+.nc-item .nc-lv-severe { background: var(--red-bg); color: var(--red-fg); }
+.nc-item .nc-lv-high { background: var(--amber-bg); color: var(--amber-fg); }
+.nc-item .nc-lv-normal { background: var(--bg-inset); color: var(--text-2); }
 .nc-item .nc-text { display: block; margin-top: 3px; font-size: 12px; }
-.nc-empty { padding: 20px; text-align: center; color: var(--mech-text-3); font-size: 12px; }
+.nc-empty { padding: 20px; text-align: center; color: var(--text-3); font-size: 12px; }
 
 /* 视觉隐藏（aria-live 播报区专用） */
 .sr-only {
@@ -662,17 +562,48 @@ main[data-morph="v"] .armor-flip { animation-name: armor-flip-in-v; }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-/* ── v2.2 全线降级（prefers-reduced-motion）：80ms 淡入淡出 / 字幕停滚 /
-   呼吸停用 / 降级态静音（静音在 JS 判定）── */
+/* ── 底部指令条（保留 L0；确认语义条琥珀） ── */
+#cmd-bar:not([hidden]) {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  height: var(--bar-height); min-width: 380px; max-width: 720px;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default); border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-lift); padding-right: 8px; z-index: 90;
+}
+#cmd-bar .cmd-lamp { width: 3px; align-self: stretch; background: var(--warn-amber); border-radius: 2px; margin: 8px 0 8px 10px; flex: none; }
+#cmd-bar .cmd-text { flex: 1; font-weight: 600; font-size: var(--fs-body); }
+#cmd-bar .cmd-actions { display: flex; gap: 8px; flex: none; }
+#cmd-bar.cmd-in { animation: cmd-in var(--motion-bar-in) var(--ease-standard); }
+#cmd-bar.cmd-out { animation: cmd-out var(--motion-bar-out) var(--ease-standard) forwards; }
+@keyframes cmd-in  { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes cmd-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 14px); } }
+
+/* ── KPI 数字：mono · 28px · tabular ── */
+.kpi-num, .kpi b, .kpi-value {
+  font-family: var(--font-mono); font-size: var(--fs-kpi);
+  font-weight: 600; line-height: 1.15;
+}
+
+/* ── 图标（图标本体归图标替换单 7704272421624220934；此处只定商务配色与尺寸） ── */
+.ico {
+  width: var(--icon-size); height: var(--icon-size);
+  display: inline-block; vertical-align: -3px;
+  stroke: currentColor; stroke-width: var(--icon-stroke);
+  stroke-linecap: round; stroke-linejoin: round;
+  fill: none; flex: none;
+}
+.ico .ic-fill { fill: var(--icon-fill); stroke: none; }
+.nav .ico, #nc-btn .ico { color: var(--icon-line); }
+
+/* ── 降级（prefers-reduced-motion）：动效只留颜色变化，滚动字幕静态显示 ── */
 @media (prefers-reduced-motion: reduce) {
-  .airlock-close, .airlock-open { animation: reflow-fade var(--motion-degraded) linear forwards; }
-  .airlock-lock { animation: none; }
-  .armor-flip { animation: armor-flip-in var(--motion-degraded) linear both; animation-delay: 0ms !important; }
+  :root { --motion-view: 80ms; --motion-reflow: 80ms; --motion-item: 80ms; }
+  .view-fade, .reflow-fade { animation: none; }
   #marquee-bar .mq-track { animation: none !important; transform: translateY(-50%); }
   #marquee-bar .mq-track.mq-run { left: 10px; right: 10px; overflow: hidden; text-overflow: ellipsis; }
   #marquee-bar.mq-blink-fx::after { animation: none; }
   .mq-detail { animation: none; }
-  .card--selected { animation: none; }
   #cmd-bar.cmd-in, #cmd-bar.cmd-out { animation: none; }
-  .panel--pulse::before { animation: none; }
+  .card:hover { transform: none; }
 }

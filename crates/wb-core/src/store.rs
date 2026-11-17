@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, OpenFlags};
 // ───────────────────────────── 常量与类型 ─────────────────────────────
 
 /// 构建时嵌入的目标 schema 版本（架构 §4.8）。
-pub const TARGET_SCHEMA_VERSION: i64 = 2;
+pub const TARGET_SCHEMA_VERSION: i64 = 3;
 
 /// L1 写前快照保留份数。
 pub const L1_KEEP: usize = 20;
@@ -434,11 +434,40 @@ INSERT OR IGNORE INTO domain_board (code, zh_name, sheet_name) VALUES
     ('policy',   '政策申报', '政策项目申报');
 "#;
 
+/// 迁移 v3（v2.3.0 招标情报）：线索池表。
+/// - `dedup_key` 即 `lead_dedup` 产出的三层去重键（code:/fp:/body: 前缀），
+///   是 ext_record.biz_key 的同一口径——线索池零暗重复的闸门条件。
+/// - 拉链证据在 ext_record（biz_key + content_hash + is_current），
+///   本表只放线索生命周期（发现 → 确认/否决 → 转待办）。
+/// - 只增不改：v1/v2 的表一律不动。
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS intel_lead (
+    dedup_key            TEXT PRIMARY KEY,
+    dedup_layer          TEXT NOT NULL,
+    origin               TEXT NOT NULL,
+    title                TEXT NOT NULL,
+    org                  TEXT,
+    area                 TEXT,
+    date                 TEXT,
+    url                  TEXT NOT NULL,
+    amount               TEXT,
+    state                TEXT NOT NULL DEFAULT 'discovered',
+    needs_primary_confirm INTEGER NOT NULL DEFAULT 0,
+    first_seen           TEXT NOT NULL,
+    state_changed_at     TEXT,
+    todo_id              TEXT,
+    todo_json            TEXT,
+    record_id            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_intel_lead_state ON intel_lead(state);
+"#;
+
 /// 迁移清单。**已发布的脚本永不修改**（架构 §4.8-5）。
 pub fn migrations() -> Vec<Migration> {
     vec![
         Migration { version: 1, name: "0001_init", sql: SCHEMA_V1 },
         Migration { version: 2, name: "0002_sync_offline", sql: SCHEMA_V2 },
+        Migration { version: 3, name: "0003_intel_leads", sql: SCHEMA_V3 },
     ]
 }
 
