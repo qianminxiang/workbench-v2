@@ -76,19 +76,25 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.base_tag }}"
-          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = "latest" }
-          Write-Host "基线 tag 目标：$tag"
           New-Item -ItemType Directory -Force -Path assets | Out-Null
-          # 先取 latest.json（匿名），拿到真实版本号与真实资产 URL
-          # 注意 URL 形式：必须是 /releases/download/<tag>/<asset>。
-          # 早先写成 /releases/<tag>/download/latest.json（少了一层 download）——
-          # 该形式对 github.com 抛 502、对部分 tag 抛 404，curl --fail 在某些 404 上
-          # 仍会拿到错误页正文而不非零退出，于是失败点被误报成"latest.json 缺 version 字段"，
-          # 看起来像清单内容坏，实际是地址拼错。这里同时补上显式状态码断言。
-          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/latest.json"
+          # 先取 latest.json（匿名），拿到真实版本号与真实资产 URL。
+          # 两种 URL 形式不可混用，区别只在 download 与 latest 的位置：
+          #   · 指定 tag：/releases/download/<tag>/<asset>
+          #   · 取最新版：/releases/latest/download/<asset>
+          # "latest" 不是真实 tag（仓库 10 个 tag 里没有它，/releases/tags/latest 亦 404），
+          # 把它塞进 tag 位会拼成 /releases/download/latest/<asset>，该地址确定性无效
+          # （实测 404，偶发 502）。此处按 input 说明「留空则取 latest」走 latest 形式。
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json"
+            $tagLabel = "latest（留空，取最新 Release）"
+          } else {
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/latest.json"
+            $tagLabel = $tag
+          }
+          Write-Host "基线 tag 目标：$tagLabel"
           $code = curl.exe -sS -L --max-time 120 -o "assets/latest.json" -w "%{http_code}" $url
           Write-Host "latest.json 下载：HTTP $code  $url"
-          if ([int]$code -ne 200) { throw "下载 latest.json 失败：HTTP $code（tag=$tag，地址=$url）" }
+          if ([int]$code -ne 200) { throw "下载 latest.json 失败：HTTP $code（tag=$tagLabel，地址=$url）" }
           $j = Get-Content "assets/latest.json" -Raw | ConvertFrom-Json
           $baseVer = $j.version
           if ([string]::IsNullOrWhiteSpace($baseVer)) { throw "latest.json 缺 version 字段" }
@@ -487,8 +493,8 @@ jobs:
           "WB_NEW_IDENT=$($c.identifier)"    | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
           Write-Host "新包：name=$($c.productName) version=$($c.version) id=$($c.identifier)"
 
-      # ── 构建并安装 v2.2.1（新名）──
-      - name: 构建新包 v2.2.1（签名私钥走环境变量）
+      # ── 构建并安装新包（版本取自 tauri.conf.json）──
+      - name: 构建新包（版本取自 tauri.conf.json，签名私钥走环境变量）
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -546,7 +552,7 @@ jobs:
           $before | ConvertTo-Json -Depth 4 | Write-Host
 
       # ── 走自动更新路径安装新包（/P /UPDATE /R，与线上用户完全一致）──
-      - name: 以自动更新方式装 v2.2.1（passive + UPDATE + 重启）
+      - name: 以自动更新方式装新包（passive + UPDATE + 重启）
         shell: pwsh
         run: |
           # 这是线上用户的真实到达方式：tauri 插件拉起安装器时带 /P /UPDATE /R。
