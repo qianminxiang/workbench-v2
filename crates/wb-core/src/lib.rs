@@ -25,6 +25,7 @@ pub mod update;
 pub mod voice;
 pub mod lead_todo;
 pub mod intel_source;
+pub mod intel_stage;
 pub mod intel_store;
 pub mod subsidy_export;
 

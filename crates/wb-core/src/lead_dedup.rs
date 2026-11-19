@@ -266,7 +266,12 @@ where
     // 已有池里的原生 ID 也需建立索引（靠 key 前缀还原不可靠，故由调用方在 existing 中带上）
     let mut out = Vec::new();
     for inp in inputs {
-        let code = extract_project_code(&format!("{}{}", inp.title, inp.body));
+        // **v3.2.0 修正**：标题与正文之间必须留分隔符。
+        // 直接拼接时，正文末尾的编号会把标题开头的 ASCII 一起吞进 token——
+        // 实测「正文=项目编号：TLTRZB【2026】074」+「标题=XX无人机…」→ 抽出
+        // `tltrzb2026074xx`，而同项目另一条（标题以中文开头）抽出 `tltrzb2026074`，
+        // 同一项目被拆成两个键、聚合视图失效。换行符让 take_code_token 在此断开。
+        let code = extract_project_code(&format!("{}\n{}", inp.title, inp.body));
         let title_norm = normalize_title(&inp.title);
 
         // L1：同站原生 ID

@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, OpenFlags};
 // ───────────────────────────── 常量与类型 ─────────────────────────────
 
 /// 构建时嵌入的目标 schema 版本（架构 §4.8）。
-pub const TARGET_SCHEMA_VERSION: i64 = 3;
+pub const TARGET_SCHEMA_VERSION: i64 = 4;
 
 /// L1 写前快照保留份数。
 pub const L1_KEEP: usize = 20;
@@ -462,12 +462,33 @@ CREATE TABLE IF NOT EXISTS intel_lead (
 CREATE INDEX IF NOT EXISTS idx_intel_lead_state ON intel_lead(state);
 "#;
 
+/// 迁移 v4（v3.2.0 情报项目阶段聚合）：ext_record 增补阶段三列 + 公告签名列。
+///
+/// - `stage` / `stage_source` / `stage_reason`：阶段与判据来源，口径见 `intel_stage`。
+///   列只存短码（`intent`/`review`/`contract`/`acceptance`/`operation`/`unknown`），
+///   中文标签由界面按枚举取值——库里不存展示文本，避免改文案就要跑数据迁移。
+/// - `ann_sig`：**公告签名**（阶段 + 发布日期）。这是 v3.2.0 一个必要修正：
+///   v3.1.0 的 L3 把「同一项目编号」直接当作记录身份，导致同一项目的招标公告与
+///   中标结果公告被合并成一行、后者内容只剩一个 `alias_urls` 条目（实测见本版
+///   `tests/project_timeline.rs`）。加签名后「同项目不同公告」各成一行，
+///   「同一公告的跨源转载」仍因签名相同而合并——去重语义不变，粒度修正。
+/// - `ann_sig` 建索引：聚合查询按 (biz_key, ann_sig) 定位节点。
+/// - 只增不改：0001–0003 的表结构与数据一律不动，本脚本只 ADD COLUMN 与建索引。
+const SCHEMA_V4: &str = r#"
+ALTER TABLE ext_record ADD COLUMN stage TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE ext_record ADD COLUMN stage_source TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE ext_record ADD COLUMN stage_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE ext_record ADD COLUMN ann_sig TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_ext_record_proj ON ext_record(biz_key, ann_sig);
+"#;
+
 /// 迁移清单。**已发布的脚本永不修改**（架构 §4.8-5）。
 pub fn migrations() -> Vec<Migration> {
     vec![
         Migration { version: 1, name: "0001_init", sql: SCHEMA_V1 },
         Migration { version: 2, name: "0002_sync_offline", sql: SCHEMA_V2 },
         Migration { version: 3, name: "0003_intel_leads", sql: SCHEMA_V3 },
+        Migration { version: 4, name: "0004_intel_stage", sql: SCHEMA_V4 },
     ]
 }
 

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::intel::IntelItem;
 use crate::lead_dedup::{dedup_batch, DedupAction, DedupInput, DedupKey, DedupLayer};
+use crate::intel_stage::{announcement_signature, stage_from_text, Stage, StageSource};
 use crate::lead_todo::{self, Lead, LeadState, LeadTodo, Origin, TodoReject};
 use crate::store::{now_iso_pub, Store, StoreError};
 
@@ -102,6 +103,10 @@ pub fn persist_fetch(
     let tx = conn.unchecked_transaction()?;
 
     // 1) 现有池：全部 current biz_key（跨源，L3/L2 是跨源判定）
+    //
+    // v3.2.0：biz_key 的粒度从「项目」细化为「公告节点」（`code:<编号>#<阶段>|<日期>`），
+    // 所以这里**同时登记项目键与节点键**：项目键让 L3 判据照旧能命中（同一项目跨源、
+    // 跨阶段都先归到同一个项目），节点键让 L2/L1 的既有语义不变。
     let mut existing: BTreeMap<String, DedupKey> = BTreeMap::new();
     {
         let mut stmt = tx.prepare("SELECT biz_key FROM ext_record WHERE is_current = 1")?;
@@ -109,6 +114,13 @@ pub fn persist_fetch(
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<_, _>>()?;
         for k in keys {
+            let (proj, _sig) = split_project_key(&k);
+            if !proj.is_empty() && !existing.contains_key(proj) {
+                existing.insert(
+                    proj.to_string(),
+                    DedupKey { key: proj.to_string(), layer: DedupLayer::ProjectCode },
+                );
+            }
             let layer = layer_of_key(&k);
             existing.insert(k.clone(), DedupKey { key: k, layer });
         }
@@ -121,111 +133,82 @@ pub fn persist_fetch(
             site_id: it.site_id.clone(),
             native_id: it.key.clone(),
             title: it.title.clone(),
-            body: format!("{}{}", it.body_head, it.title),
+            // 分隔符理由同 lead_dedup::dedup_batch：避免正文编号吞掉标题开头 ASCII
+            body: format!("{}\n{}", it.body_head, it.title),
             date: it.date.clone(),
         })
         .collect();
     let decisions = dedup_batch(&existing, inputs.iter());
 
-    // 本批次新插入的链：biz_key → row_id（后续 Merge 目标可能在本批次内）
-    let mut fresh: BTreeMap<String, String> = BTreeMap::new();
-
     for (d, it) in decisions.iter().zip(items.iter()) {
         let hash = content_hash_of(it);
-        match &d.action {
-            DedupAction::Insert { key } => {
-                // 同 biz_key 已有链（历史轮次）→ 按 content_hash 分流：不变 / 封旧开新
-                let prior: Option<(String, String)> = {
-                    let mut stmt = tx.prepare(
-                        "SELECT id, content_hash FROM ext_record WHERE source_id = ?1 AND biz_key = ?2 AND is_current = 1",
-                    )?;
-                    let mut rows = stmt.query(params![it.site_id, key.key])?;
-                    match rows.next()? {
-                        Some(r) => Some((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                        None => None,
+        // dedup 判据给出的「项目键」：Insert 时是新建键，Merge 时是被并入的项目键。
+        let project_key = match &d.action {
+            DedupAction::Insert { key } => key.key.clone(),
+            DedupAction::Merge { with, .. } => with.clone(),
+        };
+        let proj = split_project_key(&project_key).0.to_string();
+
+        // 阶段判据：A 路线（文本抽取）在落库时定；判不出就如实落 unknown，
+        // B 路线（启发式）留到查询期做——它需要「项目内已有多条」这个上下文，
+        // 且不能让阶段依赖抓取批次顺序（见 intel_stage 模块文档）。
+        let (stage, source, reason) = match stage_from_text(&it.title, &it.body_head) {
+            Some((st, w)) => (st, StageSource::Rule, format!("标题/正文命中「{}」", w)),
+            None => (Stage::Unknown, StageSource::Unknown, String::new()),
+        };
+        let sig = announcement_signature(stage, &it.date);
+        let node_key = node_key_of(&project_key, &sig);
+
+        // 节点定位：**同一公告**（同项目同阶段同日期）才合并；同项目的其它公告各成一行。
+        let prior: Option<(String, String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, content_hash, record_json FROM ext_record
+                  WHERE biz_key = ?1 AND is_current = 1 LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![node_key])?;
+            match rows.next()? {
+                Some(r) => Some((r.get(0)?, r.get(1)?, r.get(2)?)),
+                None => None,
+            }
+        };
+
+        match prior {
+            Some((old_id, old_hash, old_json)) => {
+                let prev: IntelItem = serde_json::from_str(&old_json)
+                    .map_err(|e| StoreError::Sqlite(e.to_string()))?;
+                if prev.site_id == it.site_id && prev.url == it.url {
+                    // 同一条公告被重抓：内容没变即幂等，变了封旧开新
+                    if old_hash == hash {
+                        rep.unchanged += 1;
+                    } else {
+                        tx.execute(
+                            "UPDATE ext_record SET valid_to = ?1, is_current = 0 WHERE id = ?2",
+                            params![ts, old_id],
+                        )?;
+                        insert_chain(&tx, it, &node_key, &hash, &ts, stage, source, &reason, &sig)?;
+                        rep.superseded += 1;
                     }
-                };
-                match prior {
-                    Some((old_id, old_hash)) => {
-                        if old_hash == hash {
-                            rep.unchanged += 1;
-                        } else {
-                            // 拉链封旧开新：内容变了才动（manual_verdict / first_seen 不进哈希）
-                            tx.execute(
-                                "UPDATE ext_record SET valid_to = ?1, is_current = 0 WHERE id = ?2",
-                                params![ts, old_id],
-                            )?;
-                            let row_id = insert_chain(&tx, it, &key.key, &hash, &ts)?;
-                            fresh.insert(key.key.clone(), row_id);
-                            rep.superseded += 1;
-                        }
-                    }
-                    None => {
-                        let row_id = insert_chain(&tx, it, &key.key, &hash, &ts)?;
-                        fresh.insert(key.key.clone(), row_id);
-                        rep.inserted += 1;
-                    }
-                }
-                // 线索池：两级命中（Title/BodyVerified → relevance Core；疑似 → Suspect 不进池）
-                // + 主源/企业官网才独立成线索；聚合站是辅助层。
-                if it.relevance == crate::intel::Relevance::Core && enters_pool_by_reasons(it) {
-                    let origin = origin_of_site(&it.site_id);
-                    upsert_lead(&tx, it, &key.key, &d, origin, &ts)?;
-                    rep.pool_new += 1;
                 } else {
-                    rep.pool_skipped += 1;
+                    // 跨源副本（同项目同阶段同日期、不同链接）：链接维度回填，不建新节点
+                    rep.merged += 1;
+                    append_alias_url(&tx, &old_id, &it.url, &it.site_id)?;
                 }
             }
-            DedupAction::Merge { with, .. } => {
-                // 目标行（本批新插 or 库里已有）：(row_id, content_hash, record_json)
-                let target: Option<(String, String, String)> = match fresh.get(with) {
-                    Some(id) => {
-                        let mut stmt = tx.prepare("SELECT content_hash, record_json FROM ext_record WHERE id = ?1")?;
-                        let mut rows = stmt.query(params![id])?;
-                        match rows.next()? {
-                            Some(r) => Some((id.clone(), r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                            None => None,
-                        }
+            None => {
+                insert_chain(&tx, it, &node_key, &hash, &ts, stage, source, &reason, &sig)?;
+                rep.inserted += 1;
+                // 线索池仍按**项目**一条（dedup_key = 项目键）：
+                // 同一项目的后续阶段公告不重复造线索，但其节点已落 ext_record 供时间轴使用。
+                if it.relevance == crate::intel::Relevance::Core && enters_pool_by_reasons(it) {
+                    let origin = origin_of_site(&it.site_id);
+                    let n = upsert_lead(&tx, it, &proj, &d, origin, &ts)?;
+                    if n > 0 {
+                        rep.pool_new += 1;
+                    } else {
+                        rep.pool_skipped += 1;
                     }
-                    None => {
-                        let mut stmt = tx.prepare(
-                            "SELECT id, content_hash, record_json FROM ext_record WHERE biz_key = ?1 AND is_current = 1 LIMIT 1",
-                        )?;
-                        let mut rows = stmt.query(params![with])?;
-                        match rows.next()? {
-                            Some(r) => Some((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-                            None => None,
-                        }
-                    }
-                };
-                match target {
-                    Some((tid, thash, tjson)) => {
-                        let titem: IntelItem = serde_json::from_str(&tjson)
-                            .map_err(|e| StoreError::Sqlite(e.to_string()))?;
-                        if titem.site_id == it.site_id && titem.url == it.url {
-                            // 自身链重抓（dedup_batch 对库里已有 key 判 Merge）：按内容分流
-                            if thash == hash {
-                                rep.unchanged += 1;
-                            } else {
-                                tx.execute(
-                                    "UPDATE ext_record SET valid_to = ?1, is_current = 0 WHERE id = ?2",
-                                    params![ts, tid],
-                                )?;
-                                insert_chain(&tx, it, with, &hash, &ts)?;
-                                rep.superseded += 1;
-                            }
-                        } else {
-                            // 跨源副本：链接维度回填（幂等：已存在不重复加）
-                            rep.merged += 1;
-                            append_alias_url(&tx, &tid, &it.url, &it.site_id)?;
-                        }
-                    }
-                    None => {
-                        // 目标链不存在（L2 标题窗命中的 key 未落库过）：保守建新链
-                        let row_id = insert_chain(&tx, it, with, &hash, &ts)?;
-                        fresh.insert(with.clone(), row_id);
-                        rep.inserted += 1;
-                    }
+                } else {
+                    rep.pool_skipped += 1;
                 }
             }
         }
@@ -255,22 +238,52 @@ pub fn origin_of_site(site_id: &str) -> Origin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_chain(
     tx: &Connection,
     it: &IntelItem,
     biz_key: &str,
     hash: &str,
     ts: &str,
+    stage: Stage,
+    source: StageSource,
+    reason: &str,
+    sig: &str,
 ) -> Result<String, StoreError> {
     let row_id = format!("{}|{}|{}", it.site_id, biz_key, &hash[..12]);
     let json = serde_json::to_string(it).map_err(|e| StoreError::Sqlite(e.to_string()))?;
     tx.execute(
         "INSERT OR REPLACE INTO ext_record
-           (id, source_id, biz_key, record_json, valid_from, valid_to, is_current, content_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 1, ?6)",
-        params![row_id, it.site_id, biz_key, json, ts, hash],
+           (id, source_id, biz_key, record_json, valid_from, valid_to, is_current, content_hash,
+            stage, stage_source, stage_reason, ann_sig)
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 1, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            row_id, it.site_id, biz_key, json, ts, hash,
+            stage.code(), source.code(), reason, sig
+        ],
     )?;
     Ok(row_id)
+}
+
+/// 项目键 ↔ 节点键的拆分。
+///
+/// 节点键格式：`<项目键>#<阶段码>|<日期>`，例如 `code:tltrzb2026074#review|2026-10-20`。
+/// 没有 `#` 的是老库（v3.1.0 及以前）的项目级键——原样当作项目键，签名取空串，
+/// 这样旧库数据读出来仍然可用（不要求存量回填即可上线）。
+pub fn split_project_key(k: &str) -> (&str, &str) {
+    match k.find('#') {
+        Some(i) => (&k[..i], &k[i + 1..]),
+        None => (k, ""),
+    }
+}
+
+/// 由项目键与公告签名构造节点键。项目键为空时退化为纯签名节点键（无编号的公告）。
+fn node_key_of(project_key: &str, sig: &str) -> String {
+    let proj = split_project_key(project_key).0;
+    if proj.is_empty() {
+        return project_key.to_string();
+    }
+    format!("{}#{}", proj, sig)
 }
 
 /// 链接维度回填：把并入方的 URL 追加进目标链的 alias_urls（幂等）。
@@ -322,7 +335,7 @@ fn upsert_lead(
     d: &crate::lead_dedup::DedupDecision,
     origin: Origin,
     ts: &str,
-) -> Result<(), StoreError> {
+) -> Result<usize, StoreError> {
     let layer = match &d.action {
         DedupAction::Insert { key } => key.layer.code(),
         DedupAction::Merge { layer, .. } => layer.code(),
@@ -330,7 +343,8 @@ fn upsert_lead(
     let needs_primary = matches!(origin, Origin::Auxiliary);
     // INSERT OR IGNORE：人工已裁决（confirmed/rejected/todoed）的线索，
     // 再次抓到同 key 不覆盖生命周期字段（AC-2-7 在线索维度的对应约束）。
-    tx.execute(
+    // 返回值：影响行数（0 = 已存在被 IGNORE，调用方据此区分「新进池」与「已在池」）。
+    let n = tx.execute(
         "INSERT OR IGNORE INTO intel_lead
            (dedup_key, dedup_layer, origin, title, org, area, date, url, amount,
             state, needs_primary_confirm, first_seen, state_changed_at)
@@ -349,7 +363,7 @@ fn upsert_lead(
             ts,
         ],
     )?;
-    Ok(())
+    Ok(n)
 }
 
 // ───────────────────────────── 回读（验收1 证据） ─────────────────────────────
@@ -581,6 +595,261 @@ pub fn dedup_audit(store: &Store) -> Result<(usize, usize, usize, usize), StoreE
         |r| r.get(0),
     )?;
     Ok((recs as usize, keys as usize, leads as usize, lead_keys as usize))
+}
+
+// ───────────────────── 项目聚合查询（v3.2.0 情报「进程合一」） ─────────────────────
+
+/// 时间轴上的一个节点（= 一条公告）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectNode {
+    /// 节点行 id（ext_record.id）
+    pub record_id: String,
+    pub title: String,
+    pub date: String,
+    /// 阶段短码 + 中文标签（界面直接用 label，不用再查枚举）
+    pub stage: String,
+    pub stage_label: String,
+    /// 进程序号（`unknown` 为 None，界面据此判断是否画空节点 / 挂待确认）
+    pub stage_order: Option<u8>,
+    /// 判据来源：rule / heuristic / manual / unknown
+    pub stage_source: String,
+    /// 判据依据（命中词 / 兜底理由 / 人工改判说明）
+    pub stage_reason: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub url: String,
+    /// 该节点合并的其他源链接（跨源转载副本）
+    pub alias_urls: Vec<String>,
+    pub org: String,
+    pub area: String,
+    pub amount: Option<String>,
+    /// 正文头部（供界面「展开看原文摘要」，不落全文）
+    pub body_head: String,
+    pub first_seen: String,
+}
+
+/// 一个项目的聚合视图。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectAggregate {
+    /// 项目键（`code:<归一编号>`；无编号时为 `fp:`/`body:` 键）
+    pub project_key: String,
+    pub dedup_layer: String,
+    /// 项目编号原文（从任一条记录标题/正文抽到的归一值；无编号为空）
+    pub project_code: String,
+    /// 项目名（取最早节点的标题，去掉公告类型后缀；判不出时用最早标题原文）
+    pub project_name: String,
+    pub org: String,
+    pub area: String,
+    /// 当前阶段 = 时间轴上序号最大的已知阶段（无已知阶段时为「阶段未知」）
+    pub current_stage: String,
+    pub current_stage_label: String,
+    pub current_stage_order: Option<u8>,
+    /// 时间轴节点，按 (阶段序, 日期) 排序；`unknown` 节点排在末尾但不丢弃
+    pub nodes: Vec<ProjectNode>,
+    /// 最早 / 最近公告日期
+    pub first_date: String,
+    pub last_date: String,
+    /// 节点数（含阶段未知节点）
+    pub node_count: usize,
+    /// 已知阶段覆盖到的最大序号；跳段计算用
+    pub max_stage_order: Option<u8>,
+    /// 按阶段序跳过的段数（如 0→1→3 跳过 1 段）；0 表示无跳段
+    pub skipped_stages: usize,
+}
+
+/// 把标题里的公告类型后缀剥掉，得到项目名。
+/// 只剥已知类型词（与 `intel_stage::RULES` 同源），不做通用的「去括号」猜测。
+fn project_name_of(title: &str) -> String {
+    let mut t = title.to_string();
+    for suffix in [
+        "中标（成交）结果公告", "中标(成交)结果公告", "中标结果公告", "成交结果公告",
+        "中标公告", "成交公告", "中选公告", "中选结果", "合同公告", "合同公示",
+        "采购意向公告", "意向公开", "意向公告", "需求公示",
+        "履约验收公告", "验收公告", "验收结果公告", "项目验收公告",
+        "运维服务公告", "运维公告",
+        "招标公告", "采购公告", "竞争性磋商公告", "竞争性谈判公告", "询价公告",
+        "单一来源公告", "资格预审公告", "更正公告", "变更公告", "澄清公告", "答疑公告",
+        "磋商公告", "谈判公告",
+    ] {
+        if let Some(pos) = t.find(suffix) {
+            // 只在后缀位于尾部（允许尾部有空白/标点）时才剥，避免剥掉项目名中间的字
+            let tail: String = t[pos + suffix.len()..].to_string();
+            if tail.trim().chars().all(|c| !c.is_alphanumeric()) {
+                t = t[..pos].to_string();
+                break;
+            }
+        }
+    }
+    let cleaned = t.trim().trim_end_matches(['-', '—', '·', ':', '：', '（', '(']).trim();
+    if cleaned.is_empty() {
+        title.trim().to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// **按项目聚合查询**：一次返回同一项目所有阶段公告组成的时间轴。
+///
+/// 数据来源全部是 `ext_record` 的 current 行（拉链的当前层），不重新抓取、不读内存。
+/// - 项目划分用 `dedup_key` 的项目键（`code:` / `fp:` / `body:` 前缀，来自 `lead_dedup`）；
+/// - 节点顺序：已知阶段按 `Stage::order()`，未知阶段排在其后按日期；
+/// - `project_code` 从项目键还原（`code:` 前缀去掉即为归一编号）。
+pub fn read_project_timeline(
+    store: &Store,
+    project_key: &str,
+) -> Result<Option<ProjectAggregate>, StoreError> {
+    let conn = store.conn();
+    // 项目键可能是「项目级键」（无 #），也可能是某个节点键；统一按项目前缀范围匹配。
+    let proj = split_project_key(project_key).0.to_string();
+    let mut stmt = conn.prepare(
+        "SELECT id, biz_key, record_json, stage, stage_source, stage_reason, ann_sig, valid_from
+           FROM ext_record
+          WHERE is_current = 1 AND (biz_key = ?1 OR biz_key LIKE ?1 || '#%')
+          ORDER BY valid_from ASC, id ASC",
+    )?;
+    let rows: Vec<(String, String, String, String, String, String, String, String)> = stmt
+        .query_map(params![proj], |r| {
+            Ok((
+                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut nodes: Vec<ProjectNode> = Vec::with_capacity(rows.len());
+    for (id, _biz, json, stage_c, src_c, reason, _sig, _vf) in rows {
+        let it: IntelItem = serde_json::from_str(&json).map_err(|e| StoreError::Sqlite(e.to_string()))?;
+        let stage = Stage::from_code(&stage_c);
+        let alias_urls = serde_json::from_str::<serde_json::Value>(&json)
+            .ok()
+            .and_then(|v| v.get("alias_urls").and_then(|a| a.as_array()).cloned())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        nodes.push(ProjectNode {
+            record_id: id,
+            title: it.title.clone(),
+            date: it.date.clone(),
+            stage: stage.code().to_string(),
+            stage_label: stage.label().to_string(),
+            stage_order: stage.order(),
+            stage_source: src_c,
+            stage_reason: reason,
+            source_id: it.site_id.clone(),
+            source_name: it.site_name.clone(),
+            url: it.url.clone(),
+            alias_urls,
+            org: it.org.clone(),
+            area: it.area.clone(),
+            amount: it.amount.clone(),
+            body_head: it.body_head.clone(),
+            first_seen: it.first_seen.clone(),
+        });
+    }
+
+    // 排序：已知阶段按进程序，再按日期；未知阶段（order=None）整段排最后，按日期。
+    nodes.sort_by(|a, b| {
+        match (a.stage_order, b.stage_order) {
+            (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.date.cmp(&b.date)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.date.cmp(&b.date),
+        }
+        .then_with(|| a.date.cmp(&b.date))
+        .then_with(|| a.record_id.cmp(&b.record_id))
+    });
+
+    let first_date = nodes.iter().map(|n| n.date.clone()).min().unwrap_or_default();
+    let last_date = nodes.iter().map(|n| n.date.clone()).max().unwrap_or_default();
+    let max_stage_order = nodes.iter().filter_map(|n| n.stage_order).max();
+    // 跳段：从 0 到 max_stage_order 之间，有哪几段没有任何节点
+    let skipped_stages = match max_stage_order {
+        Some(mx) => {
+            let present: std::collections::BTreeSet<u8> =
+                nodes.iter().filter_map(|n| n.stage_order).collect();
+            (0..=mx).filter(|o| !present.contains(o)).count()
+        }
+        None => 0,
+    };
+    let (cur_stage, cur_label, cur_order) = match max_stage_order {
+        Some(mx) => {
+            let st = nodes.iter().find(|n| n.stage_order == Some(mx)).map(|n| n.stage.clone()).unwrap_or_else(|| "unknown".to_string());
+            let s = Stage::from_code(&st);
+            (st.to_string(), s.label().to_string(), Some(mx))
+        }
+        None => ("unknown".to_string(), Stage::Unknown.label().to_string(), None),
+    };
+
+    let first_node = nodes.first().cloned();
+    let (project_name, org, area, layer) = match first_node {
+        Some(n) => (
+            project_name_of(&n.title),
+            n.org.clone(),
+            n.area.clone(),
+            if proj.starts_with("code:") { "L3".to_string() } else { "L2".to_string() },
+        ),
+        None => (String::new(), String::new(), String::new(), "L2".to_string()),
+    };
+    let project_code = proj.strip_prefix("code:").unwrap_or("").to_string();
+    let node_count = nodes.len();
+
+    Ok(Some(ProjectAggregate {
+        project_key: proj,
+        dedup_layer: layer,
+        project_code,
+        project_name,
+        org,
+        area,
+        current_stage: cur_stage,
+        current_stage_label: cur_label,
+        current_stage_order: cur_order,
+        nodes,
+        first_date,
+        last_date,
+        node_count,
+        max_stage_order,
+        skipped_stages,
+    }))
+}
+
+/// 列出全部项目（每个项目一条聚合视图），按最近公告日期倒序。
+///
+/// `stage` 过滤：只返回「当前阶段 = 指定阶段」的项目（界面按阶段筛选用）。
+/// `limit = 0` 表示不限。
+pub fn list_projects(
+    store: &Store,
+    stage: Option<Stage>,
+    limit: usize,
+) -> Result<Vec<ProjectAggregate>, StoreError> {
+    let conn = store.conn();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT biz_key FROM ext_record WHERE is_current = 1 ORDER BY biz_key",
+    )?;
+    let keys: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    let mut out: Vec<ProjectAggregate> = Vec::new();
+    for k in keys {
+        let proj = split_project_key(&k).0.to_string();
+        // 同一个项目会被多个节点键重复列出：按项目键去重
+        if out.iter().any(|p| p.project_key == proj) {
+            continue;
+        }
+        if let Some(p) = read_project_timeline(store, &proj)? {
+            if let Some(want) = stage {
+                if p.current_stage != want.code() {
+                    continue;
+                }
+            }
+            out.push(p);
+        }
+    }
+    out.sort_by(|a, b| b.last_date.cmp(&a.last_date).then_with(|| a.project_key.cmp(&b.project_key)));
+    if limit > 0 && out.len() > limit {
+        out.truncate(limit);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

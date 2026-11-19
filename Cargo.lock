@@ -5242,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "wb-core"
-version = "3.0.0"
+version = "3.2.0"
 dependencies = [
  "calamine",
  "ed25519-dalek",
@@ -5279,7 +5279,7 @@ dependencies = [
 
 [[package]]
 name = "wbd"
-version = "3.0.0"
+version = "3.2.0"
 dependencies = [
  "ed25519-dalek",
  "rusqlite",
