@@ -1,8 +1,8 @@
 [package]
 name = "wb-desktop"
-version = "2.2.0"
+version = "3.2.0"
 edition = "2021"
-description = "个人工作台 v2.1 桌面壳（Tauri 2，单机版）"
+description = "综合工作台 v2.1 桌面壳（Tauri 2，单机版）"
 
 [lib]
 name = "wb_desktop"
@@ -28,6 +28,8 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 # v2.1 防多开：单实例锁，二次启动置前已有主窗口（任务栏最小化态/托盘态/快速双击竞态）
 tauri-plugin-single-instance = "2"
+# v2.2.1 设置页导入：接原生文件选择器（用户手填路径点导入「无法拉起」）
+tauri-plugin-dialog = "2"
 # v2.1 B7①：today()/now_minutes() 取本机时区偏移（换算本身在 wb-core::local_time）
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -35,4 +37,7 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
-# v2.1 单机化：移除 ureq 同步传输层（wb-core sync 纯函数保留，server/ 保留可跑）
+# v2.1 单机化：桌面壳自身不引 HTTP 客户端；v3.0 恢复同步后，真实传输在 wb-core::sync_client::http（ureq），桌面壳仅做命令编排
+# v3.0 同步胶水层测试（sync_glue_tests）需要临时目录
+[dev-dependencies]
+tempfile = "3"

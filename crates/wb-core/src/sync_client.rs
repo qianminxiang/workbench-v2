@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 use crate::store::{StoreError};
 use crate::sync::{merge_row, ConflictLogEntry, MergeDecision, SyncRow};
 
+/// 真实 HTTP 传输层（桌面端 / wbd 驱动器共用；测试用 tests.rs 的内存假服务端）。
+pub mod http;
+
 /// 参与同步的表（首版只同步工作项主干，架构 §4.14）。
 pub const SYNCED_TABLES: [&str; 1] = ["work_item"];
 
@@ -36,6 +39,10 @@ pub mod keys {
     pub const TOKEN: &str = "token";
     pub const MEMBER_ID: &str = "member_id";
     pub const MEMBER_NAME: &str = "member_name";
+    /// 登录返回的角色（v3.2.0 F5）：服务端登录响应里本就带 `role`，
+    /// 之前落库时丢掉了，导致桌面端只能靠成员表猜角色。现在原样留一份，
+    /// 供 `sync_status_value` 回显与「成员」页初判用；成员表里的角色才是权限依据。
+    pub const MEMBER_ROLE: &str = "member_role";
     pub const DEVICE_ID: &str = "device_id";
     pub const CURSOR: &str = "cursor";
     pub const LAST_OK_AT: &str = "last_ok_at";
@@ -46,6 +53,15 @@ pub mod keys {
     pub const QUIET_END: &str = "quiet_end"; // "HH:MM"
     pub const VOICE_ENABLED: &str = "voice_enabled"; // "1" / "0"
     pub const VOICE_PACK: &str = "voice_pack"; // "system" | "pack"（v2.2 语音包）
+    /// 主题档位（v2.2.1）："dark"（机甲态，默认）/ "light"（办公态）/ "system"（跟随系统）
+    pub const THEME: &str = "theme";
+    // ── v2.2.2（需求15）：交互音效独立开关与采样选择 ──
+    // 与 VOICE_ENABLED 完全解耦：关掉语音播报不影响点击/气闸反馈音，反之亦然。
+    pub const SFX_ENABLED: &str = "sfx_enabled"; // "1" / "0"
+    /// 点击音采样 id（sfx/ 目录下的文件名，如 "ui-click"）；非法值回落默认。
+    pub const SFX_SAMPLE: &str = "sfx_sample";
+    /// 音效音量档位（v2.2.4，规范第六节①两档）："quiet"（安静）/ "standard"（标准，默认）。
+    pub const SFX_VOLUME: &str = "sfx_volume";
 }
 
 // ───────────────────────────── 传输层契约 ─────────────────────────────
@@ -127,6 +143,17 @@ pub trait Transport {
         password: &str,
         device_id: &str,
     ) -> Result<LoginResult, TransportError>;
+    /// 首成员初始化（服务器只允许一次，成功即 admin）。默认不支持——
+    /// 只有真实传输实现（HTTP）有这个动作，测试假服务端按需覆写。
+    fn setup(
+        &self,
+        _base_url: &str,
+        _username: &str,
+        _password: &str,
+        _device_id: &str,
+    ) -> Result<LoginResult, TransportError> {
+        Err(TransportError::Rejected("该传输实现不支持首成员初始化".into()))
+    }
     fn push(&self, base_url: &str, token: &str, rows: &[SyncRow]) -> Result<PushResult, TransportError>;
     fn pull(
         &self,
@@ -844,6 +871,39 @@ pub fn login(
     let _ = state_set(conn, keys::TOKEN, &res.token);
     let _ = state_set(conn, keys::MEMBER_ID, &res.member_id);
     let _ = state_set(conn, keys::MEMBER_NAME, username);
+    if !res.role.trim().is_empty() {
+        let _ = state_set(conn, keys::MEMBER_ROLE, &res.role);
+    }
+    if !res.device_id.trim().is_empty() {
+        let _ = state_set(conn, keys::DEVICE_ID, &res.device_id);
+    }
+    let _ = state_set(conn, keys::LAST_OK_AT, now_iso);
+    let _ = state_del(conn, keys::LAST_ERROR);
+    Ok(read_status(conn))
+}
+
+/// 首成员初始化并落地令牌与身份（服务器只允许一次，成功即 admin）。
+/// 已初始化过会返回明确错误——此时应改走 [`login`]。其余落地语义与 login 一致。
+pub fn setup_first(
+    conn: &Connection,
+    base_url: &str,
+    username: &str,
+    password: &str,
+    device_seed: &str,
+    transport: &dyn Transport,
+    now_iso: &str,
+) -> Result<SyncStatus, TransportError> {
+    let url = validate_base_url(base_url).map_err(TransportError::Rejected)?;
+    let device_id = ensure_device_id(conn, device_seed).map_err(|e| TransportError::Rejected(e.to_string()))?;
+    let res = transport.setup(&url, username, password, &device_id)?;
+
+    let _ = state_set(conn, keys::BASE_URL, &url);
+    let _ = state_set(conn, keys::TOKEN, &res.token);
+    let _ = state_set(conn, keys::MEMBER_ID, &res.member_id);
+    let _ = state_set(conn, keys::MEMBER_NAME, username);
+    if !res.role.trim().is_empty() {
+        let _ = state_set(conn, keys::MEMBER_ROLE, &res.role);
+    }
     if !res.device_id.trim().is_empty() {
         let _ = state_set(conn, keys::DEVICE_ID, &res.device_id);
     }
@@ -863,6 +923,7 @@ pub fn logout(conn: &Connection, transport: &dyn Transport) -> Result<SyncStatus
     let _ = state_del(conn, keys::TOKEN);
     let _ = state_del(conn, keys::MEMBER_ID);
     let _ = state_del(conn, keys::MEMBER_NAME);
+    let _ = state_del(conn, keys::MEMBER_ROLE);
     let _ = state_set(conn, keys::LAST_ERROR, "已退出登录，重新登录后可继续同步");
     Ok(read_status(conn))
 }

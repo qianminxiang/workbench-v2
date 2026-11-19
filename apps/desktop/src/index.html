@@ -3,12 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>个人工作台 v2.2</title>
+<title>综合工作台 · 安徽省</title>
 <link rel="stylesheet" href="tokens.css">
 <style>
-  .shell { padding: 16px 24px 48px; max-width: 1280px; margin: 0 auto; }
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-  .top h1 { font-size: 16px; margin: 0; letter-spacing: 0.5px; }
+  /* v2.3.0 商务风 · 亮蓝 B「内衬层叠轻拟物」：页面骨架样式。
+     设计 token 全部来自 tokens.css（原 25 个 --mech-* 变量已整体移除，
+     暗色默认 data-theme、语音开关、扫描雷达装饰同步移除）。 */
+  .shell { padding: 20px 24px 48px; max-width: 1280px; margin: 0 auto; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+  .top h1 { font-size: 17px; margin: 0; font-weight: 600; }
   .top-right { display: flex; align-items: center; gap: 12px; }
   .kanban { display: grid; grid-template-columns: repeat(3, minmax(280px, 1fr)); gap: 16px; }
   .kanban .panel { margin-bottom: 0; }
@@ -17,61 +20,72 @@
   .kanban .card .body b { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kanban--focus { grid-template-columns: repeat(2, minmax(320px, 1fr)); }  /* L1：板块聚焦 2 列 */
   .rowline { display: flex; align-items: center; gap: 12px; }
-  .muted { color: var(--mech-text-3); }
-  .mini { font-size: 11px; color: var(--mech-text-3); }
+  .muted { color: var(--text-3); }
+  .mini { font-size: 11px; color: var(--text-3); }
   .tl-grid { display: grid; grid-template-columns: 220px 1fr; row-gap: 10px; align-items: center; }
-  .tl-scale { position: relative; height: 22px; background: var(--mech-inset); border-radius: 2px; margin-bottom: 6px;
-    display: flex; }
-  .tl-scale span { flex: 1; font-size: 10px; color: var(--mech-text-2); text-align: center; border-left: 1px solid var(--mech-border); }
-  .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--mech-border); gap: 16px; }
+  .tl-scale { position: relative; height: 22px; background: var(--bg-inset); border-radius: 4px; margin-bottom: 6px;
+    display: flex; border: 1px solid var(--border-default); }
+  .tl-scale span { flex: 1; font-size: 10px; color: var(--text-2); text-align: center; border-left: 1px solid var(--border-default); }
+  .tl-scale span:first-child { border-left: 0; }
+  .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-default); gap: 16px; }
   .settings-row:last-child { border-bottom: 0; }
   input[type="text"], input[type="time"], select {
-    background: var(--mech-inset); color: var(--mech-text-1);
-    border: 1px solid var(--mech-border); border-radius: 2px; padding: 4px 8px; font: inherit;
+    background: var(--bg-card); color: var(--text-1);
+    border: 1px solid var(--border-default); border-radius: 6px; padding: 5px 8px; font: inherit;
   }
-  .switch { position: relative; width: 36px; height: 20px; flex: none; }
-  .switch input { all: unset; position: absolute; inset: 0; cursor: pointer; background: var(--mech-inset); border-radius: 10px;
-    box-shadow: inset 0 0 0 1px var(--mech-border); transition: background var(--motion-reflow) var(--ease-in-quad); }
-  .switch input:checked { background: var(--mech-ok); }
-  .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
-    background: var(--mech-panel); transition: left var(--motion-reflow) var(--ease-in-quad); }
-  .switch input:checked::after { left: 18px; }
-  #f10-lamp { display: inline-flex; }
-  .empty { padding: 40px; text-align: center; color: var(--mech-text-3); }
+  input[type="text"]:focus, input[type="time"]:focus, select:focus {
+    outline: 2px solid var(--brand); outline-offset: -1px; border-color: var(--brand);
+  }
+  .empty { padding: 40px; text-align: center; color: var(--text-3); }
+  /* v3.2.0 · 负责人行（PRD §3.3.2 负责人单选、全员可见）
+     未分配时显示字面「未分配」而不是「—」：这是真实状态（未分配时谁都能推进），
+     不是缺字段。下拉在明细表常驻、看板卡片里压缩行高。 */
+  .owner-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+  .owner-row--compact { padding: 2px 0; }
+  .owner-name { font-size: 12px; color: var(--text-1); }
+  .owner-pick { font-size: 12px; padding: 2px 6px; max-width: 132px; }
+  /* v3.1.0 · 窄屏收列：基线在 390px 有 506px 横向溢出（kanban 三列 minmax(280px) 撑破视口，
+     与本次改动无关、基线同样存在）。这里把看板与时间线在 <860px 收成单列，
+     并把壳层内边距收紧，使 390px 下横向溢出为 0。 */
+  @media (max-width: 860px) {
+    .shell { padding: 14px 12px 32px; }
+    .kanban, .kanban--focus { grid-template-columns: 1fr; }
+    .tl-grid { grid-template-columns: 96px 1fr; }
+    .rowline { flex-wrap: wrap; }
+    /* 撑破 390px 的正是 #nav 单行排列（10 个按钮不换行）。 */
+    .nav { display: flex; flex-wrap: wrap; gap: 6px; }
+  }
+
+  /* v3.1.0 · 12 列看板列样式（.kanban 的 3 列栅格与 .kanban--focus 的 2 列沿用上面既有规则） */
+  .board-col { background: var(--bg-card); border: 1px solid var(--border-default);
+    border-top: 3px solid var(--brand); border-radius: 6px; padding: 12px; }
+  .board-col .col-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .board-col .col-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .board-col .col-count { margin-left: auto; font-size: 12px; }
+  .board-col .col-stat { font-size: 11px; color: var(--text-3); padding-bottom: 8px;
+    margin-bottom: 8px; border-bottom: 1px solid var(--border-default); }
 </style>
 </head>
 <body>
 <div class="shell">
 
-  <!-- 顶部：标题 + F10 总开关（v2.1 统筹者裁决：默认开启、入口在主界面显眼位置） -->
+  <!-- 顶部：标题 + 通知中心（v2.3.0：语音播报总开关与语音包开关已随语音体系整体移除） -->
   <div class="top">
-    <h1>个人工作台 <span class="mini">v2.2 · 安徽省</span></h1>
+    <h1>综合工作台 <span class="mini">· 安徽省</span></h1>
     <div class="top-right">
       <!-- v2.2 通知中心（UI 规范 7.5）：字幕队列溢出/历史通知入口 -->
       <button id="nc-btn" aria-label="通知中心" aria-expanded="false" title="通知中心">
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v3l-1.5 2.5h12L12.5 9V6A4.5 4.5 0 0 0 8 1.5z"/>
-          <path d="M6.5 13.5a1.5 1.5 0 0 0 3 0"/>
-        </svg>
+        <svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>
         <span class="nc-badge" id="nc-badge" hidden>0</span>
         <div class="nc-panel" id="nc-panel" hidden></div>
       </button>
-      <span class="mini">语音播报</span>
-      <label class="switch" title="F10 语音播报：晨报送达时播报要点（免打扰时段只通知不播报）">
-        <!-- boot() 启动时从偏好库回填真实状态（默认开启）；读取成功前 disabled 防误触 -->
-        <input id="f10-master" type="checkbox" checked disabled>
-      </label>
-      <span class="mini">语音包</span>
-      <label class="switch" title="v2.2 语音包：开启后播报 2026-10-28 定稿样音（破阵浑厚版/银刃）；关闭走系统 TTS 朗读实时文案。样音为定稿音色片段，动态数字以字幕与界面文案为准">
-        <input id="voice-pack" type="checkbox" disabled>
-      </label>
     </div>
   </div>
 
-  <!-- v2.2 FR-5 首行滚动字幕（装甲指挥舱 · UI 规范第六章）：替代 v2.1 两条 banner。
+  <!-- v2.2 FR-5 首行滚动字幕（UI 规范第六章）：替代 v2.1 两条 banner。
        队列空时整条隐藏不留空白带；滚动容器对读屏 aria-hidden，播报走下方 aria-live 区。 -->
   <div id="marquee-bar" hidden>
-    <span class="mq-channel" aria-hidden="true">COMM<span class="mq-alert-badge" id="mq-alert-badge" hidden>▲</span></span>
+    <span class="mq-channel" aria-hidden="true">通知<span class="mq-alert-badge" id="mq-alert-badge" hidden>▲</span></span>
     <div class="mq-viewport" id="mq-viewport" tabindex="0" role="button" aria-label="展开当前通知详情">
       <div class="mq-track" id="mq-track" aria-hidden="true"></div>
     </div>
@@ -82,7 +96,7 @@
   <div class="sr-only" id="mq-live" aria-live="polite"></div>
 
   <!-- 筛选条（F4-1）：四维筛选，状态在三种形态间共享 -->
-  <div class="panel" style="padding:8px 12px; --panel-strip: var(--mech-ok)">
+  <div class="panel" style="padding:8px 12px; --panel-strip: var(--brand)">
     <div class="rowline" style="flex-wrap:wrap; gap:8px">
       <button class="chip" data-filter="board" value="">全部板块</button>
       <button class="chip" data-filter="board" value="政策项目">政策</button>
@@ -97,22 +111,23 @@
   </div>
 
   <nav class="nav" id="nav" style="margin-bottom:16px">
-    <button data-view="brief" aria-current="true">晨报</button>
+    <button data-view="brief" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>晨报</button>
     <button data-view="kanban">看板</button>
     <button data-view="detail">明细</button>
     <button data-view="timeline">时间线</button>
     <button data-view="kpi">KPI</button>
     <button data-view="units">单位</button>
-    <button data-view="intel">情报</button>
+    <button data-view="members">成员</button>
+    <button data-view="intel"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>情报</button>
     <button data-view="dealer">网点</button>
-    <button data-view="add">添加</button>
-    <button data-view="settings">设置</button>
+    <button data-view="add"><svg class="ico" aria-hidden="true"><use href="#ic-import"/></svg>添加</button>
+    <button data-view="settings"><svg class="ico" aria-hidden="true"><use href="#ic-gear"/></svg>设置</button>
   </nav>
 
   <main id="main"></main>
 </div>
 
-<!-- v2.2 底部指令条（装甲指挥舱 7.4）：破坏性/高影响操作的红警式确认。
+<!-- v2.2 底部指令条（UI 规范 7.4）：破坏性/高影响操作的确认。
      升起 160ms / 收起 120ms / 8s 超时自动取消；Enter 确认 / Esc 取消。 -->
 <div id="cmd-bar" hidden role="alertdialog" aria-live="assertive" aria-label="操作确认">
   <span class="cmd-lamp" aria-hidden="true"></span>
@@ -122,6 +137,63 @@
     <button class="btn--ghost btn" id="cmd-cancel">取消</button>
   </div>
 </div>
+<!-- v2.2.4 图标系统（DS-01 第五章）：9 枚内联 SVG，随包分发、无外部图标库。
+     16px 网格 / 2px 描边 / 直线 + 45° 切角端点，禁用圆形曲线主体与整块填充；
+     键位实心部分走 .ic-fill（填充色取 --icon-fill，线色取 --icon-line）。
+     注：图标体系归独立任务（7704272421624220934）范围，本文件原样保留 sprite，
+     语音开关移除后 #ic-wave 暂无引用，是否精简由该任务统一裁决。 -->
+<svg class="ico-sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <symbol id="ic-bell" viewBox="0 0 16 16">
+    <path d="M8 1.75 4.25 5.5V10L2.5 12.75h11L11.75 10V5.5L8 1.75Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M6.25 13.5h3.5L8 15.5Z"/>
+  </symbol>
+  <symbol id="ic-wave" viewBox="0 0 16 16">
+    <path d="M2.5 6.5v3"/><path d="M5 4v8"/>
+    <rect fill="var(--icon-fill)" stroke="none" x="7" y="2" width="2" height="12"/>
+    <path d="M11 4v8"/><path d="M13.5 6.5v3"/>
+  </symbol>
+  <symbol id="ic-gear" viewBox="0 0 16 16">
+    <path d="M5.5 2h5l3.5 3.5v5L10.5 14h-5L2 10.5v-5L5.5 2Z"/>
+    <path d="M8 .5v1.5"/><path d="M8 14v1.5"/><path d="M.5 8h1.5"/><path d="M14 8h1.5"/>
+    <rect fill="var(--icon-fill)" stroke="none" x="6.5" y="6.5" width="3" height="3"/>
+  </symbol>
+  <symbol id="ic-refresh" viewBox="0 0 16 16">
+    <path d="M2.5 8 2.5 5 5 2.5 10 2.5"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M10 2.5 8 .5 8 4.5Z"/>
+    <path d="M13.5 8 13.5 11 11 13.5 6 13.5"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M6 13.5 8 15.5 8 11.5Z"/>
+  </symbol>
+  <symbol id="ic-import" viewBox="0 0 16 16">
+    <path d="M8 1.5v7"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 11 4.75 7.5h6.5Z"/>
+    <path d="M2.5 11v2.5h11V11"/>
+  </symbol>
+  <symbol id="ic-export" viewBox="0 0 16 16">
+    <path d="M8 13v-7"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 3.5 4.75 7h6.5Z"/>
+    <path d="M2.5 10.5v2.5h11v-2.5"/>
+  </symbol>
+  <symbol id="ic-alert" viewBox="0 0 16 16">
+    <path d="M6.7 2.6h2.6l4.9 9.8-1.2 1.1H3l-1.2-1.1Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M7.25 5.5h1.5v4h-1.5Z"/>
+  </symbol>
+  <symbol id="ic-radar" viewBox="0 0 16 16">
+    <path d="M8 2 14 8 8 14 2 8Z"/>
+    <path d="M8 8 12.25 4.75"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 6.5 9.5 8 8 9.5 6.5 8Z"/>
+  </symbol>
+  <symbol id="ic-gate-open" viewBox="0 0 16 16">
+    <path d="M2.5 3.5v9"/><path d="M13.5 3.5v9"/>
+    <path d="M4.5 5h3v6h-3Z"/><path d="M8.5 5h3v6h-3Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M12.5 8 14.5 8 13.5 6.5Z"/>
+  </symbol>
+  <symbol id="ic-gate-close" viewBox="0 0 16 16">
+    <path d="M2.5 3.5v9"/><path d="M13.5 3.5v9"/>
+    <path d="M4 5h4v6h-4Z"/><path d="M8 5h4v6h-4Z"/>
+    <path fill="var(--icon-fill)" stroke="none" d="M8 6.5 9.5 8 8 9.5 6.5 8Z"/>
+  </symbol>
+</svg>
+
 <script src="app.js"></script>
 </body>
 </html>

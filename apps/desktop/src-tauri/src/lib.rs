@@ -17,6 +17,7 @@
 //! - 桌面自动更新：tauri-plugin-updater 打通「检查 → 下载 → 验签 → 重启安装」。
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -27,7 +28,7 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 use wb_core::{
     brief::{self, DeliveryState, QuietHours},
-    intel,
+    intel, intel_store,
     rules::{self, Ruleset},
     sync_client,
     CivilDate, Store, StoreError,
@@ -48,8 +49,16 @@ fn err_string(e: StoreError) -> String {
 }
 
 /// 本机时区相对 UTC 的偏移分钟（东八区 = +480）。时间只由系统层提供（架构 §4.11-4）。
+/// P0 修复（v2.2.3）：`chrono` 的 `local_minus_utc()` 返回的是**秒**（UTC+8 = 28800），
+/// 此前未换算直接当分钟传给 `civil_and_minutes`，28800 分钟 = 整 20 天，
+/// 导致 UTC+8 机器上所有日期 +20 天（2026-10-29 显示成 2026-11-18）。
 fn local_offset_minutes() -> i32 {
-    chrono::Local::now().offset().local_minus_utc()
+    offset_seconds_to_minutes(chrono::Local::now().offset().local_minus_utc())
+}
+
+/// 适配层换算：chrono 偏移秒 → 偏移分钟。独立纯函数，供注入非零偏移做回归单测。
+fn offset_seconds_to_minutes(seconds: i32) -> i32 {
+    seconds / 60
 }
 
 /// 现在（本地时区）：自然日 + 当日分钟数，一次性换算保持二者一致。
@@ -72,42 +81,28 @@ fn now_minutes() -> u32 {
     now_local().1
 }
 
-// ─────────────────────── 单机偏好（免打扰 / 语音播报） ───────────────────────
+// ─────────────────────── 单机偏好（免打扰） ───────────────────────
 
-/// 读偏好：免打扰窗口 + 语音播报开关。持久化通道是 sync_state 键值表——
+/// 读偏好：免打扰窗口。持久化通道是 sync_state 键值表——
 /// 多端模式已放弃，但键值表仍是官方通道（老 workbench.db 无需迁移、可逆）。
-/// 免打扰缺省回 22:00–8:00（与首版默认一致）；语音开关**缺省开启**
-/// （2026-10-27 统筹者裁决：PRD 的「默认关闭」是功能未实现时代的口径）。
-fn load_prefs(conn: &rusqlite::Connection) -> (QuietHours, bool) {
+/// 免打扰缺省回 22:00–8:00（与首版默认一致）。
+/// v3.0 集成：语音播报/音效/主题开关已整体移除，本区只剩免打扰一个偏好。
+fn load_prefs(conn: &rusqlite::Connection) -> QuietHours {
     let hhmm = |key: &str| {
         sync_client::state_get(conn, key).and_then(|v| wb_core::local_time::parse_hhmm(&v))
     };
-    let quiet = QuietHours {
+    QuietHours {
         start_minute: hhmm(sync_client::keys::QUIET_START).unwrap_or(22 * 60),
         end_minute: hhmm(sync_client::keys::QUIET_END).unwrap_or(8 * 60),
-    };
-    let voice_enabled = sync_client::state_get(conn, sync_client::keys::VOICE_ENABLED)
-        .map(|v| v != "0")
-        .unwrap_or(true);
-    (quiet, voice_enabled)
-}
-
-/// v2.2 语音包偏好：读取 voice_pack 键；仅认 "pack" 为语音包模式，
-/// 其余值（含未设置）一律回落 "system"（系统 TTS 朗读实时文案）。
-/// 归一规则集中在 wb_core::voice（可单测），这里只负责取键。
-fn load_voice_pack(conn: &rusqlite::Connection) -> String {
-    let raw = sync_client::state_get(conn, sync_client::keys::VOICE_PACK);
-    wb_core::voice::normalize_pack(raw.as_deref()).to_string()
+    }
 }
 
 /// 偏好的 JSON 形态（time input 的 value 格式就是 HH:MM）。
 fn prefs_json(conn: &rusqlite::Connection) -> serde_json::Value {
-    let (quiet, voice_enabled) = load_prefs(conn);
+    let quiet = load_prefs(conn);
     serde_json::json!({
         "quiet_start": wb_core::local_time::fmt_hhmm(quiet.start_minute),
         "quiet_end": wb_core::local_time::fmt_hhmm(quiet.end_minute),
-        "voice_enabled": voice_enabled,
-        "voice_pack": load_voice_pack(conn),
     })
 }
 
@@ -187,8 +182,6 @@ fn alerts(
             "due_today": brief.due_today,
             "due_soon": brief.due_soon,
             "overdue": brief.overdue,
-            "today_schedule": brief.today_schedule,
-            "weekly": brief.weekly,
         },
     }))
 }
@@ -263,24 +256,18 @@ fn get_prefs(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String>
     Ok(prefs_json(store.conn()))
 }
 
-/// 单机偏好写入：免打扰窗口（HH:MM）+ 语音播报开关 + 语音包模式（v2.2）。
-/// 时间格式在本地就拦下，不合法不落库；voice_pack 仅认 system/pack 两值；
-/// 成功返回回读后的规范值。
+/// 单机偏好写入：免打扰窗口（HH:MM）。v3.0 集成后语音/音效/主题已整体移除，
+/// 契约只剩两个字段。时间格式在本地就拦下，不合法不落库；成功返回回读后的规范值。
 #[tauri::command]
 fn set_prefs(
     paths: State<Mutex<AppPaths>>,
     quiet_start: String,
     quiet_end: String,
-    voice_enabled: bool,
-    voice_pack: String,
 ) -> Result<serde_json::Value, String> {
     let s = wb_core::local_time::parse_hhmm(&quiet_start)
         .ok_or_else(|| "免打扰开始时间格式不合法（应为 HH:MM）".to_string())?;
     let e = wb_core::local_time::parse_hhmm(&quiet_end)
         .ok_or_else(|| "免打扰结束时间格式不合法（应为 HH:MM）".to_string())?;
-    if wb_core::voice::normalize_pack(Some(&voice_pack)) != voice_pack {
-        return Err("voice_pack 仅支持 system / pack".to_string());
-    }
     {
         let paths = paths.lock().unwrap();
         let store = open_store(&paths)?;
@@ -296,21 +283,134 @@ fn set_prefs(
             &wb_core::local_time::fmt_hhmm(e),
         )
         .map_err(err_string)?;
-        sync_client::state_set(
-            store.conn(),
-            sync_client::keys::VOICE_ENABLED,
-            if voice_enabled { "1" } else { "0" },
-        )
-        .map_err(err_string)?;
-        sync_client::state_set(
-            store.conn(),
-            sync_client::keys::VOICE_PACK,
-            &voice_pack,
-        )
-        .map_err(err_string)?;
         Ok(prefs_json(store.conn()))
     }
 }
+
+/// 业务年度（v2.2.1）：前端启动时回填 YEAR，看板/明细/时间线/晨报同一年。
+#[tauri::command]
+fn fiscal_year() -> i32 {
+    wb_core::FISCAL_YEAR
+}
+
+// ─────────────────────── v3.0 服务器中枢：真实同步命令 ───────────────────────
+//
+// 传输层 = wb_core::sync_client::http::HttpTransport（ureq + TLS），与服务端
+// https://ahxbd.work 的链路已由 `wbd sync-live` 真实首推验证（2026-11-17，8/8）。
+// 设计要点：
+// - 口令只在登录/初始化请求里出现，**不落库、不进日志**；本机库只存服务端
+//   发回的令牌（与 v2.1 之前同一通道 sync_state）。
+// - sync_status 的返回里**永不包含令牌本身**（wb-core SyncStatus 结构就没有该字段）。
+// - 登录/初始化成功后立刻补一轮同步，用户不用再手动点一次。
+
+fn sync_status_value(conn: &rusqlite::Connection) -> serde_json::Value {
+    let st = sync_client::read_status(conn);
+    // 角色以成员表为准（成员表为空时回落登录返回的角色，再没有就是 member）：
+    // 界面「成员」页要靠它决定哪些按钮可点，不能让两个来源各说一套。
+    let ident = wb_core::collab::identity(conn);
+    let role = if ident.known {
+        ident.role
+    } else {
+        sync_client::state_get(conn, sync_client::keys::MEMBER_ROLE)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| wb_core::collab::ROLE_MEMBER.to_string())
+    };
+    serde_json::json!({
+        "state": st.state.label(),
+        "base_url": st.base_url,
+        "logged_in": st.logged_in,
+        "member_name": st.member_name,
+        "role": role,
+        "role_known": ident.known,
+        "cursor": st.cursor,
+        "pending": st.pending,
+        "last_ok_at": st.last_ok_at,
+        "last_error": st.last_error,
+    })
+}
+
+/// 同步状态（设置页回显；不含令牌）。
+#[tauri::command]
+fn sync_status(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    Ok(sync_status_value(store.conn()))
+}
+
+/// 首成员初始化（服务器只允许一次，成功即 admin），随后立刻同步一轮。
+#[tauri::command]
+fn sync_setup(
+    paths: State<Mutex<AppPaths>>,
+    base_url: String,
+    username: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let transport = sync_client::http::HttpTransport::new();
+    let now = wb_core::store::now_iso_pub();
+    let seed = format!("desktop:{}@{base_url}", username);
+    sync_client::setup_first(store.conn(), &base_url, &username, &password, &seed, &transport, &now)
+        .map_err(|e| e.describe())?;
+    let report = run_sync_once(store.conn(), &transport);
+    Ok(serde_json::json!({ "status": sync_status_value(store.conn()), "report": report }))
+}
+
+/// 登录（服务器已初始化后走这个），随后立刻同步一轮。
+#[tauri::command]
+fn sync_login(
+    paths: State<Mutex<AppPaths>>,
+    base_url: String,
+    username: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let transport = sync_client::http::HttpTransport::new();
+    let now = wb_core::store::now_iso_pub();
+    let seed = format!("desktop:{}@{base_url}", username);
+    sync_client::login(store.conn(), &base_url, &username, &password, &seed, &transport, &now)
+        .map_err(|e| e.describe())?;
+    let report = run_sync_once(store.conn(), &transport);
+    Ok(serde_json::json!({ "status": sync_status_value(store.conn()), "report": report }))
+}
+
+/// 登出：作废本机令牌，本地数据与游标保留（离线继续可用）。
+#[tauri::command]
+fn sync_logout(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let transport = sync_client::http::HttpTransport::new();
+    sync_client::logout(store.conn(), &transport).map_err(|e| e.describe())?;
+    Ok(sync_status_value(store.conn()))
+}
+
+fn run_sync_once(conn: &rusqlite::Connection, transport: &sync_client::http::HttpTransport) -> serde_json::Value {
+    let base_url = sync_client::state_get(conn, sync_client::keys::BASE_URL).unwrap_or_default();
+    let token = sync_client::state_get(conn, sync_client::keys::TOKEN).unwrap_or_default();
+    if base_url.is_empty() || token.is_empty() {
+        return serde_json::json!({ "error": "尚未登录" });
+    }
+    let now_ms = wb_core::store::now_ms_pub();
+    let now_iso = wb_core::store::now_iso_pub();
+    let r = sync_client::sync_once(conn, &base_url, &token, transport, now_ms, &now_iso);
+    serde_json::json!({
+        "pushed": r.pushed, "pulled": r.pulled, "conflicts": r.conflicts,
+        "pending": r.pending, "cursor": r.cursor, "state": r.state.label(),
+        "error": r.error,
+    })
+}
+
+/// 手动「立即同步」：推待发队列 → 拉增量。断网时改动留在队列，恢复后补推。
+#[tauri::command]
+fn sync_now(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let transport = sync_client::http::HttpTransport::new();
+    let report = run_sync_once(store.conn(), &transport);
+    Ok(serde_json::json!({ "status": sync_status_value(store.conn()), "report": report }))
+}
+
 
 // ─────────────────────── 桌面自动更新（v2.1 目标①） ───────────────────────
 
@@ -379,6 +479,11 @@ fn add_item(
         updated_by: who,
     };
     let r = wb_core::entry::quick_add(&store, &req).map_err(err_string)?;
+    // 负责人默认创建人（PRD §3.3.2「负责人单选、默认为创建人」）。初次指定不写
+    // 变更历史，否则每建一条都往提醒区塞一条。失败不影响已落库的项——这只是补一个
+    // 默认值，缺了它负责人视角就没有起点可比。
+    let creator = wb_core::collab::identity(store.conn()).member_name;
+    let _ = wb_core::collab::init_owner_on_create(store.conn(), &r.id, &creator);
     Ok(serde_json::json!({
         "id": r.id,
         "seq_no": r.seq_no,
@@ -388,7 +493,174 @@ fn add_item(
         "plan_end_precision": r.plan_end_precision,
         "needs_confirm": r.needs_confirm,
         "queued": r.queued,
+        "owner": creator,
     }))
+}
+
+// ──────────────── 追加需求 C：进度 / 动作管理（update_item / log_action） ────────────────
+
+/// 更新进度与状态（追加需求 C③ 的 `update_item` 命令）。
+///
+/// 参数用扁平形式而非直接收结构体：前端 JS 传的是字符串/数字字面量，
+/// 结构体跨 IPC 时多一层序列化约定（camelCase ↔ snake_case）容易传错，
+/// 而进度这种数字传错是静默的——宁可参数多几个也不留这个坑。
+///
+/// `progress_pct` / `status` 传 `null` 表示「本次不改」，与传 `0` 语义不同：
+/// 传 0 是把进度真正归零，不能因为 JS 里 `0 || 不改` 的写法混为一谈。
+#[tauri::command]
+fn update_item(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+    progress_pct: Option<i64>,
+    status: Option<String>,
+    note: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    // 操作人取**本机成员名**：负责人字段按姓名匹配，第一层闸也按姓名判，
+    // 传 member_id 会让「负责人本人」判定对不上号（引擎层有归一，命令层不留这个歧义）。
+    let who = wb_core::collab::identity(store.conn()).member_name;
+    let patch = wb_core::pct::ItemPatch {
+        item_id,
+        progress_pct,
+        status,
+        note,
+        by: Some(who),
+    };
+    let out = wb_core::pct::update_item(&store, &patch).map_err(err_string)?;
+    serde_json::to_value(&out).map_err(|e| e.to_string())
+}
+
+/// 追加一条动作记录（追加需求 C③ 的 `log_action` 命令）。
+/// 只写历史、不动数字——「今天跟甲方通了电话」不该把进度改成别的值。
+#[tauri::command]
+fn log_action(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+    note: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let who = wb_core::collab::identity(store.conn()).member_name;
+    let a = wb_core::pct::log_action(&store, &item_id, &note, Some(&who)).map_err(err_string)?;
+    serde_json::to_value(&a).map_err(|e| e.to_string())
+}
+
+/// 某条项目的动作历史（明细页展开用，最新在上）。
+#[tauri::command]
+fn item_actions(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let logs = wb_core::pct::list_actions(store.conn(), &item_id).map_err(err_string)?;
+    serde_json::to_value(&logs).map_err(|e| e.to_string())
+}
+
+// ─────────────────── F5 团队协作面：成员与负责人（v3.2.0） ───────────────────
+//
+// 边界：**不复活多用户客户端 / 多账号体系**。这一组命令只读写本机库里的
+// `member` 表与 `work_item.owner`，不引入登录态、不切换账号。所谓「权限」
+// 是单机态口径：同一条库里既有负责人也有成员表，能不能改由库里的事实判定。
+//
+// 三层口径：命令层判一次（这里）→ 引擎层再判一次（`pct::update_item`）→
+// 两层都调 `collab::deny_reason`，不会判出两种结果。
+
+/// 成员列表 + 本机身份。成员表为空时把本机身份补登为管理员（首位即管理员）。
+#[tauri::command]
+fn member_list(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let (rows, ident) = wb_core::collab::list_members(&store).map_err(err_string)?;
+    // 顺带打一次活跃时间：PRD 的「最近活跃时间」不要求实时在线状态，
+    // 打开成员页就是一次活跃，不必再另起心跳。
+    wb_core::collab::touch_active(store.conn(), &ident.member_name);
+    Ok(serde_json::json!({ "members": rows, "me": ident }))
+}
+
+/// 新建成员（仅管理员）。重名直接拒绝——负责人按显示名匹配，重名会让判定失去唯一性。
+#[tauri::command]
+fn member_create(
+    paths: State<Mutex<AppPaths>>,
+    display_name: String,
+    role: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let by = wb_core::collab::identity(store.conn()).member_name;
+    let m = wb_core::collab::create_member(&store, &display_name, &role, &by).map_err(err_string)?;
+    serde_json::to_value(&m).map_err(|e| e.to_string())
+}
+
+/// 改角色（仅管理员）。最后一名启用中的管理员不能被降级，否则库里再没人能管成员。
+#[tauri::command]
+fn member_set_role(
+    paths: State<Mutex<AppPaths>>,
+    member_id: String,
+    role: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let by = wb_core::collab::identity(store.conn()).member_name;
+    let m = wb_core::collab::set_member_role(&store, &member_id, &role, &by).map_err(err_string)?;
+    serde_json::to_value(&m).map_err(|e| e.to_string())
+}
+
+/// 停用 / 恢复成员（仅管理员）。停用不做删除：数据与历史都留着，只是不再允许以该身份写。
+#[tauri::command]
+fn member_set_status(
+    paths: State<Mutex<AppPaths>>,
+    member_id: String,
+    status: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let by = wb_core::collab::identity(store.conn()).member_name;
+    let m = wb_core::collab::set_member_status(&store, &member_id, &status, &by).map_err(err_string)?;
+    serde_json::to_value(&m).map_err(|e| e.to_string())
+}
+
+/// 指定 / 变更负责人（管理员、当前负责人、或尚未分配时任何人）。
+///
+/// `to_owner` 传空串 = 取消分配。变更写 `owner_change_log`，下次打开时进提醒区。
+/// 返回 `{ changed: bool, change: OwnerChange|null }`：没变不算错，但要如实告诉界面。
+#[tauri::command]
+fn assign_owner(
+    paths: State<Mutex<AppPaths>>,
+    item_id: String,
+    to_owner: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let by = wb_core::collab::identity(store.conn()).member_name;
+    let change = wb_core::collab::set_item_owner(&store, &item_id, to_owner.as_deref(), &by)
+        .map_err(err_string)?;
+    Ok(serde_json::json!({
+        "changed": change.is_some(),
+        "change": change,
+    }))
+}
+
+/// 待提醒的负责人变更（只返回与当前身份相关的：你被派了活 / 你的活被转走）。
+#[tauri::command]
+fn pending_owner_changes(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let rows = wb_core::collab::pending_owner_changes(store.conn()).map_err(err_string)?;
+    serde_json::to_value(&rows).map_err(|e| e.to_string())
+}
+
+/// 确认已提醒（下一次打开不再重复提醒）。只标传进来的那几条。
+#[tauri::command]
+fn ack_owner_changes(
+    paths: State<Mutex<AppPaths>>,
+    ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    wb_core::collab::mark_owner_changes_notified(store.conn(), &ids).map_err(err_string)?;
+    Ok(serde_json::json!({ "ok": true, "ack": ids.len() }))
 }
 
 // ─────────────────────── B7：晨报送达（落盘 + 补推） ───────────────────────
@@ -422,7 +694,9 @@ fn deliver_brief(
     version_event: Option<brief::VersionBootEvent>,
 ) -> Result<serde_json::Value, String> {
     let store = open_store(paths)?;
-    let year = today().year;
+    // 业务年度固定取 FISCAL_YEAR（v2.2.1）：此前用 today().year，
+    // 到了年度切换点会出现「界面看 2027、晨报取 2026」的错年。
+    let year = wb_core::FISCAL_YEAR;
     let items = wb_core::repo::load_items(store.conn(), year).map_err(err_string)?;
     let rs = Ruleset::default();
     let t = today();
@@ -432,7 +706,7 @@ fn deliver_brief(
         Some(ev) => brief::version_boot_notification(&b, ev),
         None => brief::notification_text(&b, &decision),
     };
-    let (quiet, voice_enabled) = load_prefs(store.conn());
+    let quiet = load_prefs(store.conn());
     let speech = brief::speech_text(&b, &decision);
 
     let suppressed = brief::notification_suppressed(now_minutes(), quiet);
@@ -459,7 +733,6 @@ fn deliver_brief(
         "verdict": format!("{:?}", decision.verdict),
         "late_minutes": decision.late_minutes,
         "notification_suppressed": suppressed,
-        "voice_enabled": voice_enabled,
         "speech": speech,
         "title": title,
         "body": body,
@@ -470,7 +743,6 @@ fn deliver_brief(
             "due_today": b.due_today.len(),
             "due_soon": b.due_soon.len(),
             "overdue": b.overdue.len(),
-            "weekly": b.weekly.is_some(),
         },
     }))
 }
@@ -544,14 +816,58 @@ fn intel_state_file(data_dir: &PathBuf) -> PathBuf {
     data_dir.join("intel_state.json")
 }
 
+/// 诊断记录用的本地时刻（`YYYY-MM-DDTHH:MM` 本地）。用户拿它对照自己机器上的时间，
+/// 所以必须是本机时区，不能是 UTC——UTC 记录会让用户对不上"到底几点崩的"。
+fn now_stamp_local() -> String {
+    let (d, m) = now_local();
+    format!("{}T{}", d.to_iso(), wb_core::local_time::fmt_hhmm(m))
+}
+
 fn load_intel(paths: &AppPaths) -> intel::IntelState {
     intel::IntelState::load(&paths.data_dir)
+}
+
+/// 采集进行中标志：整轮绝对上限 77.6 分钟（4654s）。算式逐项来自源码常量：
+/// 单请求最坏 140s（40s×3 次 + 5s/15s 退避）；Epoint 单站最坏 300s（前 4 页各拖满
+/// 40s 后成功、第 5 页失败且重试用尽，失败即中止）；真正发请求的 Epoint 站是 14 个
+/// （芜湖/池州 epoint=None，解析期即返回 ParseError，不发请求），14×300s；
+/// 省级主站双请求 2×140s；徽采云 140s；18 站间 17×2s。
+/// 没有它时，用户连点「立即刷新」（或调度线程正好同时到点）会并发跑两轮，
+/// 两轮各自 `IntelState::load` 一份旧快照、各自 `save`，后落盘的一方把前一轮
+/// 刚写好的站点状态与诊断整段覆盖掉——表现为「刷新了一次，另一批结果不见了」。
+/// 用 `swap` 做占用判定，天然互斥，不需要给整个采集加锁。
+static INTEL_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 占用一次采集名额：成功返回 `true`，已有采集在跑返回 `false`。
+/// 抽成独立函数是为了让这条语义能被单测直接验证（`spawn_intel_run` 需要
+/// `AppHandle`，单测里造不出来，只能靠肉眼看代码——那不算验证）。
+fn try_begin_intel_run() -> bool {
+    !INTEL_RUNNING.swap(true, Ordering::SeqCst)
+}
+
+/// 释放采集名额。由线程内的 guard 在退出时调用，panic 展开也会触发。
+fn end_intel_run() {
+    INTEL_RUNNING.store(false, Ordering::SeqCst);
 }
 
 /// 日频抓取一轮（调度线程与手动「立即刷新」共用）。
 /// 抓取在独立线程执行不阻塞 UI；同站间隔 ≥2s（预研口径）；失败只标记站点。
 fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
+    // 已有采集在跑：直接返回，让调用方（前端）保持原有进度显示。
+    if !try_begin_intel_run() {
+        let _ = app.emit("intel-busy", serde_json::json!({ "manual": manual }));
+        return;
+    }
     std::thread::spawn(move || {
+        // 无论正常结束还是 panic 退出，都必须把标志放回去，否则一次异常
+        // 会让后续所有采集被永久挡住。用一个 guard 结构承载。
+        struct RunGuard;
+        impl Drop for RunGuard {
+            fn drop(&mut self) {
+                end_intel_run();
+            }
+        }
+        let _guard = RunGuard;
         let (data_dir, today_iso, start_iso, end_iso) = {
             let Some(paths) = app.try_state::<Mutex<AppPaths>>() else { return };
             let p = paths.lock().unwrap();
@@ -565,21 +881,45 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
         };
         let fetcher = intel::UreqFetcher;
         let mut state = intel::IntelState::load(&data_dir);
+        // 改判一（AC-3）：线索落库。壳层采集此前只写 intel_state.json，线索（lead 表）
+        // 永远是空的——「线索转待办」入口就成了摆设。这里与 wbd intel 同一条引擎通路：
+        // 每源抓取成功后 persist_fetch 进 Store（三层去重 + 拉链）。
+        // 打不开库不阻断采集（与诊断写入同口径：降级为「本轮只更新 JSON 态」）。
+        let lead_store = Store::open(&data_dir).ok();
         let mut results: Vec<intel::SiteResult> = Vec::new();
         let mut new_total = 0usize;
         let mut failed = 0usize;
         let mut first = true;
-        for spec in intel::SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
+        // 逐站进度：整轮绝对上限 77.6 分钟（4654s），前端需要知道「跑到第几站」而不是干等一行字。
+        // 首发闸门（v2.2.6）：只跑实测通过的源，与 run_daily_at / wbd intel 同一判定——
+        // 壳层此前漏了这一层过滤，9 个未实测源会被静默尝试。
+        let total_sites = intel::SITE_REGISTRY
+            .iter()
+            .filter(|s| s.tier.is_scheduled() && intel::is_enabled_for_release(s.id))
+            .count();
+        let mut done_sites = 0usize;
+        for spec in intel::SITE_REGISTRY
+            .iter()
+            .filter(|s| s.tier.is_scheduled() && intel::is_enabled_for_release(s.id))
+        {
             if !first {
                 // 同站请求间隔 ≥2s：跨站也保持，避免整体突发
                 std::thread::sleep(Duration::from_secs(2));
             }
             first = false;
-            let r = intel::fetch_site(spec, &fetcher, intel::KEYWORD, &start_iso, &end_iso, &today_iso);
+            let r = intel::fetch_site_with_retry(
+                spec, &fetcher, &intel::RealSleeper, intel::KEYWORD, &start_iso, &end_iso, &today_iso,
+            );
+            let mut fail: Option<intel::FetchFail> = None;
             let sr = match r {
                 Ok(items) => {
-                    let (new_n, _) = intel::merge_items(&mut state, items, &today_iso);
+                    let (new_n, _) = intel::merge_items(&mut state, items.clone(), &today_iso);
                     new_total += new_n;
+                    // 改判一（AC-3）：同批条目进线索库（三层去重 + 拉链，与 wbd intel 同通路）。
+                    // 落库失败不阻断采集——本轮该源线索维持旧态，采集结果照常进 IntelState。
+                    if let Some(store) = lead_store.as_ref() {
+                        let _ = intel_store::persist_fetch(store, &items, None);
+                    }
                     let n = state.items.values().filter(|i| i.site_id == spec.id).count();
                     intel::SiteResult {
                         site_id: spec.id.to_string(),
@@ -589,9 +929,17 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                         new_items: new_n,
                     }
                 }
-                Err((st, detail)) => {
+                Err(f) => {
                     failed += 1;
-                    intel::SiteResult { site_id: spec.id.to_string(), status: st, detail, items: 0, new_items: 0 }
+                    let sr = intel::SiteResult {
+                        site_id: spec.id.to_string(),
+                        status: f.status.clone(),
+                        detail: f.detail.clone(),
+                        items: 0,
+                        new_items: 0,
+                    };
+                    fail = Some(f);
+                    sr
                 }
             };
             // 站点状态行（含失败原因，界面可见 AC-2-5）
@@ -610,7 +958,32 @@ fn spawn_intel_run(app: tauri::AppHandle, manual: bool) {
                     row.fail_streak += 1;
                 }
             }
+            // 诊断滚动落库（每源最近 3 条）。纯内存操作，落盘在 IntelState::save 里,
+            // 写失败不会中断采集（需求：诊断写入失败不得中断采集流程）。
+            row.push_diag(intel::DiagEntry {
+                ts: now_stamp_local(),
+                url: fail.as_ref().map(|f| f.url.clone()).unwrap_or_default(),
+                http_status: fail.as_ref().and_then(|f| f.http_status),
+                kind: sr.status.label().to_string(),
+                detail: if matches!(sr.status, intel::FetchStatus::Ok) {
+                    if sr.items == 0 { "请求成功，结果 0 条".into() } else { format!("请求成功，本站在库 {} 条", sr.items) }
+                } else {
+                    sr.detail.clone()
+                },
+                body_head: fail.as_ref().map(|f| f.body_head.clone()).unwrap_or_default(),
+                attempts: fail.as_ref().map(|f| f.attempts).unwrap_or(1),
+            });
             results.push(sr);
+            // 进度事件只带计数与站名，不带业务数据——被丢掉的监听不会丢任何结果。
+            done_sites += 1;
+            let _ = app.emit(
+                "intel-progress",
+                serde_json::json!({
+                    "done": done_sites, "total": total_sites,
+                    "site_name": spec.name, "manual": manual,
+                    "failed": failed, "new_total": new_total,
+                }),
+            );
         }
         state.last_run_date = Some(today_iso.clone());
         let (connected, planned) = intel::coverage_counts();
@@ -646,11 +1019,15 @@ fn spawn_dealer_run(app: tauri::AppHandle, manual: bool) {
                 state.save(&data_dir);
                 let _ = app.emit("dealer-updated", serde_json::json!({ "manual": manual, "ok": true }));
             }
-            Err((st, detail)) => {
+            Err(f) => {
                 // 失败不改快照，只发事件让界面可见（AC-1-4 口径）
                 let _ = app.emit(
                     "dealer-updated",
-                    serde_json::json!({ "manual": manual, "ok": false, "status": format!("{:?}", st), "detail": detail }),
+                    serde_json::json!({
+                        "manual": manual, "ok": false,
+                        "status": format!("{:?}", f.status), "detail": f.detail,
+                        "url": f.url, "http_status": f.http_status, "attempts": f.attempts,
+                    }),
                 );
             }
         }
@@ -712,6 +1089,114 @@ fn intel_set_verdict(
     Ok(())
 }
 
+// ─────────────────── 改判一（AC-3）：补贴导出 / 线索转待办 的壳层接线 ───────────────────
+// v2.2.6 最小界面入口：引擎层（subsidy_export / intel_store / lead_todo）此前只有 wbd CLI
+// 通路；这里补上桌面壳命令，前端情报页两个入口直接调引擎，不再经过 CLI。
+
+/// 前端传来的单条筛选条件（补贴导出）。op: "eq"（精确）| "contains"（包含）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubsidyFilterArg {
+    field: String,
+    op: String,
+    value: String,
+}
+
+/// 补贴明细一键导出：**按当前筛选条件全量导出，不是只导当前页**（本功能的定义）。
+/// 前端把视图当前筛选序列化成 filters 传入；引擎对整个 CSV 应用筛选后写出 xlsx / csv。
+#[tauri::command]
+fn subsidy_export(
+    from: String,
+    out: String,
+    filters: Vec<SubsidyFilterArg>,
+    sheet: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use wb_core::subsidy_export as se;
+    let parsed: Vec<se::ExportFilter> = filters
+        .into_iter()
+        .map(|f| match f.op.as_str() {
+            "eq" => Ok(se::ExportFilter::eq(&f.field, &f.value)),
+            "contains" => Ok(se::ExportFilter::contains(&f.field, &f.value)),
+            other => Err(format!("非法筛选操作符：{other}（仅支持 eq / contains）")),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let (headers, rows) =
+        se::read_csv(std::path::Path::new(&from)).map_err(|e| format!("读数据失败：{e}"))?;
+    let total = rows.len();
+    let filtered = se::apply_filters(&headers, &rows, &parsed)?;
+    let filtered_rows: Vec<Vec<String>> = filtered.into_iter().cloned().collect();
+    let out_path = std::path::Path::new(&out);
+    let is_csv = out_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("csv"))
+        .unwrap_or(false);
+    let n = if is_csv {
+        se::export_csv(out_path, &headers, &filtered_rows)
+    } else {
+        se::export_xlsx(out_path, &headers, &filtered_rows, sheet.as_deref().unwrap_or("补贴明细"))
+    }
+    .map_err(|e| format!("写出失败：{e}"))?;
+    Ok(serde_json::json!({
+        "out": out,
+        "format": if is_csv { "csv" } else { "xlsx" },
+        "source_rows_total": total,
+        "filters_applied": parsed.len(),
+        "rows_exported": n,
+        "note": "按筛选条件全量导出（非当前页）",
+    }))
+}
+
+/// 线索清单（改判一 AC-3 入口数据）。采集落库后按三层去重产出，状态机：
+/// 待确认 → 已确认 → 已转待办；已忽略为终态。
+#[tauri::command]
+fn intel_leads_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let mut leads = intel_store::read_leads(&store, None).map_err(err_string)?;
+    // 与情报条目同序：发布日期倒序，再按首次入库时间倒序
+    leads.sort_by(|a, b| b.date.cmp(&a.date).then(b.first_seen.cmp(&a.first_seen)));
+    Ok(serde_json::json!({ "leads": leads }))
+}
+
+/// 线索动作：confirm（确认）/ reject（忽略，终态）/ todo（转待办，落 work_item 进晨报看板）。
+#[tauri::command]
+fn intel_lead_act(
+    paths: State<Mutex<AppPaths>>,
+    action: String,
+    key: String,
+    owner: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    match action.as_str() {
+        "confirm" => {
+            let ok = intel_store::confirm_lead(&store, &key, None).map_err(err_string)?;
+            if !ok {
+                return Err("线索不存在，或状态已流转（刷新后重试）".into());
+            }
+            Ok(serde_json::json!({ "action": "confirm", "key": key }))
+        }
+        "reject" => {
+            let ok = intel_store::reject_lead(&store, &key, None).map_err(err_string)?;
+            if !ok {
+                return Err("线索不存在，或已忽略".into());
+            }
+            Ok(serde_json::json!({ "action": "reject", "key": key }))
+        }
+        "todo" => {
+            let today_iso = today().to_iso();
+            let owner = owner.unwrap_or_else(|| "我".to_string());
+            match intel_store::generate_todo(&store, &key, &today_iso, &owner) {
+                Ok(Ok(t)) => Ok(serde_json::json!({ "action": "todo", "todo": t })),
+                Ok(Err(r)) => Err(format!("未生成待办：{}", r.reason())),
+                Err(e) => Err(err_string(e)),
+            }
+        }
+        other => Err(format!("非法动作：{other}（仅支持 confirm / reject / todo）")),
+    }
+}
+
 /// FR-1：网点视图数据 + 手动刷新
 #[tauri::command]
 fn dealer_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
@@ -721,7 +1206,76 @@ fn dealer_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String
         "snapshot": state.dealer_snapshot,
         "last_diff": state.dealer_last_diff,
         "last_run_date": state.last_dealer_run_date,
+        // v2.2.1：快照树（安徽省 → 16 地市 → 区县），区县从公司名/地址/区域解析，
+        // 解析不到的归「待归类」。映射表在 wb_core::anhui（带单测），这里只做分组。
+        "tree": dealer_tree(&state.dealer_snapshot),
+        // 本周新增/消失按地市分组（与树同一套归属口径）
+        "added_by_city": diff_by_city(state.dealer_last_diff.as_ref().map(|d| &d.added)),
+        "removed_by_city": diff_by_city(state.dealer_last_diff.as_ref().map(|d| &d.removed)),
     }))
+}
+
+/// 网点 → 地市归属：区县名优先（公司名+区域+地址三处找），找不到再试
+/// 文本里是否直接出现 16 市市名；都不命中归「待归类」。
+fn dealer_city(node: &wb_core::intel::DealerNode) -> &'static str {
+    let hay = format!("{}{}{}", node.company_name, node.area, node.address);
+    if let Some((_, city)) = wb_core::anhui::locate_in_text(&hay) {
+        return city;
+    }
+    for c in wb_core::anhui::CITIES {
+        if hay.contains(c) || hay.contains(c.trim_end_matches('市')) {
+            return c;
+        }
+    }
+    "待归类"
+}
+
+/// 快照树：[{city, districts: [{district, dealers: [公司名…]}], total}]，
+/// 地市按 CITIES 固定顺序、区县按拼音序（BTreeMap 自然序）、待归类排最后。
+fn dealer_tree(snapshot: &[wb_core::intel::DealerNode]) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut tree: BTreeMap<&str, BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
+    for n in snapshot {
+        let city = dealer_city(n);
+        let hay = format!("{}{}{}", n.company_name, n.area, n.address);
+        let district = wb_core::anhui::locate_in_text(&hay)
+            .map(|(d, _)| d)
+            .unwrap_or("待归类");
+        tree.entry(city).or_default().entry(district).or_default().push(&n.company_name);
+    }
+    let mut cities: Vec<serde_json::Value> = Vec::new();
+    // 地市按 CITIES 固定顺序（皖北→皖中→皖南的既定排列），「待归类」固定排最后
+    let mut ordered: Vec<&str> = wb_core::anhui::CITIES.iter().copied().filter(|c| tree.contains_key(c)).collect();
+    if tree.contains_key("待归类") {
+        ordered.push("待归类");
+    }
+    for city in ordered {
+        let districts = &tree[city];
+        let total: usize = districts.values().map(|v| v.len()).sum();
+        cities.push(serde_json::json!({
+            "city": city,
+            "total": total,
+            "districts": districts.iter().map(|(d, names)| serde_json::json!({
+                "district": d, "count": names.len(), "dealers": names,
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    serde_json::json!(cities)
+}
+
+/// 增减明细按地市分组：[{city, nodes: [{name, area}]}]
+fn diff_by_city(nodes: Option<&Vec<wb_core::intel::DealerNode>>) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut by: BTreeMap<&str, Vec<serde_json::Value>> = BTreeMap::new();
+    for n in nodes.into_iter().flatten() {
+        by.entry(dealer_city(n)).or_default().push(serde_json::json!({
+            "name": n.company_name, "area": n.area,
+        }));
+    }
+    by.into_iter()
+        .map(|(city, nodes)| serde_json::json!({ "city": city, "nodes": nodes }))
+        .collect::<Vec<_>>()
+        .into()
 }
 
 #[tauri::command]
@@ -857,6 +1411,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        // v2.2.1 设置页导入：原生文件选择器（此前手填路径，空路径点击静默无反应）
+        .plugin(tauri_plugin_dialog::init())
         // tauri-plugin-updater 2.14 起移除了 init()，改用 Builder；
         // pubkey/endpoints 从 tauri.conf.json plugins.updater 读取。
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -868,8 +1424,17 @@ pub fn run() {
             units,
             backup_now,
             add_item,
+            update_item,
+            log_action,
+            item_actions,
             get_prefs,
             set_prefs,
+            sync_status,
+            sync_setup,
+            sync_login,
+            sync_logout,
+            sync_now,
+            fiscal_year,
             check_update,
             install_update,
             get_pending_brief,
@@ -878,8 +1443,18 @@ pub fn run() {
             intel_get,
             intel_refresh,
             intel_set_verdict,
+            intel_leads_get,
+            intel_lead_act,
+            subsidy_export,
             dealer_get,
             dealer_refresh,
+            member_list,
+            member_create,
+            member_set_role,
+            member_set_status,
+            assign_owner,
+            pending_owner_changes,
+            ack_owner_changes,
         ])
         // B7：点关闭 = 最小化到托盘，晨报仍从托盘送达；
         // 只有托盘菜单「退出」才真正退出（退出后的补推靠 last_brief.json）。
@@ -906,7 +1481,7 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("个人工作台")
+                .tooltip("综合工作台")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -998,5 +1573,94 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("个人工作台启动失败");
+        .expect("综合工作台启动失败");
+}
+
+
+#[cfg(test)]
+mod tz_tests {
+    use super::*;
+
+    /// P0 回归（v2.2.3）：chrono 偏移是**秒**，适配层必须换算成分钟再进 `civil_and_minutes`。
+    /// 换算缺失时 28800 分钟 = 整 20 天，2026-10-29 会被算成 2026-11-18。
+    #[test]
+    fn offset_seconds_converted_to_minutes() {
+        assert_eq!(offset_seconds_to_minutes(28800), 480); // UTC+8
+        assert_eq!(offset_seconds_to_minutes(0), 0); // UTC
+        assert_eq!(offset_seconds_to_minutes(-25200), -420); // UTC-7
+        // 半小时时区（UTC+5:30，印度）：19800 秒 → 330 分钟（整除截断正确）
+        assert_eq!(offset_seconds_to_minutes(19800), 330);
+    }
+
+    /// 注入非零偏移走完整链路：`civil_and_minutes` 必须拿到分钟口径的偏移，
+    /// UTC 2026-10-29 01:00 + 480 分钟 = 本地 2026-10-29 09:00。
+    #[test]
+    fn civil_and_minutes_with_utc_plus_8_minute_offset() {
+        let (d, m) = wb_core::local_time::civil_and_minutes("2026-10-29T01:00:00Z", 480)
+            .expect("valid iso");
+        assert_eq!((d.year, d.month, d.day), (2026, 10, 29));
+        assert_eq!(m, 9 * 60);
+    }
+
+    /// 防重入（v2.2.4 追加）：连点「立即刷新」或调度线程同时到点时，
+    /// 两轮采集会各自 load 一份旧快照再各自 save，后落盘者覆盖前一轮的站点状态。
+    /// 这条断言锁死「同一时刻只允许一轮采集」这一契约。
+    #[test]
+    fn intel_run_is_exclusive_until_released() {
+        end_intel_run(); // 清场：测试可能与其他用例共享同一静态量
+        assert!(try_begin_intel_run(), "首次应能占用");
+        assert!(!try_begin_intel_run(), "占用期间第二次必须被拒");
+        assert!(!try_begin_intel_run(), "连点第三次同样必须被拒");
+        end_intel_run();
+        assert!(try_begin_intel_run(), "释放后应可再次占用");
+        end_intel_run();
+    }
+
+    /// 反证用例：若把秒当分钟传进去（修复前的实际行为），日期会 +20 天——
+    /// 该断言锁死"偏移必须是分钟"这一契约，防止回归。
+    #[test]
+    fn seconds_fed_as_minutes_shifts_date_by_20_days() {
+        let (d, _) = wb_core::local_time::civil_and_minutes("2026-10-29T01:00:00Z", 28800)
+            .expect("valid iso");
+        assert_eq!((d.year, d.month, d.day), (2026, 11, 18)); // 2026-10-29 + 20 天
+    }
+}
+
+/// v3.0 同步胶水层：只测**不发网络请求**的部分（传输链路已由 wbd sync-live
+/// 对生产服务器 8/8 验证，见档D）。锁死的契约：
+/// ① 状态 JSON 永不包含令牌；② 未登录时「立即同步」返回明确语义而非报错崩溃。
+#[cfg(test)]
+mod sync_glue_tests {
+    use super::*;
+
+    fn tmp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = Store::open(dir.path()).expect("open store");
+        (dir, store)
+    }
+
+    #[test]
+    fn status_json_never_leaks_token() {
+        let (_keep, store) = tmp_store();
+        sync_client::state_set(store.conn(), sync_client::keys::BASE_URL, "https://ahxbd.work").unwrap();
+        sync_client::state_set(store.conn(), sync_client::keys::TOKEN, "tok_secret_should_not_appear").unwrap();
+        sync_client::state_set(store.conn(), sync_client::keys::MEMBER_NAME, "admin").unwrap();
+        sync_client::state_set(store.conn(), sync_client::keys::CURSOR, "7").unwrap();
+        let v = sync_status_value(store.conn());
+        let s = v.to_string();
+        assert!(!s.contains("tok_secret_should_not_appear"), "令牌绝不能出现在状态 JSON 里");
+        assert_eq!(v["base_url"], "https://ahxbd.work");
+        assert_eq!(v["member_name"], "admin");
+        assert_eq!(v["cursor"], 7);
+        assert_eq!(v["logged_in"], true);
+        assert_eq!(v["state"], "已连接");
+    }
+
+    #[test]
+    fn sync_now_without_login_reports_not_logged_in() {
+        let (_keep, store) = tmp_store();
+        let transport = sync_client::http::HttpTransport::new();
+        let v = run_sync_once(store.conn(), &transport);
+        assert_eq!(v["error"], "尚未登录", "未登录时应给出明确语义，而不是空指针或崩溃");
+    }
 }
