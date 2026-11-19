@@ -1,4 +1,4 @@
-//! `wbd` —— 个人工作台 v2.0 系统层驱动。
+//! `wbd` —— 综合工作台 v2.0 系统层驱动。
 //!
 //! 存在的意义：让「实现自检」用**真实执行**取数，而不是靠断言。Tauri 壳需要 GUI 环境，
 //! 本 CLI 复用同一份 `wb-core` 系统层能力，因此导入、落库、备份轮转、断网降级、
@@ -14,7 +14,7 @@ use wb_core::store::{Layout, Store};
 use wb_core::{rules, sync, update};
 
 fn usage() -> String {
-    r#"wbd —— 个人工作台 v2.0 驱动
+    r#"wbd —— 综合工作台 v2.0 驱动
 
 用法：
   wbd import   <xlsx> <fiscal_year> [--json]
@@ -37,6 +37,48 @@ fn usage() -> String {
 
   wbd selfcheck <xlsx> <fiscal_year> <data_dir>
       端到端自检：导入 → 落库 → 备份 → 断网 → 规则，输出实测 JSON
+
+  wbd intel <data_dir> --start <yyyy-mm-dd> --end <yyyy-mm-dd> [--sites id1,id2] [--sample N]
+      v2.3.0 招标情报：逐站真实抓取 → 三层去重 → SQLite 落库（拉链 + 线索池），
+      输出窗口/各站报告/去重审计/每源落库回读样例
+
+  wbd intel-read <data_dir> <source_id> [limit]
+      从 SQLite 回读指定源的当前链记录（独立验收命令：证明数据真的在库里）
+
+  wbd lead <data_dir> list [--state discovered|confirmed|rejected|todoed]
+      线索池列表（v2.3.0 验收4：发现 → 确认 → 待办闭环的入口）
+
+  wbd lead <data_dir> confirm|reject|todo <dedup_key> [--owner 名] [--today yyyy-mm-dd]
+      线索裁决与待办生成：confirm/reject 需先 discovered；todo 需先 confirmed，
+      辅源线索即使确认也不产待办（needs_primary_confirm）
+
+  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]
+      v3.2.0 T3 按项目聚合：列出所有项目及其当前阶段、节点数、首末公告日期、跳段数。
+      数据取自 ext_record 当前链，不重新抓取；--stage 非法值直接报错不静默放行
+
+  wbd project <data_dir> show <project_key>
+      同一项目的多阶段公告时间轴（节点按进程序 + 日期排序，阶段未知节点排在末尾但不丢弃）
+
+  wbd export-subsidy <out.xlsx|out.csv> --from <数据.csv> [--filter 字段=值]... [--contains 字段:值]... [--sheet 名称]
+      v2.3.0 需求⑤ 补贴一键导出：按筛选条件全量导出（非当前页），xlsx 主格式 + CSV 口子
+
+  wbd sync-live <data_dir> setup <base_url> <username> <password>
+      v3.0 真实传输：首成员初始化（服务器只允许一次），落地令牌与设备标识
+
+  wbd sync-live <data_dir> login <base_url> <username> <password>
+      v3.0 真实传输：登录（服务器已初始化后走这个，替代 setup）
+
+  wbd sync-live <data_dir> status
+      读取同步状态（地址、成员、游标、待推、上次结果——不显示令牌）
+
+  wbd sync-live <data_dir> push-test [--title 文本] [--id 行ID]
+      v3.0 真实传输：构造一条测试行进入待推队列（不动真实业务数据）
+
+  wbd sync-live <data_dir> sync-once
+      v3.0 真实传输：同步一轮——推队列 → 拉增量（HTTPS）
+
+  wbd sync-live <data_dir> logout
+      v3.0 真实传输：作废本机令牌（本地数据与游标保留）
 "#
     .to_string()
 }
@@ -55,6 +97,12 @@ fn main() -> ExitCode {
         "sync" => cmd_sync(&args[1..]),
         "update" => cmd_update(&args[1..]),
         "selfcheck" => cmd_selfcheck(&args[1..]),
+        "intel" => cmd_intel(&args[1..]),
+        "intel-read" => cmd_intel_read(&args[1..]),
+        "lead" => cmd_lead(&args[1..]),
+        "project" => cmd_project(&args[1..]),
+        "export-subsidy" => cmd_export_subsidy(&args[1..]),
+        "sync-live" => cmd_sync_live(&args[1..]),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             ExitCode::SUCCESS
@@ -297,9 +345,8 @@ fn cmd_rules(args: &[String]) -> ExitCode {
     println!("打开落后判定后：落后 {} 条（待启动/未筹备项必须为 0，否则首启即误报）", behind_cnt);
 
     let brief = rules::morning_brief(today, &items, &rs);
-    println!("晨报 {}：当日到期 {} · 临期 {} · 逾期 {} · 周一聚合 {}",
-        brief.brief_date, brief.due_today.len(), brief.due_soon.len(), brief.overdue.len(),
-        brief.weekly.as_ref().map(|w| w.should_close.len() + w.should_start.len()).unwrap_or(0));
+    println!("晨报 {}：当日到期 {} · 临期 {} · 逾期 {}",
+        brief.brief_date, brief.due_today.len(), brief.due_soon.len(), brief.overdue.len());
     let quota = rs.daily_quota;
     println!("日配额 {}：托盘类提醒实际投递 {} 条，其余降级应用内", quota, alerts.len().min(quota));
     ExitCode::SUCCESS
@@ -707,4 +754,637 @@ fn offline_drill(store: &Store, year: i32) -> serde_json::Value {
         "pending_rows_for_later_push": pending,
         "note": "同步失败不弹窗、不报错；本地读写完整可用，恢复后按 sync_cursor 增量补推",
     })
+}
+
+// ───────────────────────────── intel（v2.3.0 招标情报落库） ─────────────────────────────
+
+fn cmd_intel(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("用法：wbd intel <data_dir> --start <yyyy-mm-dd> --end <yyyy-mm-dd> [--sites id1,id2] [--sample N]");
+        return ExitCode::from(2);
+    }
+    let data_dir = &args[0];
+    let mut start = String::new();
+    let mut end = String::new();
+    let mut sites: Option<Vec<String>> = None;
+    let mut sample_n = 1usize;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--start" => { start = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--end" => { end = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--sites" => {
+                sites = args.get(i + 1).map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
+                i += 2;
+            }
+            "--sample" => { sample_n = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1); i += 2; }
+            other => { eprintln!("未知参数：{other}"); return ExitCode::from(2); }
+        }
+    }
+    if start.is_empty() || end.is_empty() {
+        eprintln!("--start 与 --end 必填（窗口口径要写进证据）");
+        return ExitCode::from(2);
+    }
+    let today = end.clone();
+    let store = match Store::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    let http = wb_core::intel::UreqFetcher;
+    let sleeper = wb_core::intel::RealSleeper;
+    let ts = wb_core::store::now_iso_pub();
+
+    // 首发闸门（与 run_daily_at 同一判定，不允许两条路径各说一套）：
+    // 未开启的源即便 --sites 显式点名也不抓——发布环境复验前不得静默上。
+    let specs: Vec<&wb_core::intel::SiteSpec> = wb_core::intel::SITE_REGISTRY
+        .iter()
+        .filter(|s| s.tier.is_scheduled() && wb_core::intel::is_enabled_for_release(s.id))
+        .filter(|s| sites.as_ref().map(|v| v.contains(&s.id.to_string())).unwrap_or(true))
+        .collect();
+    if specs.is_empty() {
+        eprintln!("没有可抓取的源：首发只开启 {} 个实测通过的源。", wb_core::intel::RELEASE_ENABLED_SITES.len());
+        return ExitCode::from(2);
+    }
+
+    let mut per_source = Vec::new();
+    for spec in &specs {
+        eprintln!("抓取 {}（{}）…", spec.id, spec.name);
+        let outcome = wb_core::intel::fetch_site_with_retry(
+            spec, &http, &sleeper, wb_core::intel::KEYWORD, &start, &end, &today,
+        );
+        let entry = match outcome {
+            Ok(items) => {
+                let rep = match wb_core::intel_store::persist_fetch(&store, &items, Some(&ts)) {
+                    Ok(r) => r,
+                    Err(e) => return fail(format!("落库失败（{}）：{e}", spec.id), 1),
+                };
+                // fetch_run 留档（每源一行，证据链的一部分）
+                if let Ok(g) = store.begin_write(&format!("fetch-run-{}", spec.id)) {
+                    let _ = g.conn().execute(
+                        "INSERT OR REPLACE INTO fetch_run (id, source_id, started_at, finished_at, result, error_class, item_count, changed_count)
+                         VALUES (?1, ?2, ?3, ?4, 'ok', NULL, ?5, ?6)",
+                        rusqlite::params![
+                            format!("{}|{}", spec.id, ts),
+                            spec.id, ts, ts,
+                            rep.fetched as i64,
+                            (rep.inserted + rep.superseded) as i64
+                        ],
+                    );
+                }
+                // 验收1：落库后从 SQLite 回读样例
+                let samples = wb_core::intel_store::read_current(&store, spec.id, sample_n)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|it| {
+                        // body_head 单独截断，避免在 json! 宏里嵌语句块（宏对 expr 边界敏感）。
+                        let n = it.body_head.chars().count();
+                        let head: String = it.body_head.chars().take(120).collect();
+                        serde_json::json!({
+                            "biz_key_title": it.title,
+                            "url": it.url,
+                            "date": it.date,
+                            "org": it.org,
+                            "area": it.area,
+                            "amount": it.amount,
+                            "body_head": format!("{head}…（{n} 字）"),
+                            "relevance": format!("{:?}", it.relevance),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "site_id": spec.id,
+                    "status": "ok",
+                    "fetched": rep.fetched,
+                    "persist": rep,
+                    "readback_samples": samples,
+                })
+            }
+            Err(f) => {
+                if let Ok(g) = store.begin_write(&format!("fetch-run-{}", spec.id)) {
+                    let _ = g.conn().execute(
+                        "INSERT OR REPLACE INTO fetch_run (id, source_id, started_at, finished_at, result, error_class, item_count, changed_count)
+                         VALUES (?1, ?2, ?3, ?4, 'failed', ?5, 0, 0)",
+                        rusqlite::params![
+                            format!("{}|{}", spec.id, ts),
+                            spec.id, ts, ts,
+                            format!("{:?}", f.status)
+                        ],
+                    );
+                }
+                serde_json::json!({
+                    "site_id": spec.id,
+                    "status": format!("{:?}", f.status),
+                    "detail": f.detail,
+                    "url": f.url,
+                    "attempts": f.attempts,
+                })
+            }
+        };
+        per_source.push(entry);
+    }
+
+    let audit = wb_core::intel_store::dedup_audit(&store).map(|(a, b, c, d)| {
+        serde_json::json!({ "current_records": a, "distinct_biz_keys": b, "leads": c, "distinct_lead_keys": d,
+            "no_dark_duplicates": a == b && c == d })
+    }).unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }));
+    let out = serde_json::json!({
+        "run_ts": ts,
+        "window": { "start": start, "end": end, "keyword": wb_core::intel::KEYWORD },
+        "sources": per_source,
+        "dedup_audit": audit,
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    ExitCode::SUCCESS
+}
+
+fn cmd_intel_read(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("用法：wbd intel-read <data_dir> <source_id> [limit]");
+        return ExitCode::from(2);
+    }
+    let store = match Store::open(&args[0]) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    let limit: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+    let items = match wb_core::intel_store::read_current(&store, &args[1], limit) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("回读失败：{e}"), 1),
+    };
+    let total: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ext_record WHERE source_id = ?1 AND is_current = 1",
+            rusqlite::params![args[1]],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+    let out = serde_json::json!({
+        "source_id": args[1],
+        "current_total": total,
+        "readback": items.iter().map(|it| serde_json::json!({
+            "key": it.key,
+            "title": it.title,
+            "org": it.org,
+            "area": it.area,
+            "date": it.date,
+            "amount": it.amount,
+            "url": it.url,
+            "relevance": format!("{:?}", it.relevance),
+            "reasons": it.reasons,
+            "incomplete": it.incomplete,
+            "body_head": it.body_head,
+        })).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    ExitCode::SUCCESS
+}
+
+fn cmd_lead(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("用法：\n  wbd lead <data_dir> list [--state discovered|confirmed|rejected|todoed]\n  wbd lead <data_dir> confirm|reject|todo <dedup_key> [--owner 名] [--today yyyy-mm-dd]");
+        return ExitCode::from(2);
+    }
+    let data_dir = &args[0];
+    let store = match Store::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    match args[1].as_str() {
+        "list" => {
+            let state = wb_core::lead_todo::LeadState::Discovered;
+            let _ = state;
+            let mut filter: Option<wb_core::lead_todo::LeadState> = None;
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--state" {
+                    filter = match args.get(i + 1).map(|s| s.as_str()) {
+                        Some("discovered") => Some(wb_core::lead_todo::LeadState::Discovered),
+                        Some("confirmed") => Some(wb_core::lead_todo::LeadState::Confirmed),
+                        Some("rejected") => Some(wb_core::lead_todo::LeadState::Rejected),
+                        Some("todoed") => Some(wb_core::lead_todo::LeadState::Todoed),
+                        _ => None,
+                    };
+                }
+                i += 1;
+            }
+            let leads = match wb_core::intel_store::read_leads(&store, filter.as_ref()) {
+                Ok(v) => v,
+                Err(e) => return fail(format!("读取线索失败：{e}"), 1),
+            };
+            // todo_id 不在 Lead 结构里（lead 表独立列），单独查一遍映射，避免在 json! 宏里嵌套闭包。
+            let mut todo_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            {
+                let conn = store.conn();
+                let mut stmt = match conn.prepare("SELECT dedup_key, todo_id FROM intel_lead WHERE todo_id IS NOT NULL AND todo_id != ''") {
+                    Ok(s) => s,
+                    Err(e) => return fail(format!("读取 todo_id 失败：{e}"), 1),
+                };
+                let rows = match stmt.query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    Ok(it) => it,
+                    Err(e) => return fail(format!("读取 todo_id 失败：{e}"), 1),
+                };
+                for row in rows.flatten() {
+                    todo_ids.insert(row.0, row.1);
+                }
+            }
+            let out = serde_json::json!({
+                "total": leads.len(),
+                "leads": leads.iter().map(|l| serde_json::json!({
+                    "dedup_key": l.dedup_key,
+                    "layer": l.dedup_layer,
+                    "origin": format!("{:?}", l.origin),
+                    "state": l.state.label(),
+                    "title": l.title,
+                    "org": l.org,
+                    "area": l.area,
+                    "date": l.date,
+                    "url": l.url,
+                    "amount": l.amount,
+                    "needs_primary_confirm": l.needs_primary_confirm,
+                    "todo_id": todo_ids.get(&l.dedup_key).cloned().unwrap_or_default(),
+                })).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            ExitCode::SUCCESS
+        }
+        "confirm" | "reject" | "todo" => {
+            if args.len() < 3 {
+                eprintln!("缺少 dedup_key（wbd lead list 先查）");
+                return ExitCode::from(2);
+            }
+            let key = &args[2];
+            let mut owner = "大角子".to_string();
+            let mut today = String::new();
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--owner" => { owner = args.get(i + 1).cloned().unwrap_or(owner); i += 2; }
+                    "--today" => { today = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+                    _ => i += 1,
+                }
+            }
+            if today.is_empty() {
+                today = wb_core::store::now_iso_pub()[..10].to_string();
+            }
+            match args[1].as_str() {
+                "confirm" => {
+                    match wb_core::intel_store::confirm_lead(&store, key, None) {
+                        Ok(true) => println!("已确认：{key}"),
+                        Ok(false) => { eprintln!("确认失败：线索不存在或状态已流转（当前态不是待确认）"); return ExitCode::from(1); }
+                        Err(e) => return fail(format!("写库失败：{e}"), 1),
+                    }
+                }
+                "reject" => {
+                    match wb_core::intel_store::reject_lead(&store, key, None) {
+                        Ok(true) => println!("已忽略：{key}"),
+                        Ok(false) => { eprintln!("忽略失败：线索不存在或状态已流转"); return ExitCode::from(1); }
+                        Err(e) => return fail(format!("写库失败：{e}"), 1),
+                    }
+                }
+                "todo" => {
+                    match wb_core::intel_store::generate_todo(&store, key, &today, &owner) {
+                        Ok(Ok(t)) => println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "todo_id": t.todo_id, "title": t.title, "due_date": t.due_date,
+                            "source_url": t.source_url, "owner": t.owner, "next_action": t.next_action,
+                        })).unwrap()),
+                        Ok(Err(r)) => { eprintln!("未生成待办：{}", r.reason()); return ExitCode::from(1); }
+                        Err(e) => return fail(format!("写库失败：{e}"), 1),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            ExitCode::SUCCESS
+        }
+        other => { eprintln!("未知子命令：{other}"); ExitCode::from(2) }
+    }
+}
+
+
+// ───────────────────────────── project（v3.2.0 T3 按项目聚合查询） ─────────────────────────────
+
+/// `wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]`
+/// `wbd project <data_dir> show <project_key>`
+///
+/// 数据全部来自 `ext_record` 的 current 行（拉链当前层），不重新抓取。
+/// `show` 输出同一项目多阶段公告组成的时间轴；`list` 按最近公告日期倒序。
+fn cmd_project(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("用法：\n  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]\n  wbd project <data_dir> show <project_key>");
+        return ExitCode::from(2);
+    }
+    let data_dir = &args[0];
+    let store = match Store::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    match args[1].as_str() {
+        "list" => {
+            let mut stage: Option<wb_core::intel_stage::Stage> = None;
+            let mut limit: usize = 0;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--stage" => {
+                        // 校验逻辑走 wb-core 的共享实现（桌面壳用同一份），
+                        // 非法值直接报错而不是静默当「不过滤」——静默回退会让人以为筛过了。
+                        let raw = args.get(i + 1).map(|s| s.as_str()).unwrap_or("");
+                        stage = match wb_core::intel_stage::Stage::parse_filter(raw) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("--stage {e}");
+                                return ExitCode::from(2);
+                            }
+                        };
+                        i += 2;
+                    }
+                    "--limit" => {
+                        match args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                            Some(n) => limit = n,
+                            None => {
+                                eprintln!("--limit 需要一个非负整数");
+                                return ExitCode::from(2);
+                            }
+                        }
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+            let projects = match wb_core::intel_store::list_projects(&store, stage, limit) {
+                Ok(v) => v,
+                Err(e) => return fail(format!("聚合查询失败：{e}"), 1),
+            };
+            let out = serde_json::json!({
+                "total": projects.len(),
+                "stage_filter": stage.map(|s| s.code()).unwrap_or(""),
+                "limit": limit,
+                "projects": projects.iter().map(|p| serde_json::json!({
+                    "project_key": p.project_key,
+                    "project_code": p.project_code,
+                    "project_name": p.project_name,
+                    "org": p.org,
+                    "area": p.area,
+                    "dedup_layer": p.dedup_layer,
+                    "current_stage": p.current_stage,
+                    "current_stage_label": p.current_stage_label,
+                    "node_count": p.node_count,
+                    "first_date": p.first_date,
+                    "last_date": p.last_date,
+                    "max_stage_order": p.max_stage_order,
+                    "skipped_stages": p.skipped_stages,
+                })).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            ExitCode::SUCCESS
+        }
+        "show" => {
+            let key = match args.get(2) {
+                Some(k) => k,
+                None => {
+                    eprintln!("缺少 project_key（wbd project list 先查）");
+                    return ExitCode::from(2);
+                }
+            };
+            match wb_core::intel_store::read_project_timeline(&store, key) {
+                Ok(Some(p)) => {
+                    println!("{}", serde_json::to_string_pretty(&p).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    eprintln!("未找到项目：{key}（用 wbd project list 看可用 key）");
+                    ExitCode::from(1)
+                }
+                Err(e) => fail(format!("聚合查询失败：{e}"), 1),
+            }
+        }
+        other => {
+            eprintln!("未知子命令：{other}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+
+// ───────────────────────────── export-subsidy（v2.3.0 需求⑤ 补贴一键导出） ─────────────────────────────
+
+/// `wbd export-subsidy <out.xlsx|out.csv> --from <补贴明细.csv> [--filter 字段=值]... [--contains 字段:值]... [--sheet 名称]`
+/// 演示/验收入口：从全量数据 CSV 装载 → 按筛选条件过滤（全量，不只当前页）→ 导出 xlsx 或 CSV。
+/// UI 侧（补贴明细视图工具栏「导出」按钮）调用的是同一个 `subsidy_export` 引擎。
+fn cmd_export_subsidy(args: &[String]) -> ExitCode {
+    if args.len() < 3 {
+        eprintln!("用法：wbd export-subsidy <out.xlsx|out.csv> --from <数据.csv> [--filter 字段=值]... [--contains 字段:值]... [--sheet 名称]");
+        return ExitCode::from(2);
+    }
+    let out = &args[0];
+    let mut from = String::new();
+    let mut filters: Vec<wb_core::subsidy_export::ExportFilter> = Vec::new();
+    let mut sheet_name = "补贴明细".to_string();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--from" => { from = args.get(i + 1).cloned().unwrap_or_default(); i += 2; }
+            "--filter" => {
+                let kv = args.get(i + 1).cloned().unwrap_or_default();
+                match kv.split_once('=') {
+                    Some((k, v)) => filters.push(wb_core::subsidy_export::ExportFilter::eq(k.trim(), v)),
+                    None => { eprintln!("--filter 需要 字段=值 形式，得到：{kv}"); return ExitCode::from(2); }
+                }
+                i += 2;
+            }
+            "--contains" => {
+                let kv = args.get(i + 1).cloned().unwrap_or_default();
+                match kv.split_once(':') {
+                    Some((k, v)) => filters.push(wb_core::subsidy_export::ExportFilter::contains(k.trim(), v)),
+                    None => { eprintln!("--contains 需要 字段:值 形式，得到：{kv}"); return ExitCode::from(2); }
+                }
+                i += 2;
+            }
+            "--sheet" => { sheet_name = args.get(i + 1).cloned().unwrap_or(sheet_name); i += 2; }
+            other => { eprintln!("未知参数：{other}"); return ExitCode::from(2); }
+        }
+    }
+    if from.is_empty() {
+        eprintln!("--from 必填（全量数据 CSV）");
+        return ExitCode::from(2);
+    }
+    let (headers, rows) = match wb_core::subsidy_export::read_csv(std::path::Path::new(&from)) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("读数据失败：{e}"), 1),
+    };
+    let total = rows.len();
+    let filtered = match wb_core::subsidy_export::apply_filters(&headers, &rows, &filters) {
+        Ok(v) => v,
+        Err(e) => return fail(e, 1),
+    };
+    let filtered_rows: Vec<Vec<String>> = filtered.into_iter().cloned().collect();
+    let out_path = std::path::Path::new(out);
+    let wrote = if out_path.extension().and_then(|e| e.to_str()) == Some("csv") {
+        wb_core::subsidy_export::export_csv(out_path, &headers, &filtered_rows)
+    } else {
+        wb_core::subsidy_export::export_xlsx(out_path, &headers, &filtered_rows, &sheet_name)
+    };
+    match wrote {
+        Ok(n2) => {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "out": out,
+                "format": if out_path.extension().and_then(|e| e.to_str()) == Some("csv") { "csv" } else { "xlsx" },
+                "source_rows_total": total,
+                "filters_applied": filters.iter().map(|f| serde_json::json!({
+                    "field": f.field,
+                    "op": format!("{:?}", f.op),
+                    "value": f.value,
+                })).collect::<Vec<_>>(),
+                "rows_exported": n2,
+                "note": "按筛选条件全量导出（非当前页）",
+            })).unwrap());
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(e, 1),
+    }
+}
+
+
+
+// ───────────────────────────── sync-live（v3.0 真实传输） ─────────────────────────────
+
+/// 对真实服务端跑同步链路：setup/login/status/push-test/sync-once/logout。
+/// 与 `sync`（离线合并演练）的区别：这里走 [`wb_core::sync_client::http::HttpTransport`]，
+/// 每次 push/pull 都是真实 HTTPS 往返——桌面壳恢复传输层后走的正是同一份代码。
+fn cmd_sync_live(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        return fail(
+            "用法：wbd sync-live <data_dir> setup|login|status|push-test|sync-once|logout ...（详见 wbd help）",
+            2,
+        );
+    }
+    let dir = PathBuf::from(&args[0]);
+    let cmd = args[1].as_str();
+    let rest = &args[2..];
+
+    let store = match Store::open(&dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    let conn = store.conn();
+    let transport = wb_core::sync_client::http::HttpTransport::new();
+
+    match cmd {
+        // ── 首成员初始化 / 登录：落地 base_url + token + 身份 ──
+        "setup" | "login" => {
+            if rest.len() < 3 {
+                return fail(format!("用法：wbd sync-live <data_dir> {cmd} <base_url> <username> <password>"), 2);
+            }
+            let (base_url, username, password) = (&rest[0], &rest[1], &rest[2]);
+            let seed = format!("wbd-sync-live:{username}@{base_url}");
+            let now = wb_core::store::now_iso_pub();
+            let res = if cmd == "setup" {
+                wb_core::sync_client::setup_first(conn, base_url, username, password, &seed, &transport, &now)
+            } else {
+                wb_core::sync_client::login(conn, base_url, username, password, &seed, &transport, &now)
+            };
+            match res {
+                Ok(st) => {
+                    println!("== {cmd} 成功（真实 HTTPS）==");
+                    print_sync_status(&st);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(format!("{cmd} 失败：{}", e.describe()), 1),
+            }
+        }
+
+        // ── 状态：不显示令牌本身 ──
+        "status" => {
+            let st = wb_core::sync_client::read_status(conn);
+            println!("== 同步状态（本机库）==");
+            print_sync_status(&st);
+            ExitCode::SUCCESS
+        }
+
+        // ── 构造一条测试行进待推队列（不动真实业务数据）──
+        "push-test" => {
+            let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+            let id = flag("--id").unwrap_or_else(|| format!("probe-{}", wb_core::store::now_ms_pub()));
+            let title = flag("--title").unwrap_or_else(|| "v3.0 真实传输首推验证行".into());
+            let by = wb_core::sync_client::state_get(conn, wb_core::sync_client::keys::MEMBER_ID)
+                .unwrap_or_else(|| "probe".into());
+            let dev = wb_core::sync_client::state_get(conn, wb_core::sync_client::keys::DEVICE_ID)
+                .unwrap_or_else(|| "unknown-device".into());
+            let now_ms = wb_core::store::now_ms_pub();
+            let mut payload = serde_json::Map::new();
+            payload.insert("title".into(), serde_json::json!(title));
+            payload.insert("progress_pct".into(), serde_json::json!(0));
+            payload.insert("probe".into(), serde_json::json!(true));
+            let row = sync::SyncRow {
+                table: "work_item".into(),
+                id,
+                payload,
+                updated_at: now_ms,
+                updated_by: by,
+                device_id: dev,
+                seq: 0,
+                deleted_at: None,
+            };
+            match wb_core::sync_client::enqueue(conn, &row, &wb_core::store::now_iso_pub()) {
+                Ok(()) => {
+                    let pending = wb_core::sync_client::count_pending(conn).unwrap_or(-1);
+                    println!("测试行已入队：table=work_item id={} updated_at={}（队列共 {pending} 条）",
+                        row.id, row.updated_at);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(format!("入队失败：{e}"), 1),
+            }
+        }
+
+        // ── 同步一轮：推队列 → 拉增量（真实 HTTPS）──
+        "sync-once" => {
+            let base_url = wb_core::sync_client::state_get(conn, wb_core::sync_client::keys::BASE_URL)
+                .unwrap_or_default();
+            let token = wb_core::sync_client::state_get(conn, wb_core::sync_client::keys::TOKEN)
+                .unwrap_or_default();
+            if base_url.is_empty() || token.is_empty() {
+                return fail("尚未登录：先跑 sync-live setup（或 login）", 1);
+            }
+            let now_ms = wb_core::store::now_ms_pub();
+            let now_iso = wb_core::store::now_iso_pub();
+            let report =
+                wb_core::sync_client::sync_once(conn, &base_url, &token, &transport, now_ms, &now_iso);
+            println!("== sync-once 结果（真实 HTTPS：{base_url}）==");
+            println!(
+                "推上 {} 行 / 拉回 {} 行 / 冲突 {} 条 / 剩余待推 {} 条 / 游标 {}",
+                report.pushed, report.pulled, report.conflicts, report.pending, report.cursor
+            );
+            match &report.error {
+                Some(e) => {
+                    println!("状态：{}（错误：{e}）", report.state.label());
+                    ExitCode::FAILURE
+                }
+                None => {
+                    println!("状态：{}", report.state.label());
+                    ExitCode::SUCCESS
+                }
+            }
+        }
+
+        // ── 登出：作废令牌，本地数据保留 ──
+        "logout" => match wb_core::sync_client::logout(conn, &transport) {
+            Ok(_) => {
+                println!("已登出：令牌作废，本地数据与游标保留");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(format!("登出失败：{}", e.describe()), 1),
+        },
+
+        other => fail(format!("未知 sync-live 动作：{other}（可用：setup/login/status/push-test/sync-once/logout）"), 2),
+    }
+}
+
+fn print_sync_status(st: &wb_core::SyncStatus) {
+    println!("  状态：{}", st.state.label());
+    println!("  服务器：{}", if st.base_url.is_empty() { "（未配置）" } else { &st.base_url });
+    println!("  成员：{}（{}）", st.member_name.as_deref().unwrap_or("（未登录）"), st.member_id.as_deref().unwrap_or("-"));
+    println!("  设备：{} / 游标 {} / 待推 {} 条", st.device_id.as_deref().unwrap_or("-"), st.cursor, st.pending);
+    println!("  上次成功：{} / 上次错误：{}", st.last_ok_at.as_deref().unwrap_or("（无）"), st.last_error.as_deref().unwrap_or("（无）"));
 }

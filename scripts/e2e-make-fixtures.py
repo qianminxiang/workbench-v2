@@ -21,7 +21,7 @@
   n1/tampered.exe     安装包内容篡改（中间 1 字节翻转）
   n1/latest.json      url → tampered.exe，signature 真实
   n2/latest.json      signature 篡改（全局签名最后一字节翻转；长度与 key_id 不变）
-  n3/latest.json      version 2.1.0→2.2.0（url/signature 仍是真实的 2.1.0）
+  n3/latest.json      version 改成 --n3-version（url/signature 仍是真实基线版本）
   n4/latest.json      url 指向不存在的资产（清单 URL 篡改）
 """
 import argparse
@@ -29,6 +29,15 @@ import base64
 import json
 import shutil
 from pathlib import Path
+
+
+def bump_patch(version: str) -> str:
+    """把 x.y.z 的最后一段 +1；无法解析时抛错（宁可失败，不静默造一个假版本）。"""
+    parts = version.strip().split(".")
+    if len(parts) < 3 or not all(p.isdigit() for p in parts):
+        raise SystemExit(f"基线版本 {version!r} 不是 x.y.z 形式，无法派生 n3 版本")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return ".".join(parts)
 
 
 def write_manifest(path: Path, data: dict) -> None:
@@ -65,6 +74,15 @@ def main() -> None:
     ap.add_argument("--sig", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--port", required=True, type=int)
+    # n3 的「清单版本」不再写死：基线资产可能是任意已发布版本，断言串由本脚本
+    # 按实际写出的 n3_version 派生，避免版本前进后断言腐坏。
+    #
+    # ⚠ 结构性坑（v2.2.2 修复）：此前工作流传 `--n3-version $WB_BASE_VERSION`，
+    # 也就是把清单版本篡改成**基线自己的版本**——签名里的版本与清单宣告版本相等，
+    # 插件根本不会走「版本不符」分支，期望串永远不可能出现，n3 必然拿不到终态结果。
+    # 现在改为可选：缺省自动取基线 patch+1，并在下面硬校验「必须 != 基线」。
+    ap.add_argument("--n3-version", default=None,
+                    help="n3 清单里篡改成的版本号；缺省 = 基线 patch+1（必须 != 基线）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -73,6 +91,17 @@ def main() -> None:
     out.mkdir(parents=True)
 
     real = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+
+    # n3 只翻清单的 version 字段，url/signature 仍是真实的。
+    # 若伪造值与清单真实版本相同，更新插件不会发出
+    # 「signed for X but announced X」判定，既不报错也不终止，负例永远等不到终态
+    # （2026-10-29 run 40829502144 实测：n3 卡死 → 未产出终态结果文件）。
+    # 在夹具侧直接拦下，避免调用方再传成基线版本。
+    if args.n3_version == real["version"]:
+        raise SystemExit(
+            "n3 伪造版本与清单真实版本相同（{}），负例不成立："
+            "n3 必须给出与真实签名版本不同的伪造版本".format(real["version"])
+        )
     win_real = real["platforms"]["windows-x86_64"]
     base = f"http://127.0.0.1:{args.port}"
 
@@ -83,6 +112,14 @@ def main() -> None:
 
     (out / "real").mkdir()
     shutil.copyfile(args.installer, out / "real" / "win.exe")
+
+    # 正例清单：原样复刻本次运行开始时钉死的那一份（版本号与资产 URL 是同一 tag 的一对）。
+    # 存在的理由（2026-10-29 run 40836620836）：正例此前打真实 GitHub 端点，
+    # 而 WB_BASE_VERSION 是 step6 按 tag 取到的；若两者之间又发了新版，
+    # 插件公告的是新版本、env 里仍是旧版本，断言「未检测到基线版本 X：Y」必炸。
+    # 这是夹具时序问题，不是升级链路坏——断言口径不变，只是让被宣告的版本
+    # 回到本次运行钉死的那一版。
+    write_manifest(out / "real" / "latest.json", real)
 
     # ── n1：篡改安装包内容 ──
     blob = bytearray(Path(args.installer).read_bytes())
@@ -104,10 +141,19 @@ def main() -> None:
     if m2["platforms"]["windows-x86_64"]["signature"] == win_real["signature"]:
         raise SystemExit("n2 篡改未生效")
 
-    # ── n3：篡改清单版本号 ──
+    # ── n3：篡改清单版本号（必须与签名内绑定的基线版本不同，否则这条红线不成立）──
+    base_version = real["version"]
+    n3_version = args.n3_version
+    if not n3_version:
+        n3_version = bump_patch(base_version)
+    if n3_version == base_version:
+        raise SystemExit(
+            f"n3 版本不能等于基线版本 {base_version}：清单宣告与签名绑定一致时，"
+            "插件不会进入「版本不符」分支，n3 用例失去意义"
+        )
     (out / "n3").mkdir()
     m3 = json.loads(json.dumps(real))
-    m3["version"] = "2.2.0"
+    m3["version"] = n3_version
     m3["platforms"]["windows-x86_64"]["url"] = f"{base}/real/win.exe"
     write_manifest(out / "n3" / "latest.json", m3)
 
@@ -123,7 +169,13 @@ def main() -> None:
         "tampered_original_byte": f"0x{original:02x}",
         "tampered_new_byte": "0x{:02x}".format(blob[mid]),
         "sig_is_base64_of_minisign_text": True,
+        "base_version": base_version,
+        "pinned_manifest_url": "{}/real/latest.json".format(base),
         "n3_version": m3["version"],
+        # 断言串在脚本侧拼好（唯一来源），工作流不再自己写版本字面量
+        "n3_expect": (
+            "signed for version {signed} but the update endpoint announced version {announced}"
+        ).format(signed=real["version"], announced=m3["version"]),
         "n4_url": m4["platforms"]["windows-x86_64"]["url"],
     }
     (out / "fixtures.json").write_text(

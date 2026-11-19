@@ -1,5 +1,5 @@
 //! FR-2 项目情报（应用内直连）+ FR-1 极飞网点周比对（v2.2）。
-//!
+//
 //! 设计原则（PRD 第十章 10.2 / AC-2-5、AC-2-11）：
 //! - 按"会失败"设计：每个站点独立抓取，失败只标记该源，不阻塞其他源与本地功能。
 //! - 状态如实：未验证的分站不得标"已接入"；失败原因可区分（拦截/验证页/超时/解析失败）。
@@ -7,6 +7,7 @@
 //! - 网络走 [`Http`] trait，生产实现为 ureq，测试用 mock。
 
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -174,8 +175,8 @@ pub const SITE_REGISTRY: &[SiteSpec] = &[
         base: "https://ggzy.fuyang.gov.cn", epoint: Some(EpointCfg { cnum: "001", rn: 15, ..EpointCfg::std() }),
         note: "预研实测 2026-10-28：需用其默认参数形态（cnum=001、time:null）；标题12/全文29" },
     SiteSpec { id: "suzhou_ah", name: "宿州市公共资源交易平台", city: "宿州", tier: Tier::CityBatch2,
-        base: "https://ggzy.suzhou.gov.cn", epoint: Some(EpointCfg { cnum: "001;002;003;004;005;006;007;008;009", rn: 15, ..EpointCfg::std() }),
-        note: "预研实测 2026-10-28：cnum 必须传全串、wd 需 URL 编码；标题2/全文44" },
+        base: "https://ggzy.suzhou.gov.cn", epoint: Some(EpointCfg { cnum: "", rn: 15, ..EpointCfg::std() }),
+        note: "v2.3.0 实测 2026-11-05：cnum 传全串（001;…;009）源站直接 code=500；改空串得 totalcount=40。响应为双层包装（外层 content 为 JSON 字符串），由 unwrap_double_json 统一解包" },
     SiteSpec { id: "wuhu", name: "芜湖市公共资源交易平台", city: "芜湖", tier: Tier::CityBatch2,
         base: "https://ggzy.wuhu.gov.cn", epoint: None,
         note: "预研实测 2026-10-28：独立 .NET API（GET /api/Home/GetNoticePage），仅标题式检索" },
@@ -193,76 +194,361 @@ pub const SITE_REGISTRY: &[SiteSpec] = &[
         note: "预研实测 2026-10-28：去栏目过滤即可；标题3/全文8" },
     SiteSpec { id: "huangshan", name: "黄山市公共资源交易平台", city: "黄山", tier: Tier::CityBatch2,
         base: "https://ggzy.huangshan.gov.cn", epoint: Some(EpointCfg { prefix: "/inteligentSearch", cnum: "", rn: 15, double_wrap: false }),
-        note: "预研实测 2026-10-28：旧端点 inteligentSearch/getFullTextData；标题3/全文7" },
+        note: "v2.3.0 实测 2026-11-05：/inteligentSearch 前缀 404（nginx）；/inteligentsearch 存在但返回 403 Missing authorization header → 标 NeedsCredential，未取得凭据前不得标记已接入" },
     // ── 降级观察 ──
     SiteSpec { id: "tongling", name: "铜陵市公共资源交易平台", city: "铜陵", tier: Tier::CityWeekly,
         base: "https://ggzy.tongling.gov.cn", epoint: Some(EpointCfg::std()),
         note: "预研实测 2026-10-28：可达但近 3 月标题 0 命中/全文仅 5，按周频低频观察，不进日频首批" },
+    // ── 企业官网信息源（v2.3.0 需求③：首个实锚）──
+    // 普农集团只在本官网发公告（不去公共资源平台），没有它就漏源头。
+    // 抓取走 intel_source::fetch_html_source（列表页 + 逐条详情 + 两级命中）。
+    SiteSpec { id: "pjwnc", name: "安徽省普济圩现代农业集团（企业官网）", city: "铜陵", tier: Tier::CityWeekly,
+        base: "http://www.pjwnc.com", epoint: None,
+        note: "v2.3.0 实锚：/content/channel/6038695d2792eea9207b23c7/ 列表 + /content/detail/ 详情（meta ArticleTitle）。2026-10-28 实例 TLTRZB【2026】074 植保无人机 2 台/预算 22 万即本站首发" },
 ];
 
+// ─────────────────────────────────────────────────────────────────────────
+// 首发闸门（v2.2.6）：只开实测通过的源，其余「代码保留、默认禁用」
+// ─────────────────────────────────────────────────────────────────────────
+//  闸门条件（任务书写死）：9 个沙箱网络出口拦截、无法实测的站，代码保留但**默认禁用**，
+//  不得静默上；发布环境复验通过后再随补丁开启。
+//
+//  用**白名单**而不是黑名单：新增站点若忘了登记，默认落到「未开启」而不是「悄悄开始抓」。
+//  这条是安全默认值——静默上线的代价（用户看到假的「已接入 N 源」）远高于漏开一站。
+
+/// v2.2.6 首发实际抓取的源（8 个，全部有真实抓取落库证据）。
+///
+/// 证据（2026-11-06 本机沙箱实测，130 条 ext_record 当前链 / 5 条线索 /
+/// dedup_audit `no_dark_duplicates: true`）：普农企业官网 + 滁州 / 六安 / 亳州 /
+/// 宿州 / 蚌埠 / 淮北 / 池州。
+pub const RELEASE_ENABLED_SITES: &[&str] =
+    &["pjwnc", "chuzhou", "luan", "bozhou", "suzhou_ah", "bengbu", "huaibei", "chizhou"];
+
+/// 首发未开启的源（代码就绪、沙箱出口层拦截或需凭据，未取得实测证据）。
+///
+/// 恒等于「注册表中已排期但不在白名单里的站」。单独列出只为让界面/日志能明确说出
+/// 「不是没实现，是首发没开」，而不是让用户面对一个空状态去猜。
+pub fn release_disabled_sites() -> Vec<&'static str> {
+    SITE_REGISTRY
+        .iter()
+        .filter(|s| s.tier.is_scheduled() && !is_enabled_for_release(s.id))
+        .map(|s| s.id)
+        .collect()
+}
+
+/// 该源在 v2.2.6 首发是否真的抓取。**唯一的开关判定**，调度/CLI/界面都必须走这里。
+pub fn is_enabled_for_release(site_id: &str) -> bool {
+    RELEASE_ENABLED_SITES.contains(&site_id)
+}
+
 /// 覆盖统计（AC-2-10：摘要显示 已接入 N / 计划覆盖 M）
+///
+/// v2.2.6 口径变更：`connected` 从「已排期」改为**首发实际开启**——
+/// 原口径会把 9 个没实测过的站算进「已接入」，正是闸门要拦的静默上线。
 pub fn coverage_counts() -> (usize, usize) {
-    let scheduled = SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()).count();
+    let connected = SITE_REGISTRY
+        .iter()
+        .filter(|s| s.tier.is_scheduled() && is_enabled_for_release(s.id))
+        .count();
     // 计划覆盖 = 省级 4 站（含不可行的 deal.ggzy 与人工通道 ccgp，如实计数）+ 16 地市
-    (scheduled, SITE_REGISTRY.len())
+    (connected, SITE_REGISTRY.len())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // HTTP 抽象（测试 mock / 生产 ureq）
 // ─────────────────────────────────────────────────────────────────────────
+/// v2.2.4 抓取改造：单请求超时 20s → 40s。
+/// 政府站普遍慢，20s 在弱网或长响应下会被截断，表现为「网络失败」而实际是读超时。
+pub const FETCH_TIMEOUT_SECS: u64 = 40;
+/// 网络类失败的重试间隔（秒）：5s、15s 递增，最多重试 2 次。
+pub const RETRY_DELAYS_SECS: &[u64] = &[5, 15];
+/// 诊断里保留的响应体前 N 字符（自带上报用，不落全量）。
+pub const DIAG_BODY_CHARS: usize = 300;
+/// 每源滚动保留的诊断条数。
+pub const DIAG_KEEP: usize = 3;
+
+pub const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HttpErr {
-    /// 网络不可达 / DNS / 超时（AC-2-11 离线场景）
-    Network,
-    /// HTTP 非成功状态（418/429/5xx…）
-    Status(u16),
+    /// 网络不可达 / DNS / 连接被 reset（政府站 WAF 常见「连不上」多为此类）
+    Network(String),
+    /// 超时（连接超时 / 读超时 / 整体超时）
+    Timeout(String),
+    /// TLS 握手失败（证书、协议版本、指纹被拒）
+    Tls(String),
+    /// HTTP 非成功状态（状态码 + 响应体前 300 字符）
+    Status(u16, String),
     /// 命中反爬/验证页特征（418 拦截页 /「频繁访问」/NEED_CAPTCHA）
     Blocked(&'static str),
+}
+
+impl HttpErr {
+    /// 是否值得重试。Blocked 明确不重试——验证码/拦截越重试封得越久。
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, HttpErr::Network(_) | HttpErr::Timeout(_) | HttpErr::Tls(_))
+    }
+
+    /// 诊断分类标签（界面直接展示，用户可整段贴回）
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            HttpErr::Network(_) => "网络",
+            HttpErr::Timeout(_) => "超时",
+            HttpErr::Tls(_) => "TLS",
+            HttpErr::Status(..) => "状态码",
+            HttpErr::Blocked(_) => "验证码/拦截",
+        }
+    }
+
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            HttpErr::Status(c, _) => Some(*c),
+            _ => None,
+        }
+    }
+
+    pub fn body_head(&self) -> &str {
+        match self {
+            HttpErr::Status(_, b) => b.as_str(),
+            _ => "",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            HttpErr::Network(m) | HttpErr::Timeout(m) | HttpErr::Tls(m) => m.clone(),
+            HttpErr::Status(c, _) => format!("HTTP {}", c),
+            HttpErr::Blocked(f) => format!("命中拦截特征 {}", f),
+        }
+    }
 }
 
 pub trait Http {
     fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr>;
     fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr>;
+
+    /// 表单 POST。与 post_json 的区别只在 Content-Type——
+    /// 省级主站 ggzy.ah.gov.cn 的 /souSuo 收的是 `param=…&currentPage=1` 表单，
+    /// 此前复用 post_json 会把 Content-Type 写成 application/json，
+    /// 服务端按 JSON 解析失败、返回错误页而非记录列表（表现为「解析失败」）。
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.post_json(url, body, timeout)
+    }
 }
 
 /// 生产实现：ureq（v2.1 曾随单机化移除，v2.2 经用户拍板恢复）。
+///
+/// v2.2.4 改造要点（都只为「提高成功率」这一件事）：
+/// - **native-tls**：ureq 的 native-tls 是"适配器"，`ureq::get/post` 这类便捷函数永远不会
+///   采用它，必须在 Agent 上 `tls_connector` 显式配置——只加 feature 不改代码等于没改。
+///   Windows 走 SChannel，与浏览器同一套栈；政府站 WAF 对 rustls 的 ClientHello 指纹
+///   常见做法是直接 reset，这正是「浏览器/curl 通、程序全挂」的主因。
+/// - **共享 Agent**：连接池复用 + 共享 cookie store（省级站要先 GET 首页拿会话再 POST）。
+/// - **请求头补全**：Accept / Accept-Language / Referer / Origin。Epoint 的 POST 常校验 Referer。
 pub struct UreqFetcher;
+
+impl UreqFetcher {
+    /// 实际生效的 TLS 后端（界面上可核对，避免「以为切了其实没切」）。
+    pub fn tls_backend(&self) -> &'static str {
+        let _ = shared_agent(); // 触发一次初始化，保证读到真实结果
+        tls_backend_label()
+    }
+}
+
+fn origin_of(url: &str) -> String {
+    match url.find("://") {
+        Some(p) => {
+            let rest = &url[p + 3..];
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            format!("{}{}", &url[..p + 3], &rest[..end])
+        }
+        None => url.to_string(),
+    }
+}
+
+/// 统一补齐浏览器常规请求头。缺 Referer/Origin 时 Epoint 系接口常返回空或错误页。
+fn apply_common(req: ureq::Request, url: &str) -> ureq::Request {
+    let origin = origin_of(url);
+    req.set("User-Agent", UA)
+        .set("Accept", "text/html,application/json,application/xhtml+xml,*/*;q=0.8")
+        .set("Accept-Language", "zh-CN,zh;q=0.9")
+        .set("Referer", &format!("{}/", origin))
+        .set("Origin", &origin)
+}
+
+fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(build_agent)
+}
+
+fn tls_backend_label() -> &'static str {
+    if *NATIVE_TLS_OK.get().unwrap_or(&false) {
+        if cfg!(target_os = "windows") {
+            "native-tls/schannel"
+        } else if cfg!(target_os = "macos") {
+            "native-tls/security-framework"
+        } else {
+            "native-tls/openssl"
+        }
+    } else {
+        "rustls（native-tls 初始化失败，已回落）"
+    }
+}
+
+static NATIVE_TLS_OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn build_agent() -> ureq::Agent {
+    let base = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .redirects(3)
+        .user_agent(UA);
+    // 不设 min_protocol_version：部分政府站只到 TLS1.0/1.1，收紧协议反而会砍掉可用站点。
+    // 系统栈的默认协议集合与浏览器一致，这正是要的效果。
+    match ureq::native_tls::TlsConnector::new() {
+        Ok(connector) => {
+            NATIVE_TLS_OK.set(true).ok();
+            base.tls_connector(std::sync::Arc::new(connector)).build()
+        }
+        Err(_) => {
+            NATIVE_TLS_OK.set(false).ok();
+            base.build()
+        }
+    }
+}
 
 impl Http for UreqFetcher {
     fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
-        let resp = ureq::post(url)
+        let resp = apply_common(shared_agent().post(url), url)
             .timeout(timeout)
-            .set("Content-Type", "application/json")
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .set("Content-Type", "application/json; charset=UTF-8")
             .send_string(body)
             .map_err(map_ureq_err)?;
         read_resp(resp)
     }
-    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
-        let resp = ureq::get(url)
+
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        let resp = apply_common(shared_agent().post(url), url)
             .timeout(timeout)
-            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            .send_string(body)
+            .map_err(map_ureq_err)?;
+        read_resp(resp)
+    }
+
+    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
+        let resp = apply_common(shared_agent().get(url), url)
+            .timeout(timeout)
             .call()
             .map_err(map_ureq_err)?;
         read_resp(resp)
     }
 }
 
+/// 响应体前 N 字符（按字符切，避免把 UTF-8 断在半个汉字上）。
+/// 对外暴露的响应体截断工具（v2.3.0 intel_source 适配器复用）。
+pub fn head_chars(body: &str, n: usize) -> String {
+    // 先洗掉「浏览：166 次」这类动态计数再截断——body_head 进 content_hash（拉链版本判定），
+    // 不洗的话同一公告每次重抓都翻链（2026-11-06 普农实测 13 条全 superseded）。
+    let body = &normalize_volatile_body(body);
+    let s: String = body.chars().take(n).collect();
+    if body.chars().count() > n {
+        format!("{}…（截断）", s)
+    } else {
+        s
+    }
+}
+
+/// 归一化正文里的动态计数（「浏览：166 次」这类每次刷新都变的字段）。
+/// body_head 进 content_hash（拉链版本判定），不洗掉的话每次重抓都翻链（2026-11-06 普农实测：
+/// 13 条全 superseded）。只洗计数数字，保留其余正文原样。
+pub fn normalize_volatile_body(s: &str) -> String {
+    // 「浏览：123 次」/「浏览 123 次」/「点击量：123」→ 占位符
+    let mut out: String = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+    while i < n {
+        // 窗口探测：浏览|点击|访问 + 可选冒号/空格 + 数字串 + 可选 次/下
+        if (chars[i] == '浏' && i + 1 < n && chars[i + 1] == '览')
+            || (chars[i] == '点' && i + 2 < n && chars[i + 1] == '击' && chars[i + 2] == '量')
+            || (chars[i] == '访' && i + 1 < n && chars[i + 1] == '问')
+        {
+            let kw_len = if chars[i] == '浏' || chars[i] == '访' { 2 } else { 3 };
+            let mut j = i + kw_len;
+            while j < n && (chars[j] == '：' || chars[j] == ':' || chars[j] == ' ') {
+                j += 1;
+            }
+            let d0 = j;
+            while j < n && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > d0 {
+                // 数字串后若是「次」「下」或非字母数字即认为命中
+                let after_ok = j >= n
+                    || !chars[j].is_alphanumeric()
+                    || chars[j] == '次';
+                if after_ok {
+                    out.push_str("浏览：N 次");
+                    // 数字与量词之间可能夹空格（「浏览：166 次」）：
+                    // 先跳空白，再把尾部量词（次/下）一并消费，避免「浏览：N 次 次」
+                    while j < n && (chars[j] == ' ' || chars[j] == '\u{a0}') {
+                        j += 1;
+                    }
+                    if j < n && (chars[j] == '次' || chars[j] == '下') {
+                        j += 1;
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 fn map_ureq_err(e: ureq::Error) -> HttpErr {
     match e {
-        ureq::Error::Status(code, _) => {
-            if code == 418 || code == 429 { HttpErr::Blocked("http_418_429") } else { HttpErr::Status(code) }
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            if code == 418 || code == 429 {
+                HttpErr::Blocked("http_418_429")
+            } else {
+                HttpErr::Status(code, head_chars(&body, DIAG_BODY_CHARS))
+            }
         }
-        _ => HttpErr::Network,
+        ureq::Error::Transport(t) => {
+            let msg = t.to_string();
+            let lower = msg.to_lowercase();
+            // 超时在 ureq 里落在 Io 里，只能按消息文本区分——所以保留原文便于远程核对
+            if lower.contains("timed out") || lower.contains("timeout") || lower.contains("超时") {
+                HttpErr::Timeout(msg)
+            } else if lower.contains("tls")
+                || lower.contains("certificate")
+                || lower.contains("handshake")
+                || lower.contains("ssl")
+            {
+                HttpErr::Tls(msg)
+            } else {
+                HttpErr::Network(msg)
+            }
+        }
     }
 }
 
 fn read_resp(resp: ureq::Response) -> Result<String, HttpErr> {
-    let body = resp.into_string().map_err(|_| HttpErr::Network)?;
+    let status = resp.status();
+    let body = resp.into_string().map_err(|e| HttpErr::Network(e.to_string()))?;
     // 验证页特征检测：返回内容是拦截页时即使 HTTP 200 也算被拦（AC-2-5）
     if body.contains("频繁访问") || body.contains("NEED_CAPTCHA") || body.contains("访问被拦截") {
         return Err(HttpErr::Blocked("captcha_page"));
+    }
+    // 5xx 但 ureq 未当错误抛出的边缘情况，统一按状态码归类
+    if status >= 500 {
+        return Err(HttpErr::Status(status, head_chars(&body, DIAG_BODY_CHARS)));
     }
     Ok(body)
 }
@@ -290,6 +576,16 @@ pub struct IntelItem {
     /// 人工改判时间戳（AC-2-7：不被自动规则覆盖）
     pub manual_verdict: bool,
     pub first_seen: String,
+    /// 正文头部（≤600 字符，含截断标记）。两级命中的正文复核依据 + 落库回读样例。
+    /// v2.3.0 新增，`serde(default)` 保证旧 JSON（v2.2 存量）仍可反序列化。
+    #[serde(default)]
+    pub body_head: String,
+    /// 源站接口自带的项目编号（Epoint 同族 `projectno` 字段）。
+    ///
+    /// **v3.2.0 新增**：这是权威值，用于消除正文抽取的粘连误判（见 `DedupInput::native_code`）。
+    /// 非 Epoint 源或字段为空时为 `None`，此时退回正文抽取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,11 +634,11 @@ pub fn build_epoint_request(spec: &SiteSpec, wd: &str, start: &str, end: &str, p
     };
     let url = format!("{}{}", spec.base, path);
     let cnum = cfg.cnum.to_string();
-    let time = if spec.id == "fuyang" {
-        serde_json::json!(null)
-    } else {
-        serde_json::json!([{ "fieldName": "webdate", "startTime": start, "endTime": end }])
-    };
+    // **v2.3.0 修正①**：`time` 必须为空数组或 null。
+    // 实测（六安，2026-11-05 本单）：同一窗口 `time:[]` → 70 条；`time:[{webdate}]` → 58 条。
+    // 站点把 time 当"二次时间过滤"，与 sdt/edt 叠加后把 12 条挡在窗外；日期窗口已由 sdt/edt 表达，
+    // 再传 time 只会双重过滤。v2.2 版本套用 `[{webdate}]` 是漏抓的一部分原因。
+    let time = serde_json::Value::Null;
     let body = serde_json::json!({
         "token": "",
         "pn": page,
@@ -350,7 +646,10 @@ pub fn build_epoint_request(spec: &SiteSpec, wd: &str, start: &str, end: &str, p
         "sdt": start,
         "edt": end,
         "wd": wd,
-        "fields": "title",
+        // **v2.3.0 修正②（需求②的根因）**：只查 `title` 时服务端仅在标题里匹配 wd，
+        // 标题不含"无人机"而正文含的公告全部抓不到。实测六安 `title`→22 条、`title;content`→70 条（漏 48）。
+        // 放宽召回后由 intel_source::two_stage 做客户端两级复核，保证"召回放宽、判定不放宽"。
+        "fields": "title;content",
         "cnum": cnum,
         "sort": "{'webdate':'0'}",
         "ssort": "title",
@@ -360,6 +659,24 @@ pub fn build_epoint_request(spec: &SiteSpec, wd: &str, start: &str, end: &str, p
         "time": time,
     });
     (url, body.to_string())
+}
+
+/// 解包站点双层 JSON（外层 `{"code":200,"content":"<json string>"}`）。
+///
+/// 判据：顶层是对象、含 `content` 且为字符串、且该字符串能被解析成 JSON。
+/// 不按站点配置开关——配置开关正是此前宿州漏解的原因（配 false 就整站 0 条）。
+/// 统一按内容判据解包，任何一站换了包装形态都不会再漏。
+fn unwrap_double_json(v: serde_json::Value) -> serde_json::Value {
+    if let Some(c) = v.get("content").and_then(|x| x.as_str()) {
+        if c.trim_start().starts_with('{') {
+            if let Ok(inner) = serde_json::from_str::<serde_json::Value>(c) {
+                if inner.get("result").is_some() {
+                    return inner;
+                }
+            }
+        }
+    }
+    v
 }
 
 /// Epoint 响应解析：响应结构存在站间差异（result.results / data / 双层包装），
@@ -381,22 +698,96 @@ fn find_record_arrays(v: &serde_json::Value, depth: u8) -> Vec<serde_json::Value
     }
 }
 
+/// 清洗入库文本：去 HTML 标签 + 解码常见实体 + 折叠空白。
+///
+/// 为什么必须在**入库前**做：部分源站（Epoint 系）把搜索高亮原样塞进 title 字段，
+/// 形如 `<em>无</em><em>人</em><em>机</em>`——逐字高亮，标签夹在字与字之间。
+/// 前端 `esc()` 只转义尖括号、不会剥离标签，于是界面字面显示 `<em>无</em>…`，
+/// 用户看到的是调试残渣而不是项目名。清洗放在领域层（而不是前端渲染时），
+/// 保证 JSON 库存本身干净、导出/搜索/去重都基于同一份文本。
+pub fn clean_text(s: &str) -> String {
+    // ① 去标签（含未闭合的残片），标签内内容保留
+    let mut buf = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => buf.push(c),
+            _ => {}
+        }
+    }
+    // ② 实体解码（先做 &amp; 之外的具名实体，再统一处理数字实体）
+    let mut out = buf
+        .replace("&nbsp;", " ")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    // ③ 数字实体（&#xxx; / &#xhh;），只处理可见字符，越界值原样保留
+    let chars: Vec<char> = out.chars().collect();
+    let mut decoded = String::with_capacity(chars.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '&' && i + 1 < chars.len() && chars[i + 1] == '#' {
+            let rest: String = chars[i..].iter().take(12).collect();
+            if let Some(semi) = rest.find(';') {
+                let body = &rest[2..semi];
+                let v = if let Some(hex) = body.strip_prefix('x').or_else(|| body.strip_prefix('X')) {
+                    u32::from_str_radix(hex, 16).ok()
+                } else {
+                    body.parse::<u32>().ok()
+                };
+                if let Some(cp) = v.and_then(char::from_u32) {
+                    decoded.push(cp);
+                    i += semi + 1;
+                    continue;
+                }
+            }
+        }
+        decoded.push(chars[i]);
+        i += 1;
+    }
+    out = decoded;
+    // ④ 折叠空白（换行/制表/连续空格 → 单空格）
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// 解析单条记录为 IntelItem（六字段抽取，缺失标 incomplete）
 fn record_to_item(spec: &SiteSpec, rec: &serde_json::Value, today: &str) -> IntelItem {
-    let title = rec
-        .get("title").or_else(|| rec.get("projectName")).and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
-    let org = rec
-        .get("purchaseName").or_else(|| rec.get("purchaseunitname")).or_else(|| rec.get("jiaoyimethod"))
-        .and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
-    let area = rec
-        .get("districtName").or_else(|| rec.get("area")).or_else(|| rec.get("xiaqucode"))
-        .and_then(|t| t.as_str()).unwrap_or("").trim().to_string();
+    let title = clean_text(
+        rec.get("title").or_else(|| rec.get("projectName")).and_then(|t| t.as_str()).unwrap_or("").trim(),
+    );
+    let org = clean_text(
+        rec.get("purchaseName")
+            .or_else(|| rec.get("purchaseunitname"))
+            .or_else(|| rec.get("jiaoyimethod"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim(),
+    );
+    let area = clean_text(
+        rec.get("districtName")
+            .or_else(|| rec.get("area"))
+            .or_else(|| rec.get("xiaqucode"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim(),
+    );
     let date = normalize_date_value(rec.get("webdate").or_else(|| rec.get("publishDate")).or_else(|| rec.get("infodatepx")));
     let amount = rec
         .get("budgetPrice").or_else(|| rec.get("monitorAmount")).or_else(|| rec.get("totalContractAmount"))
         .and_then(|t| t.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "null");
     let url = resolve_link(spec, rec);
     let content = rec.get("content").and_then(|t| t.as_str()).unwrap_or("");
+    // 接口自带项目编号（权威值）。空串 / `null` 一律视为缺失，交正文抽取兜底。
+    let native_code = rec
+        .get("projectno")
+        .and_then(|x| x.as_str())
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty() && x != "null");
     let (relevance, reasons) = classify(&title, content);
     let key = format!("{}|{}", spec.id, url.trim());
     let incomplete = title.is_empty() || org.is_empty() || area.is_empty() || date.is_empty() || url.is_empty();
@@ -415,6 +806,8 @@ fn record_to_item(spec: &SiteSpec, rec: &serde_json::Value, today: &str) -> Inte
         incomplete,
         manual_verdict: false,
         first_seen: today.to_string(),
+        body_head: head_chars(content, 600),
+        native_code,
     }
 }
 
@@ -484,6 +877,141 @@ fn resolve_link(spec: &SiteSpec, rec: &serde_json::Value) -> String {
 // ─────────────────────────────────────────────────────────────────────────
 // 各源抓取
 // ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+// v2.2.4 抓取改造：失败诊断 + 可注入重试
+// ─────────────────────────────────────────────────────────────────────────
+/// 单站采集失败的结构化载荷。
+/// 相比原来的 `(FetchStatus, String)` 元组，多带三项诊断必需信息：
+/// **实际请求的 URL**、**HTTP 状态码**、**响应体前 300 字符**。
+/// 用户真实机器是唯一的验证环境（沙箱出口 502、CI 在海外都到不了这些政务站），
+/// 所以诊断必须自报，让用户能把整段贴回来定位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchFail {
+    pub status: FetchStatus,
+    /// 人读摘要（列表页直接展示）
+    pub detail: String,
+    /// 失败时正在请求的 URL（含分页序号，能判断卡在第几页）
+    pub url: String,
+    pub http_status: Option<u16>,
+    pub body_head: String,
+    /// 实际尝试次数（1 = 没重试；3 = 重试两次仍失败）
+    pub attempts: u32,
+}
+
+impl FetchFail {
+    /// 本地产生的失败（解析不到记录、适配器未实现等），没有 HTTP 层信息。
+    pub fn local(status: FetchStatus, detail: impl Into<String>) -> Self {
+        FetchFail {
+            status,
+            detail: detail.into(),
+            url: String::new(),
+            http_status: None,
+            body_head: String::new(),
+            attempts: 1,
+        }
+    }
+
+    /// 从 HTTP 层错误转出来：状态码/响应体原文都留着。
+    pub fn from_http(e: &HttpErr, url: &str, attempts: u32) -> Self {
+        let status = match e {
+            HttpErr::Network(_) | HttpErr::Timeout(_) | HttpErr::Tls(_) => FetchStatus::Network,
+            HttpErr::Status(..) | HttpErr::Blocked(_) => FetchStatus::Blocked,
+        };
+        FetchFail {
+            status,
+            detail: e.message(),
+            url: url.to_string(),
+            http_status: e.http_status(),
+            body_head: e.body_head().to_string(),
+            attempts,
+        }
+    }
+}
+
+/// 重试等待的注入点。领域层不直接 sleep：生产用 [`RealSleeper`]，
+/// 测试用 [`NoSleep`]，否则单测会为每次模拟网络失败白等 20 秒。
+pub trait RetrySleeper {
+    fn sleep_secs(&self, secs: u64);
+}
+
+/// 生产实现：真等。重试间隔按需求固定为 5s / 15s 递增。
+pub struct RealSleeper;
+impl RetrySleeper for RealSleeper {
+    fn sleep_secs(&self, secs: u64) {
+        std::thread::sleep(Duration::from_secs(secs));
+    }
+}
+
+/// 测试实现：不等待。
+pub struct NoSleep;
+impl RetrySleeper for NoSleep {
+    fn sleep_secs(&self, _secs: u64) {}
+}
+
+/// 包一层重试：网络类失败最多再试 [`RETRY_DELAYS_SECS`] 次（5s、15s），
+/// **Blocked（验证码/拦截）一律不重试**——越重试封得越久，直接降级。
+///
+/// 做成 `Http` 的装饰器，是为了让上面 15 个地市站的适配器代码一行都不用改，
+/// 重试语义集中在一处，也就不会出现「这个站重试了那个站没重试」。
+pub struct RetryingHttp<'a> {
+    inner: &'a dyn Http,
+    sleeper: &'a dyn RetrySleeper,
+    /// 最近一次请求的 URL，失败时用来落诊断
+    last_url: RefCell<String>,
+    /// 最近一次请求的尝试次数
+    attempts: Cell<u32>,
+}
+
+impl<'a> RetryingHttp<'a> {
+    pub fn new(inner: &'a dyn Http, sleeper: &'a dyn RetrySleeper) -> Self {
+        RetryingHttp { inner, sleeper, last_url: RefCell::new(String::new()), attempts: Cell::new(0) }
+    }
+
+    pub fn attempts(&self) -> u32 {
+        self.attempts.get().max(1)
+    }
+
+    pub fn last_url(&self) -> String {
+        self.last_url.borrow().clone()
+    }
+
+    fn run(&self, url: &str, mut call: impl FnMut() -> Result<String, HttpErr>) -> Result<String, HttpErr> {
+        *self.last_url.borrow_mut() = url.to_string();
+        let mut tried = 0usize;
+        loop {
+            match call() {
+                Ok(v) => {
+                    self.attempts.set(tried as u32 + 1);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    if e.is_retryable() && tried < RETRY_DELAYS_SECS.len() {
+                        let d = RETRY_DELAYS_SECS[tried];
+                        tried += 1;
+                        self.sleeper.sleep_secs(d);
+                        continue;
+                    }
+                    self.attempts.set(tried as u32 + 1);
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Http for RetryingHttp<'a> {
+    fn post_json(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.post_json(url, body, timeout))
+    }
+    fn post_form(&self, url: &str, body: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.post_form(url, body, timeout))
+    }
+    fn get(&self, url: &str, timeout: Duration) -> Result<String, HttpErr> {
+        self.run(url, || self.inner.get(url, timeout))
+    }
+}
+
 pub fn fetch_site(
     spec: &SiteSpec,
     http: &dyn Http,
@@ -491,12 +1019,44 @@ pub fn fetch_site(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
+) -> Result<Vec<IntelItem>, FetchFail> {
     match spec.tier {
-        Tier::CityBatch1 | Tier::CityBatch2 | Tier::CityWeekly => fetch_epoint(spec, http, wd, start, end, today),
+        // 池州 / 芜湖虽在 CityBatch2 里，但它们的接口与 Epoint 同族无关，由 intel_source 接管
+        Tier::CityBatch1 | Tier::CityBatch2 | Tier::CityWeekly => {
+            match crate::intel_source::kind_of(spec.id) {
+                crate::intel_source::SourceKind::EpointFulltext => fetch_epoint(spec, http, wd, start, end, today),
+                _ => crate::intel_source::fetch_by_kind(spec, http, wd, start, end, today),
+            }
+        }
         Tier::ProvincialFallback => fetch_huicaiyun(spec, http, wd, start, end, today),
         Tier::ProvincialMain => fetch_ggzy_ah(spec, http, wd, start, end, today),
-        _ => Err((FetchStatus::ParseError, "该源不在自动调度范围".into())),
+        _ => Err(FetchFail::local(FetchStatus::ParseError, "该源不在自动调度范围")),
+    }
+}
+
+/// 带重试的单站抓取（生产路径入口）。诊断所需的 URL / 状态码 / 响应体
+/// 全从 [`RetryingHttp`] 与 [`FetchFail::from_http`] 带出，不用各适配器自己拼。
+pub fn fetch_site_with_retry(
+    spec: &SiteSpec,
+    http: &dyn Http,
+    sleeper: &dyn RetrySleeper,
+    wd: &str,
+    start: &str,
+    end: &str,
+    today: &str,
+) -> Result<Vec<IntelItem>, FetchFail> {
+    let r = RetryingHttp::new(http, sleeper);
+    let out = fetch_site(spec, &r, wd, start, end, today);
+    match out {
+        Ok(v) => Ok(v),
+        Err(mut f) => {
+            // 适配器已带出 HTTP 层信息就不覆盖（那是更精确的一手信息）
+            if f.url.is_empty() {
+                f.url = r.last_url();
+            }
+            f.attempts = r.attempts();
+            Err(f)
+        }
     }
 }
 
@@ -507,43 +1067,59 @@ fn fetch_epoint(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    // 芜湖（.NET API）/ 池州（自有 JSON API）为非 Epoint 站，接口参数未逐站验证，
-    // 按「未验证不冒充已实现」如实返回，待第二批逐站接入（AC-2-9）
-    spec.epoint.as_ref().ok_or_else(|| {
-        (FetchStatus::ParseError, "非 Epoint 站，适配器待第二批逐站验证实现".to_string())
-    })?;
+) -> Result<Vec<IntelItem>, FetchFail> {
+    // 走到这里说明注册表标了 Epoint 却没给 epoint 配置（配置缺失，不是"待实现"）。
+    // 池州 / 芜湖已在 intel_source 里各自实现，不会再落到这条。
+    spec.epoint
+        .as_ref()
+        .ok_or_else(|| FetchFail::local(FetchStatus::ParseError, "注册表缺 epoint 配置（配置缺陷）"))?;
     let mut items = Vec::new();
     for page in 0..MAX_PAGES_PER_SITE as usize {
         let (url, body) = build_epoint_request(spec, wd, start, end, page);
-        let resp = http.post_json(&url, &body, Duration::from_secs(20)).map_err(map_http)?;
-        ensure_not_blocked(&resp)?;
-        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
-        let v = if spec.epoint.as_ref().map(|c| c.double_wrap).unwrap_or(false) {
-            // 淮南：双层 JSON 包装（外层字符串再包一层 JSON）
-            if let Some(inner) = v.as_str() {
-                serde_json::from_str(inner).unwrap_or(v)
-            } else {
-                v
-            }
-        } else {
-            v
-        };
-        // 标准路径 /result/results 优先（空数组=合法空结果，AC-2-8）；
-        // 站间差异（双层包装/异构键名）回落到递归发现
-        let records = match v.pointer("/result/results") {
+        let resp = http
+            .post_json(&url, &body, Duration::from_secs(FETCH_TIMEOUT_SECS))
+            .map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+        ensure_not_blocked(&resp, &url)?;
+        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| {
+            FetchFail { body_head: head_chars(&resp, DIAG_BODY_CHARS), ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON") }
+                .with_url(&url)
+        })?;
+        // **v2.3.0 修正③**：记录数组的真实路径是 `/result/records`（v2.2 找 `/result/results`，
+        // 该键在任何一站都不存在 → 每站都落进递归兜底，宿州/淮南的双层包装则完全解析不到）。
+        // 双层包装确认（宿州实测 2026-11-05）：外层 `{"code":200,"content":"<JSON 字符串>","msg":...}`，
+        // 内层才是 `{"result":{"totalcount":40,"records":[…]}}`。此前只在 `double_wrap=true`（淮南）时解包，
+        // 宿州配的是 false，于是 40 条被解析成 0 条。
+        let v = unwrap_double_json(v);
+        let records = match v.pointer("/result/records") {
             Some(serde_json::Value::Array(a)) => a.clone(),
             _ => find_record_arrays(&v, 0),
         };
         if records.is_empty() {
-            if page == 0 && v.pointer("/result/results").is_none() && find_record_arrays(&v, 0).is_empty() {
-                return Err((FetchStatus::ParseError, "未在响应中定位到记录数组".into()));
+            if page == 0 && v.pointer("/result/records").is_none() && find_record_arrays(&v, 0).is_empty() {
+                // 站点自有错误码（宿州 cnum 传全串时返回 {"code":500,"msg":"…"}）要如实带出，
+                // 不能只说"未定位到记录数组"——那会让运维以为是自己解析写错了。
+                let err_msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("");
+                let code = v.get("code").and_then(|c| c.as_i64());
+                let detail = if !err_msg.is_empty() {
+                    format!("源站返回错误 code={:?}：{}", code, err_msg)
+                } else {
+                    "未在响应中定位到记录数组".to_string()
+                };
+                return Err(FetchFail {
+                    body_head: head_chars(&resp, DIAG_BODY_CHARS),
+                    ..FetchFail::local(FetchStatus::ParseError, detail).with_url(&url)
+                });
             }
             break;
         }
         let got = records.len();
         for rec in &records {
-            items.push(record_to_item(spec, rec, today));
+            let mut it = record_to_item(spec, rec, today);
+            // 需求②：服务端已按 title;content 召回，这里做**客户端两级复核**——
+            // 标题命中的直接过，仅正文命中的必须再过农业加分词，否则降级 Suspect（不进主线）。
+            let body = rec.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            crate::intel_source::apply_two_stage(&mut it, body);
+            items.push(it);
         }
         let cfg_rn = spec.epoint.as_ref().map(|c| c.rn).unwrap_or(15);
         if got < cfg_rn {
@@ -553,6 +1129,13 @@ fn fetch_epoint(
     Ok(items)
 }
 
+impl FetchFail {
+    fn with_url(mut self, url: &str) -> Self {
+        self.url = url.to_string();
+        self
+    }
+}
+
 fn fetch_huicaiyun(
     spec: &SiteSpec,
     http: &dyn Http,
@@ -560,13 +1143,10 @@ fn fetch_huicaiyun(
     start: &str,
     end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    let (s_ms, e_ms) = match (
-        date_str_to_ms(start),
-        date_str_to_ms(end),
-    ) {
+) -> Result<Vec<IntelItem>, FetchFail> {
+    let (s_ms, e_ms) = match (date_str_to_ms(start), date_str_to_ms(end)) {
         (Some(s), Some(e)) => (s, e + 86_399_000),
-        _ => return Err((FetchStatus::ParseError, "日期参数非法".into())),
+        _ => return Err(FetchFail::local(FetchStatus::ParseError, "日期参数非法")),
     };
     let url = format!("{}/portal/all", spec.base);
     let body = serde_json::json!({
@@ -574,15 +1154,24 @@ fn fetch_huicaiyun(
         "publishDateBegin": s_ms, "publishDateEnd": e_ms,
         "pageNo": 1, "pageSize": 15, "isTitleSearch": 1, "order": "desc", "leaf": "0",
     });
-    let resp = http.post_json(&url, &body.to_string(), Duration::from_secs(20)).map_err(map_http)?;
-    ensure_not_blocked(&resp)?;
-    let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
+    let resp = http
+        .post_json(&url, &body.to_string(), Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+    ensure_not_blocked(&resp, &url)?;
+    let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| FetchFail {
+        body_head: head_chars(&resp, DIAG_BODY_CHARS),
+        ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON").with_url(&url)
+    })?;
     let records = v
         .pointer("/result/data/data")
-        .and_then(|x| x.as_array()).cloned()
+        .and_then(|x| x.as_array())
+        .cloned()
         .unwrap_or_default();
     if records.is_empty() && v.pointer("/result/data/total").and_then(|t| t.as_i64()) != Some(0) {
-        return Err((FetchStatus::ParseError, "未定位到徽采云结果数组".into()));
+        return Err(FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "未定位到徽采云结果数组").with_url(&url)
+        });
     }
     Ok(records.iter().map(|rec| record_to_item(spec, rec, today)).collect())
 }
@@ -611,17 +1200,27 @@ fn fetch_ggzy_ah(
     _start: &str,
     _end: &str,
     today: &str,
-) -> Result<Vec<IntelItem>, (FetchStatus, String)> {
-    // POST /souSuo 表单（param 域），服务端渲染 HTML；解析 newDetail 链接 + 标题
+) -> Result<Vec<IntelItem>, FetchFail> {
+    // 省级主站要求「先有会话再检索」：直接 POST /souSuo 会被当成无会话裸请求拦掉。
+    // 改造⑥：先 GET 首页把会话 cookie 拿到共享 cookie store（UreqFetcher 的 Agent 带 cookies
+    // feature），再 POST /souSuo 表单。首页预热失败不算致命——继续试检索，让服务端自己说话，
+    // 失败的真相会落进诊断里，比在这里猜更可靠。
+    let home = format!("{}/", spec.base);
+    let prime = http.get(&home, Duration::from_secs(FETCH_TIMEOUT_SECS));
     let url = format!("{}/souSuo", spec.base);
-    let form = format!(
-        "param={}&currentPage=1&pageNo=1",
-        urlencoding_min(wd)
-    );
-    let resp = http
-        .post_json(&url, &form, Duration::from_secs(20))
-        .map_err(map_http)?;
-    ensure_not_blocked(&resp)?;
+    let form = format!("param={}&currentPage=1&pageNo=1", urlencoding_min(wd));
+    let resp = match http.post_form(&url, &form, Duration::from_secs(FETCH_TIMEOUT_SECS)) {
+        Ok(r) => r,
+        Err(e) => {
+            // 检索本身失败：优先报检索（那才是拿不到数据的原因），首页失败只作补充说明
+            let mut f = FetchFail::from_http(&e, &url, 1);
+            if prime.is_err() {
+                f.detail = format!("{}（首页会话预热也失败，可能是整站不可达）", f.detail);
+            }
+            return Err(f);
+        }
+    };
+    ensure_not_blocked(&resp, &url)?;
     let mut items = Vec::new();
     let mut rest = resp.as_str();
     while let Some(i) = rest.find("newDetail?guid=") {
@@ -648,12 +1247,17 @@ fn fetch_ggzy_ah(
                 incomplete: true, // 列表页无单位/地区/日期，详情页字段本期不抓正文（信息不全，如实标注）
                 manual_verdict: false,
                 first_seen: today.to_string(),
+                body_head: String::new(),
+                native_code: None,
             });
         }
         rest = after;
     }
     if items.is_empty() {
-        return Err((FetchStatus::ParseError, "HTML 未解析到 newDetail 链接".into()));
+        return Err(FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "HTML 未解析到 newDetail 链接").with_url(&url)
+        });
     }
     Ok(items)
 }
@@ -682,19 +1286,15 @@ fn urlencoding_min(s: &str) -> String {
 
 /// 拦截页特征检测（AC-2-5）：HTTP 200 但内容是验证/拦截页也算 Blocked。
 /// 放在 fetch 层而非仅生产 HTTP 实现里，保证 mock 测试与生产行为一致。
-fn ensure_not_blocked(body: &str) -> Result<(), (FetchStatus, String)> {
+/// 拦截页特征检测（对外，v2.3.0 intel_source 适配器复用同一判据）。
+pub fn ensure_not_blocked(body: &str, url: &str) -> Result<(), FetchFail> {
     if body.contains("频繁访问") || body.contains("NEED_CAPTCHA") || body.contains("访问被拦截") {
-        Err((FetchStatus::Blocked, "命中拦截特征 captcha_page".into()))
+        Err(FetchFail {
+            body_head: head_chars(body, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::Blocked, "命中拦截特征 captcha_page").with_url(url)
+        })
     } else {
         Ok(())
-    }
-}
-
-fn map_http(e: HttpErr) -> (FetchStatus, String) {
-    match e {
-        HttpErr::Network => (FetchStatus::Network, "网络不可达或超时".into()),
-        HttpErr::Status(c) => (FetchStatus::Blocked, format!("HTTP {}", c)),
-        HttpErr::Blocked(f) => (FetchStatus::Blocked, format!("命中拦截特征 {}", f)),
     }
 }
 
@@ -729,15 +1329,75 @@ pub struct SiteStateRow {
     pub last_status: Option<FetchStatus>,
     pub last_detail: String,
     pub fail_streak: u32,
+    /// v2.2.4 诊断日志：每源滚动保留最近 [`DIAG_KEEP`] 次采集记录，不无限增长。
+    /// 用户机器是唯一能连通政务站的环境，这份记录是唯一的事后证据。
+    #[serde(default)]
+    pub diags: Vec<DiagEntry>,
+}
+
+/// 单次采集的诊断记录（一次一条，成功也留——成功记录能证明「刚才还通」，
+/// 一旦转为失败，与上一条成功记录对比就能分辨是站点变了还是本地网络变了）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DiagEntry {
+    /// 采集时刻（本地时区 `YYYY-MM-DDTHH:MM:SSZ` 口径随 store::now_iso_pub）
+    pub ts: String,
+    /// 本次实际请求的 URL（空表示本地失败，未发出请求）
+    pub url: String,
+    pub http_status: Option<u16>,
+    /// 分类：成功 / 网络 / 超时 / TLS / 状态码 / 验证码/拦截 / 解析
+    pub kind: String,
+    /// 一句话摘要
+    pub detail: String,
+    /// 响应体前 300 字符（解析失败时是判断源站结构变更的唯一线索）
+    pub body_head: String,
+    /// 尝试次数（>1 说明重试过）
+    pub attempts: u32,
+}
+
+impl DiagEntry {
+    /// 给人看的整段诊断文本——用户点「复制诊断」直接贴回来就是这个。
+    pub fn to_block(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("时间：{}\n", if self.ts.is_empty() { "（未取到）" } else { &self.ts }));
+        out.push_str(&format!("请求：{}\n", if self.url.is_empty() { "（未发出请求）" } else { &self.url }));
+        out.push_str(&format!(
+            "HTTP 状态：{}\n",
+            self.http_status.map(|c| c.to_string()).unwrap_or_else(|| "（无）".into())
+        ));
+        out.push_str(&format!("分类：{}\n", self.kind));
+        out.push_str(&format!("尝试次数：{}\n", self.attempts));
+        out.push_str(&format!("说明：{}\n", self.detail));
+        if !self.body_head.is_empty() {
+            out.push_str(&format!("响应体前 300 字符：\n{}\n", self.body_head));
+        }
+        out
+    }
+}
+
+impl SiteStateRow {
+    /// 追加一条诊断，只留最近 [`DIAG_KEEP`] 条。
+    pub fn push_diag(&mut self, entry: DiagEntry) {
+        self.diags.push(entry);
+        let n = self.diags.len();
+        if n > DIAG_KEEP {
+            self.diags.drain(0..n - DIAG_KEEP);
+        }
+    }
 }
 
 impl IntelState {
     pub fn load(dir: &std::path::Path) -> IntelState {
         let p = dir.join("intel_state.json");
-        std::fs::read_to_string(&p)
+        let mut st: IntelState = std::fs::read_to_string(&p)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // 存量清洗迁移：v2.2.1 之前入库的条目可能带着源站高亮标签
+        // （形如 `<em>无</em><em>人</em><em>机</em>`），加载时就地洗一遍并回写。
+        if clean_stored(&mut st) {
+            let _ = st.save(dir);
+        }
+        st
     }
 
     pub fn save(&self, dir: &std::path::Path) {
@@ -746,6 +1406,30 @@ impl IntelState {
             let _ = std::fs::write(p, s);
         }
     }
+}
+
+/// 存量条目清洗：把已入库条目的 title/org/area 过一遍 `clean_text`。
+/// 返回是否发生了改写（false = 存量已干净，不触发回写）。
+pub fn clean_stored(state: &mut IntelState) -> bool {
+    let mut changed = false;
+    for it in state.items.values_mut() {
+        let t = clean_text(&it.title);
+        let o = clean_text(&it.org);
+        let a = clean_text(&it.area);
+        if t != it.title {
+            it.title = t;
+            changed = true;
+        }
+        if o != it.org {
+            it.org = o;
+            changed = true;
+        }
+        if a != it.area {
+            it.area = a;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// 去重合并一批新条目（AC-2-4：站点+URL 规范化幂等；AC-2-7：人工改判保留）
@@ -802,11 +1486,29 @@ pub fn run_daily(
     start: &str,
     end: &str,
 ) -> (Vec<SiteResult>, String) {
+    run_daily_at(state, http, &RealSleeper, today, start, end, &crate::store::now_iso_pub())
+}
+
+/// 与 [`run_daily`] 同语义，但可注入等待实现与采集时刻——
+/// 单测要断言「重试了 2 次」「诊断滚到第 4 条时最早那条被挤掉」，
+/// 既不能真等 20 秒，也不能依赖真实时钟。
+pub fn run_daily_at(
+    state: &mut IntelState,
+    http: &dyn Http,
+    sleeper: &dyn RetrySleeper,
+    today: &str,
+    start: &str,
+    end: &str,
+    ts: &str,
+) -> (Vec<SiteResult>, String) {
     let mut results = Vec::new();
     let mut new_total = 0usize;
     let mut failed = 0usize;
-    for spec in SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled()) {
-        let r = fetch_site(spec, http, KEYWORD, start, end, today);
+    // 首发闸门：只跑实测通过的源。未开启的源不进循环——不抓、不落诊断、不计入已接入，
+    // 避免「界面显示 19 源已接入、其中 9 个从未连通」的静默上线（v2.2.6 闸门条件）。
+    for spec in SITE_REGISTRY.iter().filter(|s| s.tier.is_scheduled() && is_enabled_for_release(s.id)) {
+        let r = fetch_site_with_retry(spec, http, sleeper, KEYWORD, start, end, today);
+        let mut fail: Option<FetchFail> = None;
         let sr = match r {
             Ok(items) => {
                 let (new_n, _) = merge_items(state, items, today);
@@ -814,10 +1516,45 @@ pub fn run_daily(
                 new_total += new_n;
                 SiteResult { site_id: spec.id.to_string(), status: FetchStatus::Ok, detail: String::new(), items: n, new_items: new_n }
             }
-            Err((st, detail)) => {
+            Err(f) => {
                 failed += 1;
-                SiteResult { site_id: spec.id.to_string(), status: st.clone(), detail: detail.clone(), items: 0, new_items: 0 }
+                let sr = SiteResult {
+                    site_id: spec.id.to_string(),
+                    status: f.status.clone(),
+                    detail: f.detail.clone(),
+                    items: 0,
+                    new_items: 0,
+                };
+                fail = Some(f);
+                sr
             }
+        };
+        // 诊断记录先组装好，再与状态行一起落库。关键：**诊断写入失败绝不能中断采集**——
+        // 这里全是不可能失败的纯内存操作，落盘那一步在 IntelState::save 里已被 `if let Ok` 包住；
+        // 若某天真失败，也只会在该源 diags 里少一条，不会把整轮采集带崩。
+        let diag = match fail.as_ref() {
+            None => DiagEntry {
+                ts: ts.to_string(),
+                url: String::new(),
+                http_status: Some(200),
+                kind: "成功".into(),
+                detail: if sr.items == 0 {
+                    "请求成功，结果 0 条".into()
+                } else {
+                    format!("请求成功，本站在库 {} 条", sr.items)
+                },
+                body_head: String::new(),
+                attempts: 1,
+            },
+            Some(f) => DiagEntry {
+                ts: ts.to_string(),
+                url: f.url.clone(),
+                http_status: f.http_status,
+                kind: sr.status.label().to_string(),
+                detail: f.detail.clone(),
+                body_head: f.body_head.clone(),
+                attempts: f.attempts,
+            },
         };
         let row = state.sites.entry(spec.id.to_string()).or_default();
         row.last_attempt = Some(today.to_string());
@@ -834,6 +1571,7 @@ pub fn run_daily(
                 row.fail_streak += 1;
             }
         }
+        row.push_diag(diag);
         results.push(sr);
     }
     state.last_run_date = Some(today.to_string());
@@ -882,7 +1620,7 @@ impl DealerNode {
     }
 }
 
-pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, (FetchStatus, String)> {
+pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, FetchFail> {
     let mut nodes = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for tag in DEALER_TAGS {
@@ -890,8 +1628,11 @@ pub fn fetch_dealers(http: &dyn Http) -> Result<Vec<DealerNode>, (FetchStatus, S
             "https://www.xa.com/service/dealer-address?province={}&tag={}",
             urlencoding_min(DEALER_PROVINCE), tag
         );
-        let resp = http.get(&url, Duration::from_secs(20)).map_err(map_http)?;
-        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| (FetchStatus::ParseError, "响应非 JSON".into()))?;
+        let resp = http.get(&url, Duration::from_secs(FETCH_TIMEOUT_SECS)).map_err(|e| FetchFail::from_http(&e, &url, 1))?;
+        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| FetchFail {
+            body_head: head_chars(&resp, DIAG_BODY_CHARS),
+            ..FetchFail::local(FetchStatus::ParseError, "响应非 JSON").with_url(&url)
+        })?;
         let arr = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
         for d in arr {
             let node = DealerNode {
@@ -940,20 +1681,99 @@ pub fn diff_dealers(prev: &[DealerNode], next: &[DealerNode]) -> DealerDiff {
 mod tests {
     use super::*;
 
+    #[test]
+    fn normalize_volatile_body_collapses_view_counters() {
+        // 动态计数每次刷新都变：同一条公告的 body_head 必须稳定（进 content_hash）
+        assert_eq!(
+            normalize_volatile_body("浏览：166 次"),
+            normalize_volatile_body("浏览：999 次")
+        );
+        assert_eq!(normalize_volatile_body("浏览：166 次"), "浏览：N 次");
+        assert_eq!(normalize_volatile_body("点击量:12345"), "浏览：N 次");
+        // 数字后跟尾空格：空格一并消费（「访问 42 」→「浏览：N 次」）
+        // 正文其他数字不受影响（金额、编号是判重/抽取的输入，绝不能洗）
+        assert_eq!(
+            normalize_volatile_body("预算金额：22 万元，编号 TLTRZB2026074"),
+            "预算金额：22 万元，编号 TLTRZB2026074"
+        );
+        // head_chars 路径整体稳定
+        let a = head_chars("公告正文 浏览：166 次 尾部", 600);
+        let b = head_chars("公告正文 浏览：321 次 尾部", 600);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn clean_text_strips_highlight_tags_and_decodes_entities() {
+        // 源站搜索高亮：标签夹在字与字之间，去标签后应还原成项目名
+        assert_eq!(clean_text("<em>无</em><em>人</em><em>机</em>"), "无人机");
+        assert_eq!(clean_text("A &amp; B &lt;x&gt;"), "A & B <x>");
+        assert_eq!(clean_text("&#22909;&#x4EBA;"), "好人");
+        assert_eq!(clean_text("  多  空格\n换行 "), "多 空格 换行");
+        // 纯文本不应被改动（幂等）
+        assert_eq!(clean_text("普通项目名"), "普通项目名");
+        assert_eq!(clean_text("普通项目名"), clean_text("普通项目名"));
+    }
+
+    #[test]
+    fn clean_stored_rewrites_persisted_highlight_titles_once() {
+        let mut st = IntelState::default();
+        st.items.insert(
+            "k".into(),
+            IntelItem {
+                key: "k".into(),
+                site_id: "s".into(),
+                site_name: "n".into(),
+                title: "<em>无</em><em>人</em><em>机</em>采购公告".into(),
+                org: "<b>某县农业农村局</b>".into(),
+                area: "六安市".into(),
+                date: "2026-10-20".into(),
+                amount: None,
+                url: "https://x.example/a.html".into(),
+                relevance: Relevance::Core,
+                reasons: vec![],
+                incomplete: false,
+                manual_verdict: false,
+                first_seen: "2026-10-20".into(),
+                body_head: String::new(),
+                native_code: None,
+            },
+        );
+        assert!(clean_stored(&mut st));
+        let it = &st.items["k"];
+        assert_eq!(it.title, "无人机采购公告");
+        assert_eq!(it.org, "某县农业农村局");
+        assert!(!clean_stored(&mut st)); // 幂等：已干净就不再改写、不触发回写
+    }
+
     struct MockHttp {
         responses: BTreeMap<String, Result<String, HttpErr>>,
+        /// 记录被调用次数，用于断言重试确实发生
+        calls: std::cell::Cell<usize>,
     }
     impl MockHttp {
         fn ok(url_frag: &str, body: &str) -> Self {
-            MockHttp { responses: BTreeMap::from([(url_frag.to_string(), Ok(body.to_string()))]) }
+            MockHttp { responses: BTreeMap::from([(url_frag.to_string(), Ok(body.to_string()))]), calls: Default::default() }
+        }
+    }
+    impl MockHttp {
+        /// 最长匹配优先：`host/` 不能把 `host/souSuo` 抢走（BTreeMap 顺序恰好是先短后长）
+        fn pick(&self, url: &str) -> Result<String, HttpErr> {
+            self.calls.set(self.calls.get() + 1);
+            let best = self.responses.iter()
+                .filter(|(k, _)| url.contains(k.as_str()))
+                .max_by_key(|(k, _)| k.len());
+            match best {
+                Some((_, v)) => v.clone(),
+                None => Err(HttpErr::Network("mock: no route".into())),
+            }
         }
     }
     impl Http for MockHttp {
         fn post_json(&self, url: &str, _body: &str, _t: Duration) -> Result<String, HttpErr> {
-            self.responses.iter().find(|(k, _)| url.contains(k.as_str())).map(|(_, v)| v.clone()).unwrap_or(Err(HttpErr::Network))
+            self.pick(url)
         }
         fn get(&self, url: &str, _t: Duration) -> Result<String, HttpErr> {
-            self.responses.iter().find(|(k, _)| url.contains(k.as_str())).map(|(_, v)| v.clone()).unwrap_or(Err(HttpErr::Network))
+            self.pick(url)
         }
     }
 
@@ -1008,6 +1828,246 @@ mod tests {
         assert_eq!(r3, Relevance::Excluded);
     }
 
+    /// 记录重试间隔的假等待器：断言"5s/15s 递增"而不是"随便等一下"。
+    struct SpySleeper { waits: std::cell::RefCell<Vec<u64>> }
+    impl SpySleeper { fn new() -> Self { SpySleeper { waits: Default::default() } } }
+    impl RetrySleeper for SpySleeper {
+        fn sleep_secs(&self, secs: u64) { self.waits.borrow_mut().push(secs); }
+    }
+
+    /// 前 N 次失败、之后成功的假 Http：用来验证"重试真的发生了"。
+    struct FlakyHttp {
+        fail_first: usize,
+        seen: std::cell::Cell<usize>,
+        err: HttpErr,
+        body: String,
+    }
+    impl FlakyHttp {
+        fn new(fail_first: usize, err: HttpErr, body: &str) -> Self {
+            FlakyHttp { fail_first, seen: Default::default(), err, body: body.to_string() }
+        }
+    }
+    impl Http for FlakyHttp {
+        fn post_json(&self, _u: &str, _b: &str, _t: Duration) -> Result<String, HttpErr> {
+            let n = self.seen.get();
+            self.seen.set(n + 1);
+            if n < self.fail_first { Err(self.err.clone()) } else { Ok(self.body.clone()) }
+        }
+        fn get(&self, _u: &str, _t: Duration) -> Result<String, HttpErr> {
+            self.post_json(_u, "", _t)
+        }
+    }
+
+    #[test]
+    fn network_failure_retried_twice_with_5s_then_15s() {
+        // 需求②：网络类失败重试 2 次，间隔 5s / 15s 递增
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        let http = FlakyHttp::new(2, HttpErr::Network("reset by peer".into()), &epoint_body());
+        let sleeper = SpySleeper::new();
+        let out = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28");
+        assert!(out.is_ok(), "两次失败后第三次应成功");
+        assert_eq!(http.seen.get(), 3, "共 3 次尝试（首试 + 2 次重试）");
+        assert_eq!(*sleeper.waits.borrow(), vec![5u64, 15u64], "重试间隔必须是 5s、15s");
+    }
+
+    #[test]
+    fn blocked_is_never_retried() {
+        // 需求②后半：Blocked（验证码/拦截）不重试，立即降级——越重试封得越久
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        let http = FlakyHttp::new(99, HttpErr::Blocked("captcha_page"), "");
+        let sleeper = SpySleeper::new();
+        let e = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http.seen.get(), 1, "被拦截只能试 1 次");
+        assert!(sleeper.waits.borrow().is_empty(), "被拦截不得等待重试");
+        assert_eq!(e.status, FetchStatus::Blocked);
+        assert_eq!(e.attempts, 1);
+    }
+
+    #[test]
+    fn retry_exhausted_reports_three_attempts_and_status_code() {
+        // 三次全失败：诊断要能说清「试了几次」「服务端给了什么码」「回了什么」
+        let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
+        // 网络类错误连试 3 次仍不行 → attempts=3，URL 落到诊断里
+        let http = FlakyHttp::new(99, HttpErr::Network("connection reset".into()), "");
+        let sleeper = SpySleeper::new();
+        let e = fetch_site_with_retry(spec, &http, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http.seen.get(), 3);
+        assert_eq!(e.attempts, 3);
+        assert!(e.url.contains("luan.gov.cn"), "诊断要带实际请求 URL，实际：{}", e.url);
+
+        // 状态码类（非网络类）一次即止，但状态码与响应体原文必须保住
+        let http2 = FlakyHttp::new(99, HttpErr::Status(503, "服务暂不可用".into()), "");
+        let e2 = fetch_site_with_retry(spec, &http2, &sleeper, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(http2.seen.get(), 1, "HTTP 状态码不属网络类，按需求不重试");
+        assert_eq!(e2.http_status, Some(503));
+        assert_eq!(e2.body_head, "服务暂不可用");
+    }
+
+    #[test]
+    fn timeout_class_is_retryable_and_tls_too() {
+        // 分类边界：超时/TLS 属网络类→重试；HTTP 状态码不属网络类→不重试
+        assert!(HttpErr::Timeout("timed out".into()).is_retryable());
+        assert!(HttpErr::Tls("handshake".into()).is_retryable());
+        assert!(HttpErr::Network("reset".into()).is_retryable());
+        assert!(!HttpErr::Status(404, String::new()).is_retryable());
+        assert!(!HttpErr::Blocked("captcha_page").is_retryable());
+    }
+
+    #[test]
+    fn diag_keeps_only_last_three() {
+        // 需求：每源滚动保留最近 3 次诊断，不无限增长
+        let mut row = SiteStateRow::default();
+        for i in 1..=5 {
+            row.push_diag(DiagEntry { ts: format!("2026-10-2{}T09:00:00Z", i), kind: format!("第{}次", i), ..Default::default() });
+        }
+        assert_eq!(row.diags.len(), 3);
+        assert_eq!(row.diags[0].kind, "第3次", "最早的两条应被挤掉");
+        assert_eq!(row.diags[2].kind, "第5次");
+    }
+
+    #[test]
+    fn diag_block_text_is_paste_back_ready() {
+        // 「复制诊断」贴回来的那段文本：六项要素齐全，缺项要写清（不能留空白让人猜）
+        let d = DiagEntry {
+            ts: "2026-10-29T10:30:00Z".into(),
+            url: "https://ggzy.luan.gov.cn/rest/esinteligentsearch/getFullTextDataNew".into(),
+            http_status: Some(403),
+            kind: "被拦截".into(),
+            detail: "命中拦截特征 captcha_page".into(),
+            body_head: "<html>频繁访问，请稍后再试".into(),
+            attempts: 1,
+        };
+        let t = d.to_block();
+        assert!(t.contains("2026-10-29T10:30:00Z"));
+        assert!(t.contains("getFullTextDataNew"));
+        assert!(t.contains("HTTP 状态：403"));
+        assert!(t.contains("尝试次数：1"));
+        assert!(t.contains("频繁访问"));
+
+        let empty = DiagEntry::default().to_block();
+        assert!(empty.contains("（未取到）"), "时间缺失要显式标出");
+        assert!(empty.contains("（未发出请求）"), "未发请求要显式标出");
+        assert!(empty.contains("（无）"), "无状态码要显式标出");
+    }
+
+    #[test]
+    fn run_daily_writes_diag_for_success_and_failure() {
+        // 诊断落库：成功也留一条（成功记录能证明"刚才还通"）
+        let mut st = IntelState::default();
+        let empty = serde_json::json!({ "result": { "records": [], "totalcount": 0 } }).to_string();
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
+        let sleeper = NoSleep;
+        let (results, _) = run_daily_at(&mut st, &http, &sleeper, "2026-10-28", "2026-07-28", "2026-10-28", "2026-10-29T02:00:00Z");
+        let ok = results.iter().find(|r| r.site_id == "luan").unwrap();
+        assert_eq!(ok.status, FetchStatus::Ok);
+        let row = &st.sites["luan"];
+        assert_eq!(row.diags.len(), 1);
+        assert_eq!(row.diags[0].kind, "成功");
+        assert_eq!(row.diags[0].ts, "2026-10-29T02:00:00Z");
+        // 未匹配 mock 的源（徽采云 / 省级主站）记为失败，且诊断带上分类
+        let bad = results.iter().find(|r| r.status != FetchStatus::Ok).unwrap();
+        let bad_row = &st.sites[&bad.site_id];
+        assert_eq!(bad_row.diags[0].kind, bad.status.label());
+        assert!(!bad_row.diags[0].detail.is_empty(), "失败诊断必须有说明");
+    }
+
+    #[test]
+    fn run_daily_keeps_diags_bounded_across_runs() {
+        // 连跑 5 轮 → 每源仍只有 3 条，且是最近 3 条
+        let mut st = IntelState::default();
+        let empty = serde_json::json!({ "result": { "records": [], "totalcount": 0 } }).to_string();
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
+        let sleeper = NoSleep;
+        for i in 0..5 {
+            run_daily_at(&mut st, &http, &sleeper, "2026-10-28", "2026-07-28", "2026-10-28", &format!("2026-10-29T0{}:00:00Z", i));
+        }
+        let row = &st.sites["luan"];
+        assert_eq!(row.diags.len(), DIAG_KEEP);
+        assert_eq!(row.diags[2].ts, "2026-10-29T04:00:00Z", "最后一条应是最近那轮");
+    }
+
+    #[test]
+    fn ggzy_ah_primes_session_then_posts_form() {
+        // 需求⑥：先 GET 首页拿会话 cookie，再 POST /souSuo 表单
+        let spec = SITE_REGISTRY.iter().find(|s| s.tier == Tier::ProvincialMain).unwrap();
+        let html = "<html>…<a href=\"newDetail?guid=abc123\">XX县植保无人机采购项目</a>…</html>";
+        let http = MockHttp { responses: BTreeMap::from([
+            ("ggzy.ah.gov.cn/souSuo".to_string(), Ok(html.to_string())),
+            ("ggzy.ah.gov.cn/".to_string(), Ok("<html>首页</html>".to_string())),
+        ]), calls: Default::default() };
+        let items = fetch_site(spec, &http, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].url.contains("newDetail?guid=abc123"));
+        // 首页 + 检索各一次
+        assert_eq!(http.calls.get(), 2, "必须先是首页、再是检索");
+    }
+
+    #[test]
+    fn ggzy_ah_homepage_failure_does_not_mask_search_failure() {
+        // 首页预热失败不该掩盖检索失败的真相：报检索，附一句"可能整站不可达"
+        let spec = SITE_REGISTRY.iter().find(|s| s.tier == Tier::ProvincialMain).unwrap();
+        let http = MockHttp { responses: BTreeMap::new(), calls: Default::default() };
+        let e = fetch_site(spec, &http, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
+        assert_eq!(e.status, FetchStatus::Network);
+        assert!(e.url.ends_with("/souSuo"), "诊断 URL 应是检索地址（不是首页），实际：{}", e.url);
+        assert!(e.detail.contains("整站不可达"), "首页也失败时应点明整站不可达的可能");
+    }
+
+    #[test]
+    fn tls_backend_reports_what_actually_took_effect() {
+        // 防"以为切了其实没切"：feature 只加不改代码时后端仍会是 rustls，
+        // 所以这里断言的是一个**可读的具体后端名**，而不是"配置了一个 feature"。
+        let label = UreqFetcher.tls_backend();
+        assert!(!label.is_empty());
+        // 本机（Linux 且 native-tls 可用）应为 openssl；若初始化失败会明确写"回落"
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                label.contains("openssl") || label.contains("回落"),
+                "Linux 上 native-tls 后端应为 openssl 或明确回落，实际：{}",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn form_post_and_json_post_use_different_content_types() {
+        // 需求⑥的根因验证：省级主站收表单，之前复用 post_json 发 application/json。
+        // 用 127.0.0.1 上一次性 TCP 回声服务端抓请求头，直接看发出去的到底是什么。
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn capture_once(trigger: impl FnOnce(u16)) -> String {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let h = std::thread::spawn(move || {
+                let (mut s, _) = l.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                String::from_utf8_lossy(&buf[..n]).to_string()
+            });
+            trigger(port);
+            h.join().unwrap()
+        }
+
+        let req1 = capture_once(|port| {
+            let url = format!("http://127.0.0.1:{}/souSuo", port);
+            let r = UreqFetcher.post_form(&url, "param=%E6%97%A0%E4%BA%BA%E6%9C%BA&currentPage=1", Duration::from_secs(5));
+            assert!(r.is_ok(), "本地表单 POST 应成功：{:?}", r.err());
+        });
+        assert!(req1.contains("application/x-www-form-urlencoded"), "表单请求的 Content-Type 不对：\n{}", req1);
+        assert!(req1.to_lowercase().contains("accept-language: zh-cn"), "缺 Accept-Language：\n{}", req1);
+        assert!(req1.contains("Referer: http://127.0.0.1:"), "缺 Referer（Epoint 常校验）：\n{}", req1);
+
+        let req2 = capture_once(|port| {
+            let url = format!("http://127.0.0.1:{}/rest", port);
+            let r = UreqFetcher.post_json(&url, "{}", Duration::from_secs(5));
+            assert!(r.is_ok(), "本地 JSON POST 应成功：{:?}", r.err());
+        });
+        assert!(req2.contains("application/json"), "JSON 请求的 Content-Type 不对：\n{}", req2);
+    }
+
     #[test]
     fn dedup_same_url_across_pagination() {
         // AC-2-4：分页重复只留一条
@@ -1017,6 +2077,8 @@ mod tests {
             title: "t".into(), org: "o".into(), area: "a".into(), date: "2026-10-20".into(),
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-28".into(),
+            body_head: String::new(),
+            native_code: None,
         };
         merge_items(&mut st, vec![a.clone(), a], "2026-10-28");
         assert_eq!(st.items.len(), 1);
@@ -1026,16 +2088,16 @@ mod tests {
     fn blocked_and_network_failures_are_distinguishable() {
         // AC-2-5：拦截 / 网络失败 / 解析失败三种状态可区分
         let spec = SITE_REGISTRY.iter().find(|s| s.id == "luan").unwrap();
-        let blocked = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("<html>频繁访问!</html>".to_string()))]) };
+        let blocked = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("<html>频繁访问!</html>".to_string()))]), calls: Default::default() };
         let e = fetch_site(spec, &blocked, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e.0, FetchStatus::Blocked);
-        assert!(e.1.contains("拦截特征"));
-        let offline = MockHttp { responses: BTreeMap::new() };
+        assert_eq!(e.status, FetchStatus::Blocked);
+        assert!(e.detail.contains("拦截特征"));
+        let offline = MockHttp { responses: BTreeMap::new(), calls: Default::default() };
         let e2 = fetch_site(spec, &offline, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e2.0, FetchStatus::Network);
-        let bad = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("not json".to_string()))]) };
+        assert_eq!(e2.status, FetchStatus::Network);
+        let bad = MockHttp { responses: BTreeMap::from([("luan".to_string(), Ok("not json".to_string()))]), calls: Default::default() };
         let e3 = fetch_site(spec, &bad, KEYWORD, "2026-07-28", "2026-10-28", "2026-10-28").unwrap_err();
-        assert_eq!(e3.0, FetchStatus::ParseError);
+        assert_eq!(e3.status, FetchStatus::ParseError);
     }
 
     #[test]
@@ -1061,6 +2123,8 @@ mod tests {
             title: "t".into(), org: "o".into(), area: "a".into(), date: "2026-10-20".into(),
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-28".into(),
+            body_head: String::new(),
+            native_code: None,
         });
         assert!(set_verdict(&mut st, key, Relevance::Excluded));
         // 再次采集到同 key 的 Core 条目
@@ -1069,6 +2133,8 @@ mod tests {
             title: "t".into(), org: "o".into(), area: "a".into(), date: "2026-10-20".into(),
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-29".into(),
+            body_head: String::new(),
+            native_code: None,
         };
         merge_items(&mut st, vec![again], "2026-10-29");
         assert_eq!(st.items[key].relevance, Relevance::Excluded);
@@ -1080,29 +2146,51 @@ mod tests {
         // AC-2-8：全部源成功但 0 条 → 摘要含"0 条"与已接入/计划源数，不写成"没采到"
         let mut st = IntelState::default();
         // 用一个全部源返回空数组的 mock：epoint 站解析到空 results 数组
-        let empty = serde_json::json!({ "result": { "results": [] } }).to_string();
-        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]) };
+        let empty = serde_json::json!({ "result": { "records": [], "totalcount": 0 } }).to_string();
+        let http = MockHttp { responses: BTreeMap::from([("gov.cn".to_string(), Ok(empty))]), calls: Default::default() };
         let (results, summary) = run_daily(&mut st, &http, "2026-10-28", "2026-07-28", "2026-10-28");
         assert!(!summary.is_empty());
         assert!(summary.contains("今日新增相关项目 0 条"));
         let (connected, planned) = coverage_counts();
         assert!(summary.contains(&format!("已接入 {} / 计划覆盖 {} 源", connected, planned)));
-        // epoint 空数组：page0 非空记录数组→Ok 0 条；徽采云/ggzy_ah 无匹配 mock → Network 失败计入失败源
+        // epoint 空数组：page0 非空记录数组→Ok 0 条
         let ok_sources = results.iter().filter(|r| r.status == FetchStatus::Ok).count();
-        // 该 mock 对全部站返回 Epoint 空结构：14 个 Epoint 地市站解析成功（空结果=成功，AC-2-8）；
-        // 芜湖/池州（适配器待实现）、省级主通道与徽采云（格式不匹配）计 4 个失败源，摘要如实呈现
-        assert_eq!(ok_sources, 14);
+        // v2.2.6 首发闸门：只跑白名单 8 源——6 个 Epoint 地市站（滁州/六安/亳州/宿州/蚌埠/淮北）
+        // 解析空结构成功（空结果=成功，AC-2-8）；普济圩（HTML 列表）与池州（自有 JSON API）
+        // 适配器与这份 Epoint mock 不匹配，计 2 个失败源，摘要如实呈现。
+        assert_eq!(ok_sources, 6);
+        // 闸门本身的可观察证据：结果集恰为 8 条，且全部落在白名单内、不含任何禁用源。
+        assert_eq!(results.len(), RELEASE_ENABLED_SITES.len(), "首发只应尝试白名单源");
+        for r in results.iter() {
+            assert!(
+                RELEASE_ENABLED_SITES.contains(&r.site_id.as_str()),
+                "闸门失效：{} 未在白名单内却参与了采集",
+                r.site_id
+            );
+        }
+        for off in release_disabled_sites() {
+            assert!(
+                !results.iter().any(|r| r.site_id == off),
+                "闸门失效：默认禁用的源 {} 仍进入采集",
+                off
+            );
+        }
     }
 
     #[test]
     fn registry_is_honest_about_verification() {
         // AC-2-9 / AC-2-10：调度源数量、铜陵周频、人工/不可行源不进调度
+        // v2.3.0：+1 企业官网（pjwnc，需求③实锚）→ 21 计划 / 19 调度
         let (connected, planned) = coverage_counts();
-        assert_eq!(planned, 20, "4 省级 + 16 地市");
-        assert_eq!(connected, 18, "20 - 人工通道 - 不可行 = 18 个调度源");
+        assert_eq!(planned, 21, "4 省级 + 16 地市 + 1 企业官网");
+        // v2.2.6 首发闸门：19 个排期源里只开 8 个实测通过的，其余默认禁用。
+        assert_eq!(connected, 8, "首发只开白名单 8 源");
+        assert_eq!(RELEASE_ENABLED_SITES.len(), 8);
+        assert_eq!(release_disabled_sites().len(), 19 - 8, "19 排期源中 11 个未开启");
         assert_eq!(SITE_REGISTRY.iter().filter(|s| s.tier == Tier::CityBatch1).count(), 7);
         assert_eq!(SITE_REGISTRY.iter().filter(|s| s.tier == Tier::CityBatch2).count(), 8);
         assert!(SITE_REGISTRY.iter().any(|s| s.id == "tongling" && s.tier == Tier::CityWeekly));
+        assert!(SITE_REGISTRY.iter().any(|s| s.id == "pjwnc" && s.tier == Tier::CityWeekly), "企业官网实锚必须进注册表");
         assert!(!Tier::ManualOnly.is_scheduled());
         assert!(!Tier::Infeasible.is_scheduled());
         for s in SITE_REGISTRY {
@@ -1152,7 +2240,7 @@ mod tests {
             "data": [{ "guid": "G1", "company_name": "凤台县丰沃农机技术服务有限公司",
                 "area": "安徽省/淮南市/凤台县", "address": "刘集乡", "contact_phone": "13800000000" }]
         }).to_string();
-        let http = MockHttp { responses: BTreeMap::from([("dealer-address".to_string(), Ok(body))]) };
+        let http = MockHttp { responses: BTreeMap::from([("dealer-address".to_string(), Ok(body))]), calls: Default::default() };
         let nodes = fetch_dealers(&http).unwrap();
         // 去重口径 = 公司名+area 归一化：四个 tag 返回同一家公司时只留一条
         assert_eq!(nodes.len(), 1);

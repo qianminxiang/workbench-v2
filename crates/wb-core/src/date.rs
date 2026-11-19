@@ -164,6 +164,24 @@ impl CivilDate {
     pub fn diff_days(a: CivilDate, b: CivilDate) -> i64 {
         b.to_days() - a.to_days()
     }
+
+    /// 星期几（0=周日 … 6=周六）。1970-01-01 是周四，故 +4 取模；
+    /// 公式已用 Python `datetime` 交叉校验（2026-10-30 → 周五）。
+    pub fn weekday_idx(self) -> u32 {
+        ((self.to_days() + 4).rem_euclid(7)) as u32
+    }
+
+    /// 中文星期：周日 / 周一 … 周六。
+    pub fn weekday_zh(self) -> &'static str {
+        const NAMES: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        NAMES[self.weekday_idx() as usize]
+    }
+
+    /// 口语化读法：「2026年10月30日，周五」。数字统一按阿拉伯数字读，
+    /// 与界面晨报标题里的 2026-10-30 指向同一天（同源 brief_date，不另算）。
+    pub fn spoken_zh(self) -> String {
+        format!("{}年{}月{}日，{}", self.year, self.month, self.day, self.weekday_zh())
+    }
 }
 
 /// 中文数字（一~三十）

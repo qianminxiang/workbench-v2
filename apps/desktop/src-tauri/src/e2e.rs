@@ -57,6 +57,32 @@ fn finish(stage: &str, ok: bool, error: Option<String>, extra: &Value) -> ! {
 }
 
 pub async fn run_once(app: tauri::AppHandle) {
+    // ── P0 时区回归（v2.2.3）：独立模式，不进更新链路 ──
+    // WB_E2E_EXPECT_LOCAL_DATE=yyyy-MM-dd 时：计算本机时区下的「今天」（brief 同源），
+    // 与外部独立推算的期望值比对后退出。修复前 `local_minus_utc()` 的**秒**被当
+    // **分钟**用，UTC+8 下 28800 分钟 = 整 20 天，所有日期 +20 天；CI runner 默认
+    // UTC（偏移 0）不会显形，因此驱动侧只报值，非 UTC 时区由 workflow 先 Set-TimeZone。
+    if let Ok(expected) = std::env::var("WB_E2E_EXPECT_LOCAL_DATE") {
+        let expected = expected.trim().to_string();
+        let (d, mins) = super::now_local();
+        let got = format!("{:04}-{:02}-{:02}", d.year, d.month, d.day);
+        let ok = !expected.is_empty() && got == expected;
+        let extra = json!({
+            "local_date": got,
+            "expected_local_date": expected,
+            "local_minutes": mins,
+            "utc_iso": wb_core::store::now_iso_pub(),
+            "offset_minutes": super::offset_seconds_to_minutes(
+                chrono::Local::now().offset().local_minus_utc()),
+        });
+        let err = if ok {
+            None
+        } else {
+            Some(format!("本地日期({got}) != 期望日期({expected})：偏移换算疑似回归（修复前 UTC+8 会 +20 天）"))
+        };
+        finish("tz_check", ok, err, &extra);
+    }
+
     // ── 重入保护（防御性）──
     // install() 在 Windows 上会用 NSIS `/R /ARGS` 重新拉起本程序，环境变量随之继承。
     // 若新拉起的仍是本 E2E 二进制，它会再跑一遍更新。判据：结果文件里已有

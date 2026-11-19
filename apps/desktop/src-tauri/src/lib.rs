@@ -1159,6 +1159,42 @@ fn intel_leads_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({ "leads": leads }))
 }
 
+/// 项目聚合列表（v3.2.0 T3）：一次返回所有项目 + 当前阶段 + 节点数 + 首末公告日期。
+/// `stage` 传空串表示不过滤；传非法值报错，不静默当「不过滤」（否则前端会以为筛过了）。
+#[tauri::command]
+fn intel_projects_get(
+    paths: State<Mutex<AppPaths>>,
+    stage: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    // 校验走 wb-core 共享实现（与 wbd CLI 同一份），避免两处各写一份、只靠"看起来一样"。
+    let staged = wb_core::intel_stage::Stage::parse_filter(stage.as_deref().unwrap_or(""))
+        .map_err(|e| format!("stage {e}"))?;
+    let projects = intel_store::list_projects(&store, staged, limit.unwrap_or(0))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({
+        "total": projects.len(),
+        "stage_filter": staged.map(|s| s.code()).unwrap_or(""),
+        "projects": projects,
+    }))
+}
+
+/// 单项目时间轴（v3.2.0 T3）：同一项目多阶段公告按进程序 + 日期排成一条时间轴。
+#[tauri::command]
+fn intel_project_get(
+    paths: State<Mutex<AppPaths>>,
+    key: String,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    match intel_store::read_project_timeline(&store, key.trim()).map_err(err_string)? {
+        Some(p) => Ok(serde_json::json!({ "project": p })),
+        None => Ok(serde_json::json!({ "project": null })),
+    }
+}
+
 /// 线索动作：confirm（确认）/ reject（忽略，终态）/ todo（转待办，落 work_item 进晨报看板）。
 #[tauri::command]
 fn intel_lead_act(
@@ -1444,6 +1480,8 @@ pub fn run() {
             intel_refresh,
             intel_set_verdict,
             intel_leads_get,
+            intel_projects_get,
+            intel_project_get,
             intel_lead_act,
             subsidy_export,
             dealer_get,
