@@ -429,31 +429,31 @@ function viewKanban() {
     </div>
   </div>`;
   const focus = state.filterBoard ? CODE_OF[state.filterBoard] : "";
-  if (focus) {
-    const zh = BOARD_ZH[focus];
-    const items = filtered().filter((i) => i.board === focus);
-    const open = items.filter((i) => i.status !== "done");
-    const done = items.filter((i) => i.status === "done");
-    const col = (title, arr) => `<section class="panel" data-board="${boardClass(zh)}" style="padding:12px">
-      <div class="rowline" style="margin-bottom:8px">
-        <b>${esc(zh)} · ${title}</b><span class="mini" style="margin-left:auto">${arr.length} 项</span>
-      </div>
-      ${arr.map((i) => cardOf(i, zh)).join("") || '<div class="mini">（空）</div>'}
-    </section>`;
-    return `<div class="kanban kanban--focus">${col("未启 / 进行", open)}${col("已闭环", done)}</div>`;
-  }
-  return `<div class="kanban">` + boards.map((code) => {
+  /* v3.1.0 · rev41 §3 第 2 行：看板改 12 列骨架（6 板块 × 未启·进行 / 已闭环）。
+     全景 = 只显 6 个「未启·进行」列（3×2 密度纪律）；选中板块 = 该板块两列聚焦。
+     列可见性走 `hidden` 属性 + tokens.css 的 `[hidden]` 硬规则，
+     板块身份由 `data-board` 承载、状态由 `data-col` 承载——**按值判，不按列序猜**。 */
+  const col = (code, kind) => {
     const zh = BOARD_ZH[code];
     const items = filtered().filter((i) => i.board === code);
-    const status = (...ss) => items.filter((i) => ss.includes(i.status ?? "")).length;
-    return `<section class="panel" data-board="${boardClass(zh)}" style="padding:12px">
-      <div class="rowline" style="margin-bottom:8px">
-        <b>${zh}</b><span class="mini" style="margin-left:auto">${items.length} 项</span>
-      </div>
-      <div class="mini text-2" style="margin-bottom:8px">未启 ${status("pending", "unprepared")} · 进行 ${status("active")} · 闭环 ${status("done")}</div>
-      ${items.map((i) => cardOf(i, zh)).join("") || '<div class="mini">（空）</div>'}
+    const open = items.filter((i) => i.status !== "done");
+    const done = items.filter((i) => i.status === "done");
+    const arr = kind === "open" ? open : done;
+    const stat = kind === "open"
+      ? `未启 ${items.filter((i) => ["pending", "unprepared"].includes(i.status ?? "")).length} · 进行 ${items.filter((i) => i.status === "active").length}`
+      : `闭环 ${done.length}`;
+    const hideClosed = !focus && kind === "closed";
+    return `<section class="board-col" data-board="${boardClass(zh)}" data-col="${kind}"${hideClosed ? " hidden" : ""}>
+      <div class="col-head"><h3>${zh} · ${kind === "open" ? "未启 / 进行" : "已闭环"}</h3>
+        <span class="col-count mono">${arr.length} 项</span></div>
+      <div class="col-stat">${stat}</div>
+      ${arr.map((i) => cardOf(i, zh)).join("") || '<div class="mini">（空）</div>'}
     </section>`;
-  }).join("") + `</div>`;
+  };
+  const cols = focus
+    ? [col(focus, "open"), col(focus, "closed")]
+    : boards.reduce((acc, c) => acc.concat([col(c, "open"), col(c, "closed")]), []);
+  return `<div class="kanban${focus ? " kanban--focus" : ""}">${cols.join("")}</div>`;
 }
 
 // ── 视图：明细（L4：9 列砍 7 列——类型+优先级合并双行，下一步移出明细表；区间/进度 mono） ──

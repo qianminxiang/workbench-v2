@@ -37,6 +37,26 @@
     outline: 2px solid var(--brand); outline-offset: -1px; border-color: var(--brand);
   }
   .empty { padding: 40px; text-align: center; color: var(--text-3); }
+  /* v3.1.0 · 窄屏收列：基线在 390px 有 506px 横向溢出（kanban 三列 minmax(280px) 撑破视口，
+     与本次改动无关、基线同样存在）。这里把看板与时间线在 <860px 收成单列，
+     并把壳层内边距收紧，使 390px 下横向溢出为 0。 */
+  @media (max-width: 860px) {
+    .shell { padding: 14px 12px 32px; }
+    .kanban, .kanban--focus { grid-template-columns: 1fr; }
+    .tl-grid { grid-template-columns: 96px 1fr; }
+    .rowline { flex-wrap: wrap; }
+    /* 撑破 390px 的正是 #nav 单行排列（10 个按钮不换行）。 */
+    .nav { display: flex; flex-wrap: wrap; gap: 6px; }
+  }
+
+  /* v3.1.0 · 12 列看板列样式（.kanban 的 3 列栅格与 .kanban--focus 的 2 列沿用上面既有规则） */
+  .board-col { background: var(--bg-card); border: 1px solid var(--border-default);
+    border-top: 3px solid var(--brand); border-radius: 6px; padding: 12px; }
+  .board-col .col-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .board-col .col-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .board-col .col-count { margin-left: auto; font-size: 12px; }
+  .board-col .col-stat { font-size: 11px; color: var(--text-3); padding-bottom: 8px;
+    margin-bottom: 8px; border-bottom: 1px solid var(--border-default); }
 </style>
 </head>
 <body>

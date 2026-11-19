@@ -607,3 +607,12 @@ tr:hover td { background: color-mix(in srgb, var(--bg-card) 94%, var(--border-de
   #cmd-bar.cmd-in, #cmd-bar.cmd-out { animation: none; }
   .card:hover { transform: none; }
 }
+
+/* v3.1.0 · hidden 硬规则（rev41 合流口径）
+   ------------------------------------------------------------------
+   真正让 12 列筛选生效的是「骨架 + 按 data-board 值判」，不是这条规则本身：
+   `.board-col` 没有声明 display，浏览器默认的 `[hidden]{display:none}` 就盖得住它。
+   这条 `!important` 是给「同一元素上声明了 display:grid/flex」的容器做防御性冗余——
+   那类容器 `el.hidden = true` 后仍会照常渲染，属于「设了 hidden 但没生效」的隐患。
+   归因写错会让后来人去找一个并不存在的 display:grid 病根，白白绕远。 */
+[hidden] { display: none !important; }
