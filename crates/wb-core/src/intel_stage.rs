@@ -85,6 +85,28 @@ impl Stage {
             _ => Stage::Unknown,
         }
     }
+
+    /// 用户输入的阶段短码 → `Stage`。空串 / 纯空白视为「不过滤」（`None`）；
+    /// **非法值返回 `Err` 而不是当成不过滤**——命令行与桌面壳各写一份校验迟早会漂移，
+    /// 而漂移的后果是「用户以为筛了某阶段，实际拿到全部项目」这种静默错误。
+    /// `from_code` 本身对未知码回退 `Unknown`（落库回读需要这个兜底），
+    /// 所以输入校验必须走这个函数，不要直接把 `from_code` 暴露给用户输入。
+    pub fn parse_filter(input: &str) -> Result<Option<Stage>, String> {
+        let t = input.trim();
+        if t.is_empty() {
+            return Ok(None);
+        }
+        match t {
+            "intent" => Ok(Some(Stage::Intent)),
+            "review" => Ok(Some(Stage::Review)),
+            "contract" => Ok(Some(Stage::Contract)),
+            "acceptance" => Ok(Some(Stage::Acceptance)),
+            "operation" => Ok(Some(Stage::Operation)),
+            other => Err(format!(
+                "阶段短码非法：{other}（可选 intent|review|contract|acceptance|operation；留空表示不过滤）"
+            )),
+        }
+    }
 }
 
 /// 判据来源。落 `ext_record.stage_source`，供聚合视图决定是否挂「待确认」。
@@ -249,6 +271,37 @@ pub fn announcement_signature(stage: Stage, date: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 过滤参数校验：空串 = 不过滤；五个合法短码各解出一个阶段；非法值必须报错。
+    /// 这条是命令层与桌面壳共用的输入闸门，它静默放行会让「筛选」变成摆设。
+    #[test]
+    fn stage_filter_parses_legal_codes_and_rejects_the_rest() {
+        assert_eq!(Stage::parse_filter("").unwrap(), None, "空串应表示不过滤");
+        assert_eq!(Stage::parse_filter("   ").unwrap(), None, "纯空白同空串");
+        assert_eq!(Stage::parse_filter(" intent ").unwrap(), Some(Stage::Intent), "应容忍首尾空白");
+
+        for (code, want) in [
+            ("intent", Stage::Intent),
+            ("review", Stage::Review),
+            ("contract", Stage::Contract),
+            ("acceptance", Stage::Acceptance),
+            ("operation", Stage::Operation),
+        ] {
+            assert_eq!(Stage::parse_filter(code).unwrap(), Some(want), "短码 {code} 应解出 {want:?}");
+        }
+
+        // 中文标签、大小写变体、拼错都必须报错——不允许静默退化成「不过滤」
+        for bad in ["运维", "Intent", "unknown", "contracts", "in tent"] {
+            assert!(
+                Stage::parse_filter(bad).is_err(),
+                "非法输入 {bad:?} 必须报错，不得当成不过滤"
+            );
+        }
+
+        // from_code 的兜底行为必须与 parse_filter 区分：落库回读未知码 → Unknown，不报错
+        assert_eq!(Stage::from_code("weird"), Stage::Unknown);
+        assert!(Stage::parse_filter("weird").is_err());
+    }
 
     #[test]
     fn intent_is_detected_before_review() {

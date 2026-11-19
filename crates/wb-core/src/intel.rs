@@ -580,6 +580,12 @@ pub struct IntelItem {
     /// v2.3.0 新增，`serde(default)` 保证旧 JSON（v2.2 存量）仍可反序列化。
     #[serde(default)]
     pub body_head: String,
+    /// 源站接口自带的项目编号（Epoint 同族 `projectno` 字段）。
+    ///
+    /// **v3.2.0 新增**：这是权威值，用于消除正文抽取的粘连误判（见 `DedupInput::native_code`）。
+    /// 非 Epoint 源或字段为空时为 `None`，此时退回正文抽取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -776,6 +782,12 @@ fn record_to_item(spec: &SiteSpec, rec: &serde_json::Value, today: &str) -> Inte
         .and_then(|t| t.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "null");
     let url = resolve_link(spec, rec);
     let content = rec.get("content").and_then(|t| t.as_str()).unwrap_or("");
+    // 接口自带项目编号（权威值）。空串 / `null` 一律视为缺失，交正文抽取兜底。
+    let native_code = rec
+        .get("projectno")
+        .and_then(|x| x.as_str())
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty() && x != "null");
     let (relevance, reasons) = classify(&title, content);
     let key = format!("{}|{}", spec.id, url.trim());
     let incomplete = title.is_empty() || org.is_empty() || area.is_empty() || date.is_empty() || url.is_empty();
@@ -795,6 +807,7 @@ fn record_to_item(spec: &SiteSpec, rec: &serde_json::Value, today: &str) -> Inte
         manual_verdict: false,
         first_seen: today.to_string(),
         body_head: head_chars(content, 600),
+        native_code,
     }
 }
 
@@ -1235,6 +1248,7 @@ fn fetch_ggzy_ah(
                 manual_verdict: false,
                 first_seen: today.to_string(),
                 body_head: String::new(),
+                native_code: None,
             });
         }
         rest = after;
@@ -1721,6 +1735,7 @@ mod tests {
                 manual_verdict: false,
                 first_seen: "2026-10-20".into(),
                 body_head: String::new(),
+                native_code: None,
             },
         );
         assert!(clean_stored(&mut st));
@@ -2063,6 +2078,7 @@ mod tests {
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-28".into(),
             body_head: String::new(),
+            native_code: None,
         };
         merge_items(&mut st, vec![a.clone(), a], "2026-10-28");
         assert_eq!(st.items.len(), 1);
@@ -2108,6 +2124,7 @@ mod tests {
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-28".into(),
             body_head: String::new(),
+            native_code: None,
         });
         assert!(set_verdict(&mut st, key, Relevance::Excluded));
         // 再次采集到同 key 的 Core 条目
@@ -2117,6 +2134,7 @@ mod tests {
             amount: None, url: "https://x/1.html".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: false, first_seen: "2026-10-29".into(),
             body_head: String::new(),
+            native_code: None,
         };
         merge_items(&mut st, vec![again], "2026-10-29");
         assert_eq!(st.items[key].relevance, Relevance::Excluded);

@@ -422,6 +422,8 @@ pub fn parse_chizhou(spec: &SiteSpec, resp: &str, today: &str, start: &str, end:
             manual_verdict: false,
             first_seen: today.to_string(),
             body_head: crate::intel::head_chars(&body, 600),
+            // 该适配器读的是列表 JSON，接口不返回项目编号字段，交正文抽取兜底
+            native_code: None,
         };
         apply_two_stage(&mut item, &body);
         items.push(item);
@@ -500,6 +502,7 @@ pub fn parse_wuhu(spec: &SiteSpec, resp: &str, today: &str) -> Result<Vec<IntelI
             manual_verdict: false,
             first_seen: today.to_string(),
             body_head: String::new(),
+            native_code: None, // 该接口无项目编号字段
         };
         apply_two_stage(&mut item, ""); // 该接口无正文，只能标题命中
         items.push(item);
@@ -617,6 +620,7 @@ pub fn fetch_html_source(
             manual_verdict: false,
             first_seen: today.to_string(),
             body_head: crate::intel::head_chars(&body, 600),
+            native_code: None, // 普农独立 API 不返回编号字段
         };
         apply_two_stage(&mut item, &body);
         items.push(item);
@@ -745,6 +749,7 @@ mod tests {
             amount: None, url: "u".into(), relevance: Relevance::Core, reasons: vec![],
             incomplete: false, manual_verdict: true, first_seen: "2026-11-05".into(),
             body_head: String::new(),
+            native_code: None,
         };
         apply_two_stage(&mut it, "办公室采购");
         assert_eq!(it.relevance, Relevance::Core, "人工改判过的条目不得被自动判定覆盖");

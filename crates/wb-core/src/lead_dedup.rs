@@ -40,6 +40,14 @@ pub struct DedupInput {
     pub title: String,
     pub body: String,
     pub date: String,
+    /// 源站接口自带的项目编号（权威值）。有则优先于正文文本抽取。
+    ///
+    /// **v3.2.0 新增**：实测合肥源 50 条样本，接口字段 `projectno` 出现 17 条，
+    /// 其中 6 条与正文抽取结果不一致——正文里编号紧跟章节号/分包号时会被吞进去
+    /// （`2026BFBAZ51418` + `2.3 标段划分` → `2026bfbaz514182`；
+    /// `2026BFFHZ01387-1` → `2026bffhz013871`），同一项目因此拆成两个 L3 键。
+    /// 接口字段不受正文排版影响，是消除这类拆键的唯一可靠来源。
+    pub native_code: Option<String>,
 }
 
 /// 判重结果。`key` 是最终写库的 `dedup_key`，`layer` 是命中的层。
@@ -271,7 +279,15 @@ where
         // 实测「正文=项目编号：TLTRZB【2026】074」+「标题=XX无人机…」→ 抽出
         // `tltrzb2026074xx`，而同项目另一条（标题以中文开头）抽出 `tltrzb2026074`，
         // 同一项目被拆成两个键、聚合视图失效。换行符让 take_code_token 在此断开。
-        let code = extract_project_code(&format!("{}\n{}", inp.title, inp.body));
+        // **v3.2.0**：编号来源优先级 = 源站接口权威字段 > 正文抽取。
+        // 正文抽取是兜底（企业官网、聚合站等不返回 projectno 的源）。
+        let code = match inp.native_code.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(native) => {
+                let n = normalize_project_code(native);
+                if n.is_empty() { extract_project_code(&format!("{}\n{}", inp.title, inp.body)) } else { Some(n) }
+            }
+            None => extract_project_code(&format!("{}\n{}", inp.title, inp.body)),
+        };
         let title_norm = normalize_title(&inp.title);
 
         // L1：同站原生 ID
@@ -370,7 +386,7 @@ mod tests {
     use super::*;
 
     fn inp(site: &str, nid: &str, title: &str, body: &str, date: &str) -> DedupInput {
-        DedupInput { site_id: site.into(), native_id: nid.into(), title: title.into(), body: body.into(), date: date.into() }
+        DedupInput { site_id: site.into(), native_id: nid.into(), title: title.into(), body: body.into(), date: date.into(), native_code: None }
     }
 
     #[test]

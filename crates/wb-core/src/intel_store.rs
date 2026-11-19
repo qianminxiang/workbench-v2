@@ -136,6 +136,8 @@ pub fn persist_fetch(
             // 分隔符理由同 lead_dedup::dedup_batch：避免正文编号吞掉标题开头 ASCII
             body: format!("{}\n{}", it.body_head, it.title),
             date: it.date.clone(),
+            // 接口权威编号优先于正文抽取（见 DedupInput::native_code 实测说明）
+            native_code: it.native_code.clone(),
         })
         .collect();
     let decisions = dedup_batch(&existing, inputs.iter());
@@ -880,6 +882,7 @@ mod tests {
             manual_verdict: false,
             first_seen: "2026-11-06".into(),
             body_head: body.into(),
+            native_code: None,
         }
     }
 

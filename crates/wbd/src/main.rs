@@ -52,6 +52,13 @@ fn usage() -> String {
       线索裁决与待办生成：confirm/reject 需先 discovered；todo 需先 confirmed，
       辅源线索即使确认也不产待办（needs_primary_confirm）
 
+  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]
+      v3.2.0 T3 按项目聚合：列出所有项目及其当前阶段、节点数、首末公告日期、跳段数。
+      数据取自 ext_record 当前链，不重新抓取；--stage 非法值直接报错不静默放行
+
+  wbd project <data_dir> show <project_key>
+      同一项目的多阶段公告时间轴（节点按进程序 + 日期排序，阶段未知节点排在末尾但不丢弃）
+
   wbd export-subsidy <out.xlsx|out.csv> --from <数据.csv> [--filter 字段=值]... [--contains 字段:值]... [--sheet 名称]
       v2.3.0 需求⑤ 补贴一键导出：按筛选条件全量导出（非当前页），xlsx 主格式 + CSV 口子
 
@@ -93,6 +100,7 @@ fn main() -> ExitCode {
         "intel" => cmd_intel(&args[1..]),
         "intel-read" => cmd_intel_read(&args[1..]),
         "lead" => cmd_lead(&args[1..]),
+        "project" => cmd_project(&args[1..]),
         "export-subsidy" => cmd_export_subsidy(&args[1..]),
         "sync-live" => cmd_sync_live(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -1051,6 +1059,111 @@ fn cmd_lead(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         other => { eprintln!("未知子命令：{other}"); ExitCode::from(2) }
+    }
+}
+
+
+// ───────────────────────────── project（v3.2.0 T3 按项目聚合查询） ─────────────────────────────
+
+/// `wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]`
+/// `wbd project <data_dir> show <project_key>`
+///
+/// 数据全部来自 `ext_record` 的 current 行（拉链当前层），不重新抓取。
+/// `show` 输出同一项目多阶段公告组成的时间轴；`list` 按最近公告日期倒序。
+fn cmd_project(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("用法：\n  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]\n  wbd project <data_dir> show <project_key>");
+        return ExitCode::from(2);
+    }
+    let data_dir = &args[0];
+    let store = match Store::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    match args[1].as_str() {
+        "list" => {
+            let mut stage: Option<wb_core::intel_stage::Stage> = None;
+            let mut limit: usize = 0;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--stage" => {
+                        // 校验逻辑走 wb-core 的共享实现（桌面壳用同一份），
+                        // 非法值直接报错而不是静默当「不过滤」——静默回退会让人以为筛过了。
+                        let raw = args.get(i + 1).map(|s| s.as_str()).unwrap_or("");
+                        stage = match wb_core::intel_stage::Stage::parse_filter(raw) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("--stage {e}");
+                                return ExitCode::from(2);
+                            }
+                        };
+                        i += 2;
+                    }
+                    "--limit" => {
+                        match args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                            Some(n) => limit = n,
+                            None => {
+                                eprintln!("--limit 需要一个非负整数");
+                                return ExitCode::from(2);
+                            }
+                        }
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+            let projects = match wb_core::intel_store::list_projects(&store, stage, limit) {
+                Ok(v) => v,
+                Err(e) => return fail(format!("聚合查询失败：{e}"), 1),
+            };
+            let out = serde_json::json!({
+                "total": projects.len(),
+                "stage_filter": stage.map(|s| s.code()).unwrap_or(""),
+                "limit": limit,
+                "projects": projects.iter().map(|p| serde_json::json!({
+                    "project_key": p.project_key,
+                    "project_code": p.project_code,
+                    "project_name": p.project_name,
+                    "org": p.org,
+                    "area": p.area,
+                    "dedup_layer": p.dedup_layer,
+                    "current_stage": p.current_stage,
+                    "current_stage_label": p.current_stage_label,
+                    "node_count": p.node_count,
+                    "first_date": p.first_date,
+                    "last_date": p.last_date,
+                    "max_stage_order": p.max_stage_order,
+                    "skipped_stages": p.skipped_stages,
+                })).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            ExitCode::SUCCESS
+        }
+        "show" => {
+            let key = match args.get(2) {
+                Some(k) => k,
+                None => {
+                    eprintln!("缺少 project_key（wbd project list 先查）");
+                    return ExitCode::from(2);
+                }
+            };
+            match wb_core::intel_store::read_project_timeline(&store, key) {
+                Ok(Some(p)) => {
+                    println!("{}", serde_json::to_string_pretty(&p).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    eprintln!("未找到项目：{key}（用 wbd project list 看可用 key）");
+                    ExitCode::from(1)
+                }
+                Err(e) => fail(format!("聚合查询失败：{e}"), 1),
+            }
+        }
+        other => {
+            eprintln!("未知子命令：{other}");
+            ExitCode::from(2)
+        }
     }
 }
 

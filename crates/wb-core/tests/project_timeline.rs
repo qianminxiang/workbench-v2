@@ -28,6 +28,7 @@ fn item(site: &str, key: &str, title: &str, url: &str, date: &str, body: &str) -
         manual_verdict: false,
         first_seen: date.into(),
         body_head: body.into(),
+        native_code: None,
     }
 }
 
