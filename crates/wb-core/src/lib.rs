@@ -28,6 +28,10 @@ pub mod lead_todo;
 pub mod intel_source;
 pub mod intel_stage;
 pub mod intel_store;
+pub mod intel_key;
+pub mod intel_segment;
+pub mod intel_manual;
+pub mod intel_payload;
 pub mod subsidy_export;
 
 /// 业务年度（工作台口径的「今年」）。v2.2.1 起固定为 **2027**：

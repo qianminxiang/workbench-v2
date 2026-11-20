@@ -661,6 +661,12 @@ pub struct ProjectAggregate {
 
 /// 把标题里的公告类型后缀剥掉，得到项目名。
 /// 只剥已知类型词（与 `intel_stage::RULES` 同源），不做通用的「去括号」猜测。
+/// 对外暴露的项目名抽取。`payload` 适配层与界面文案共用同一份规则，
+/// 避免两处各写一份而慢慢漂移（节点名与卡片名必须一致）。
+pub fn project_name_of_pub(title: &str) -> String {
+    project_name_of(title)
+}
+
 fn project_name_of(title: &str) -> String {
     let mut t = title.to_string();
     for suffix in [

@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, OpenFlags};
 // ───────────────────────────── 常量与类型 ─────────────────────────────
 
 /// 构建时嵌入的目标 schema 版本（架构 §4.8）。
-pub const TARGET_SCHEMA_VERSION: i64 = 5;
+pub const TARGET_SCHEMA_VERSION: i64 = 6;
 
 /// L1 写前快照保留份数。
 pub const L1_KEEP: usize = 20;
@@ -503,6 +503,66 @@ CREATE TABLE IF NOT EXISTS owner_change_log (
 CREATE INDEX IF NOT EXISTS idx_owner_change_pending ON owner_change_log(item_id, notified_at);
 "#;
 
+
+/// 迁移 v6（v3.2.0 情报「手动建档」数据层，设计规格 v1.2 §2 / A-7）。
+///
+/// 三张表各管一件事，边界刻意分开：
+/// - `manual_project`：手动档案本体。必填只有 `project_name` + `buyer`，
+///   其余（地区/预算/备注/线索来源/预计采购方式）可空。聚合键
+///   `agg_key = k:<buyer_norm>|<name_norm>` 落库成唯一键，**建档即查重靠它**，
+///   而不是每次建档都全表模糊比对——键是可重算的确定性值。
+///   `agg_basis` 存归一化剔除项（页面「合并依据」原文），避免展示时再算一遍
+///   而要依赖当时的归一规则版本。
+/// - `manual_link`：手动项目 ↔ 公告聚合项目的**疑似关联**（强命中才写）。
+///   `decision` ∈ pending / merged / ignored；「忽略后不再重复提示」靠 `decision='ignored'`
+///   而不是删行——审计要留，且用户可手动重开（把 decision 改回 pending）。
+/// - `manual_merge_audit`：合并/忽略/重开各写一条，与既有「人工改判」同机制可查。
+///
+/// 只增不改：0001–0005 一律不动（架构 §4.8-5），本脚本只 CREATE TABLE / INDEX。
+const SCHEMA_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS manual_project (
+    manual_id       TEXT PRIMARY KEY,
+    project_name    TEXT NOT NULL,
+    buyer           TEXT NOT NULL,
+    agg_key         TEXT NOT NULL,
+    agg_basis       TEXT NOT NULL DEFAULT '',
+    area            TEXT,
+    budget          TEXT,
+    note            TEXT,
+    lead_source     TEXT,
+    expect_method   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    merged_into     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_project_key ON manual_project(agg_key);
+CREATE INDEX IF NOT EXISTS idx_manual_project_buyer ON manual_project(buyer);
+
+CREATE TABLE IF NOT EXISTS manual_link (
+    link_id         TEXT PRIMARY KEY,
+    manual_id       TEXT NOT NULL,
+    target_project  TEXT NOT NULL,
+    hit_strength    TEXT NOT NULL,
+    hit_basis       TEXT NOT NULL DEFAULT '',
+    decision        TEXT NOT NULL DEFAULT 'pending',
+    decided_at      TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_link_pair ON manual_link(manual_id, target_project);
+CREATE INDEX IF NOT EXISTS idx_manual_link_decision ON manual_link(decision);
+
+CREATE TABLE IF NOT EXISTS manual_merge_audit (
+    audit_id        TEXT PRIMARY KEY,
+    manual_id       TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    target_project  TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    at              TEXT NOT NULL,
+    detail          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_manual_audit_manual ON manual_merge_audit(manual_id, at);
+"#;
+
 /// 迁移清单。**已发布的脚本永不修改**（架构 §4.8-5）。
 pub fn migrations() -> Vec<Migration> {
     vec![
@@ -511,6 +571,7 @@ pub fn migrations() -> Vec<Migration> {
         Migration { version: 3, name: "0003_intel_leads", sql: SCHEMA_V3 },
         Migration { version: 4, name: "0004_intel_stage", sql: SCHEMA_V4 },
         Migration { version: 5, name: "0005_collab_f5", sql: SCHEMA_V5 },
+        Migration { version: 6, name: "0006_intel_manual", sql: SCHEMA_V6 },
     ]
 }
 

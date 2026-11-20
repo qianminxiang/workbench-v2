@@ -101,6 +101,7 @@ fn main() -> ExitCode {
         "intel-read" => cmd_intel_read(&args[1..]),
         "lead" => cmd_lead(&args[1..]),
         "project" => cmd_project(&args[1..]),
+        "manual" => cmd_manual(&args[1..]),
         "export-subsidy" => cmd_export_subsidy(&args[1..]),
         "sync-live" => cmd_sync_live(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -1072,7 +1073,7 @@ fn cmd_lead(args: &[String]) -> ExitCode {
 /// `show` 输出同一项目多阶段公告组成的时间轴；`list` 按最近公告日期倒序。
 fn cmd_project(args: &[String]) -> ExitCode {
     if args.len() < 2 {
-        eprintln!("用法：\n  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]\n  wbd project <data_dir> show <project_key>");
+        eprintln!("用法：\n  wbd project <data_dir> list [--stage intent|review|contract|acceptance|operation] [--limit N]\n  wbd project <data_dir> show <project_key>\n  wbd project <data_dir> payload [--stage intent|tender|correction|award|contract|termination] [--limit N]\n  wbd project <data_dir> detail <agg_key|project_key>");
         return ExitCode::from(2);
     }
     let data_dir = &args[0];
@@ -1160,10 +1161,179 @@ fn cmd_project(args: &[String]) -> ExitCode {
                 Err(e) => fail(format!("聚合查询失败：{e}"), 1),
             }
         }
+        // v3.2.0 数据接线轨：供界面层直接消费的 payload（规格 §2 口径）
+        // `list`/`show` 沿用引擎项目键口径；`payload`/`detail` 走「采购人 + 项目名归一」聚合键口径。
+        "payload" => {
+            let mut stage: Option<&str> = None;
+            let mut limit: usize = 0;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--stage" => {
+                        stage = Some(args.get(i + 1).map(|s| s.as_str()).unwrap_or(""));
+                        i += 2;
+                    }
+                    "--limit" => {
+                        match args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                            Some(n) => limit = n,
+                            None => {
+                                eprintln!("--limit 需要一个非负整数");
+                                return ExitCode::from(2);
+                            }
+                        }
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+            match wb_core::intel_payload::project_list_payload(&store, stage, limit) {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(format!("payload 生成失败：{e}"), 1),
+            }
+        }
+        "detail" => {
+            let key = match args.get(2) {
+                Some(k) => k,
+                None => {
+                    eprintln!("缺少聚合键（wbd project payload 先查，取 projects[].agg_key）");
+                    return ExitCode::from(2);
+                }
+            };
+            match wb_core::intel_payload::project_detail_payload(&store, key) {
+                Ok(Some(v)) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    eprintln!("未找到聚合项目：{key}");
+                    ExitCode::from(1)
+                }
+                Err(e) => fail(format!("payload 生成失败：{e}"), 1),
+            }
+        }
         other => {
             eprintln!("未知子命令：{other}");
             ExitCode::from(2)
         }
+    }
+}
+
+
+// ─────────────────────── manual（v3.2.0 数据接线轨 T2 手动建档） ───────────────────────
+
+/// 手动建档数据层 CLI（与桌面壳共用 `wb_core::intel_manual` 同一份实现）。
+///
+/// - `manual <dir> create --name X --buyer Y [--area ..] [--budget ..] [--note ..] [--lead ..] [--method ..]`
+///   → 建档即查重；命中则返回 `duplicate` 分支而不是硬建。
+/// - `manual <dir> list [--merged]` → 已有手动档案
+/// - `manual <dir> links <manual_id> [--pending]` → 疑似关联提示
+/// - `manual <dir> merge <manual_id> <target_project> --name X --buyer Y [--actor ..]`
+/// - `manual <dir> ignore|reopen <manual_id> <target_project> [--actor ..]`
+fn cmd_manual(args: &[String]) -> ExitCode {
+    if args.len() < 2 {
+        eprintln!("用法：manual <data_dir> create|list|links|merge|ignore|reopen ...");
+        return ExitCode::from(2);
+    }
+    let data_dir = &args[0];
+    let store = match Store::open(data_dir) {
+        Ok(s) => s,
+        Err(e) => return fail(format!("打开库失败：{e}"), 1),
+    };
+    // 简单 --key value 扫描（同名参数以最后一次为准）
+    let flag = |name: &str| -> Option<String> {
+        let mut v: Option<String> = None;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == name {
+                if let Some(x) = args.get(i + 1) {
+                    v = Some(x.clone());
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        v
+    };
+    let has = |name: &str| -> bool { args.iter().any(|a| a == name) };
+
+    match args[1].as_str() {
+        "create" => {
+            let draft = wb_core::intel_manual::ManualDraft {
+                project_name: flag("--name").unwrap_or_default(),
+                buyer: flag("--buyer").unwrap_or_default(),
+                area: flag("--area"),
+                budget: flag("--budget"),
+                note: flag("--note"),
+                lead_source: flag("--lead"),
+                expect_method: flag("--method"),
+            };
+            match wb_core::intel_manual::create_manual(&store, &draft, has("--force"), &[], None) {
+                Ok(wb_core::intel_manual::CreateOutcome::Created(m)) => {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "outcome": "created", "manual_id": m.manual_id, "agg_key": m.agg_key,
+                        "agg_basis": m.agg_basis, "manual_supplement": m.manual_supplement_fields()
+                    })).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Ok(wb_core::intel_manual::CreateOutcome::Duplicate(d)) => {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "outcome": "duplicate", "prompt": d.prompt(), "agg_key": d.key.key,
+                        "manual_hit": d.manual_hit.as_ref().map(|m| m.manual_id.clone()),
+                        "announcement_hit": d.announcement_hit
+                    })).unwrap());
+                    ExitCode::from(3)
+                }
+                Err(e) => fail(format!("建档失败：{e}"), 1),
+            }
+        }
+        "list" => match wb_core::intel_manual::list_manual(&store, has("--merged")) {
+            Ok(v) => { println!("{}", serde_json::to_string_pretty(&v).unwrap()); ExitCode::SUCCESS }
+            Err(e) => fail(format!("查询失败：{e}"), 1),
+        },
+        "links" => {
+            let id = match args.get(2) { Some(v) => v, None => { eprintln!("缺少 manual_id"); return ExitCode::from(2); } };
+            match wb_core::intel_manual::links_of(&store, id, has("--pending")) {
+                Ok(v) => { println!("{}", serde_json::to_string_pretty(&v).unwrap()); ExitCode::SUCCESS }
+                Err(e) => fail(format!("查询失败：{e}"), 1),
+            }
+        }
+        "merge" => {
+            let (id, target) = match (args.get(2), args.get(3)) {
+                (Some(i), Some(t)) => (i.clone(), t.clone()),
+                _ => { eprintln!("用法：manual <dir> merge <manual_id> <target_project> --name X --buyer Y"); return ExitCode::from(2); }
+            };
+            let name = flag("--name").unwrap_or_default();
+            let buyer = flag("--buyer").unwrap_or_default();
+            let actor = flag("--actor").unwrap_or_else(|| "cli".to_string());
+            match wb_core::intel_manual::merge_manual_into_project(&store, &id, &target, &name, &buyer, &actor, None) {
+                Ok(o) => {
+                    println!("{}", serde_json::to_string_pretty(&o).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(format!("合并失败：{e}"), 1),
+            }
+        }
+        "ignore" | "reopen" => {
+            let (id, target) = match (args.get(2), args.get(3)) {
+                (Some(i), Some(t)) => (i.clone(), t.clone()),
+                _ => { eprintln!("用法：manual <dir> ignore|reopen <manual_id> <target_project>"); return ExitCode::from(2); }
+            };
+            let actor = flag("--actor").unwrap_or_else(|| "cli".to_string());
+            let r = if args[1] == "ignore" {
+                wb_core::intel_manual::ignore_link(&store, &id, &target, &actor, None)
+            } else {
+                wb_core::intel_manual::reopen_link(&store, &id, &target, &actor, None)
+            };
+            match r {
+                Ok(()) => { println!("{{\"outcome\":\"{}\"}}", args[1]); ExitCode::SUCCESS }
+                Err(e) => fail(format!("操作失败：{e}"), 1),
+            }
+        }
+        other => { eprintln!("未知子命令：{other}"); ExitCode::from(2) }
     }
 }
 
