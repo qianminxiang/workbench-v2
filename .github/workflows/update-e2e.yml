@@ -65,6 +65,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: 前端守卫单测（node --test，零依赖 · 目录通配）
+        # 2026-11-20 v3.2.0 补：本工作流此前**完全没有** node 守卫步骤（不是通配写窄，
+        # 是压根没有），所以任何 apps/desktop 守卫在这条流水线上都等于不存在。
+        # 放在构建之前：守卫是静态文本断言，秒级完成，越早红越省 120 分钟 Windows 机时。
+        # 通配由本步骤自己展开（PowerShell 不对原生命令做 * 展开，直接写 node --test *.test.cjs
+        # 会把星号字面量传给 node，在 Node<22 上变成"找不到文件"的假红），故显式枚举目录。
+        shell: pwsh
+        run: |
+          node --version
+          $files = Get-ChildItem -Path "apps/desktop" -Filter "*.test.cjs" -File |
+                   Sort-Object Name | ForEach-Object { "apps/desktop/$($_.Name)" }
+          if ($files.Count -eq 0) { throw "apps/desktop 下没有 *.test.cjs，守卫缺失（不接受空集通过）" }
+          Write-Host "待跑守卫 $($files.Count) 个：$($files -join ' ')"
+          node --test $files
+          if ($LASTEXITCODE -ne 0) { throw "前端守卫单测失败（apps/desktop/*.test.cjs）" }
+
       - name: 安装 tauri-cli 与 Python 依赖确认
         shell: pwsh
         run: |

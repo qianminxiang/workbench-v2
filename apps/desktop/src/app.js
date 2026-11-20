@@ -38,6 +38,7 @@ const state = {
   prefs: null, // 单机偏好（免打扰窗口），boot 时读、改时写
   members: [],      // F5 成员表（成员页 / 指派下拉共用；null 表示还没读过）
   me: null,         // F5 本机身份 {member_name, role, known}
+  intelMode: "projects", // v3.2.0 情报呈现形态："projects"（项目进程，默认）/ "list"（公告清单）
   intelRun: null, // 采集中状态 {done,total,site}；null = 当前没有采集在跑。
                   // 存在 state 而不是只写在按钮上：切到别的舱段再切回来时
                   // 按钮是重建的，不恢复就会变回「立即刷新」，让人以为采集已经停了。
@@ -63,7 +64,7 @@ async function reload() {
     state.kpis = await invoke("kpi_overview", { year: YEAR });
     state.units = await invoke("units", { year: YEAR });
     await loadMembers();
-    if (state.view === "intel") { await loadIntel(); await loadLeads(); }
+    if (state.view === "intel") { await loadIntelByMode(); await loadLeads(); }
     if (state.view === "dealer") await loadDealer();
     render();
     updateFilterCount();
@@ -201,6 +202,15 @@ function dateCell(item) {
 async function loadIntel() {
   try { state.intel = await invoke("intel_get"); } catch (_) { state.intel = null; }
 }
+/** v3.2.0 情报视图按形态加载：项目进程读项目聚合，公告清单读原情报快照。
+ *  两条互不阻塞——项目聚合读失败不得让公告清单也变成空白（规格 §5 措辞要求）。 */
+async function loadIntelByMode() {
+  await loadIntel();
+  if (window.__IP && state.intelMode === "projects" && window.__IP.state.projects === null) {
+    await window.__IP.load();
+  }
+}
+
 // 改判一（AC-3）：线索清单——与情报同视图按需加载；读失败只影响线索面板，不影响情报渲染
 async function loadLeads() {
   try { state.leads = await invoke("intel_leads_get"); } catch (_) { state.leads = null; }
@@ -227,6 +237,13 @@ function tierZh(t) {
     city_batch2: "二批", city_weekly: "周频观察", manual_only: "人工通道", infeasible: "不可行" }[t] || t;
 }
 function viewIntel() {
+  // v3.2.0 · L2 情报呈现形态切换（规格 §1，落点=资源→L2 情报顶部）：
+  //   「项目进程」（新增，默认）走 intel-projects.js（方案 A 主从双栏）；
+  //   「公告清单」（现有）保持下面这段原有渲染**原样不动**，只在顶部多一条切换条。
+  // 只做加法：L0 常驻三项、四个一级入口、项目层、设置层全部未改。
+  if (state.intelMode === "projects" && window.__IP) {
+    return window.__IP.switcherOnly("projects") + window.__IP.view();
+  }
   const d = state.intel;
   if (!d) {
     return `<div class="panel"><div class="empty">情报数据加载失败（离线或数据库异常）。<br>
@@ -272,7 +289,7 @@ function viewIntel() {
       </div>
     </div>`;
   }).join("");
-  return `
+  return `${window.__IP ? window.__IP.switcherOnly("list") : ""}
   <div class="panel">
     <div><b>项目情报</b> · 最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条
       <button class="btn" id="intel-refresh">${ICO("refresh")}立即刷新</button></div>
@@ -698,6 +715,11 @@ function render(mode) {
   }
 }
 
+/** 情报「项目进程」模块的回调钩子（intel-projects.js 内的局部重渲染 /
+ *  形态切换都回到这里，不自己再造一套 render，避免两套动画与状态不同步）。 */
+window.__ipRenderIntel = (mode) => render(mode || "reflow");
+window.__ipSetIntelMode = (m) => { if (m) state.intelMode = m; };
+
 /** 跳转到指定视图（通知主操作 / 托盘菜单共用），保持 nav 高亮同步。 */
 function gotoView(view) {
   state.view = view;
@@ -740,6 +762,15 @@ function bindView() {
   }
 
   if (state.view === "intel") {
+    // v3.2.0 · 情报呈现形态：切换条两种形态都在，绑定一次即可。
+    document.querySelectorAll("[data-ip-mode]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        state.intelMode = b.dataset.ipMode;   // "projects" | "list"
+        if (state.intelMode === "projects" && window.__IP) await window.__IP.load();
+        render("reflow");
+      });
+    });
+    if (window.__IP && state.intelMode === "projects") window.__IP.bind();
     // 采集可能在上一个舱段里就启动了：重建出来的按钮必须回到「进行中」形态。
     const runState = state.intelRun;
     const btn = $("#intel-refresh");
@@ -1313,7 +1344,7 @@ $("#nav").addEventListener("click", async (e) => {
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b === btn)));
   // FR-2/FR-1：进入情报/网点视图时按需拉取（离线失败只影响本视图）
-  if (state.view === "intel") { await loadIntel(); await loadLeads(); }
+  if (state.view === "intel") { await loadIntelByMode(); await loadLeads(); }
   if (state.view === "dealer") await loadDealer();
   render();
 });

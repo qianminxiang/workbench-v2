@@ -26,11 +26,14 @@ jobs:
       # 该步骤不干活，却是一个额外的失败面（apt 源抖动就会让整条流水线红），删除。
       - name: 核心单测（wb-core + wbd）
         run: cargo test -p wb-core -p wbd --locked
-      - name: 前端守卫单测（node --test，零依赖）
-        # v3.0 集成后语音播报/音效已整体移除，原两条 speech 测试退役；
-        # 现守两件事：① 晨报「播报↔界面」口径（周聚合/today_schedule 不得回归）；
-        # ② 商务风 29 项对比度配对（色值从 tokens.css 现场解析）+ 机械风变量防回归。
-        run: node --test apps/desktop/brief-coverage.test.cjs apps/desktop/contrast-tokens.test.cjs
+      - name: 前端守卫单测（node --test，零依赖 · 目录通配）
+        # 2026-11-20 v3.2.0 改：由「点名两个文件」改为「整目录通配」。
+        # 原因（挂账项，11-19 教训的同一类缺陷）：点名式写法让目录里其余测试文件
+        # 静默漏跑——新增的守卫只要没人记得往这行加名字，就等于测试不存在。
+        # 改通配后：apps/desktop/*.test.cjs 全量执行，新增文件自动纳入，无需改本行。
+        # 当前覆盖：brief-coverage（晨报口径）、contrast-tokens（29 项对比度 + 机械风防回归）、
+        #          intel-projects（情报项目进程 v1.2 规格条款）。
+        run: node --test apps/desktop/*.test.cjs
       - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
         # 硬门：测试失败即构建失败。此前写成 `npm test || echo ...` 会把失败吞掉，
         # 门禁形同虚设——复核方指出的「说全绿但无法复验」有一半源于此。

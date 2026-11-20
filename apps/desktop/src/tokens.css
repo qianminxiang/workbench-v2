@@ -616,3 +616,387 @@ tr:hover td { background: color-mix(in srgb, var(--bg-card) 94%, var(--border-de
    那类容器 `el.hidden = true` 后仍会照常渲染，属于「设了 hidden 但没生效」的隐患。
    归因写错会让后来人去找一个并不存在的 display:grid 病根，白白绕远。 */
 [hidden] { display: none !important; }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   v3.2.0 · 情报「项目进程」（同一项目阶段聚合）· Calm Slate 作用域令牌
+   ──────────────────────────────────────────────────────────────────────────
+   来源：设计规格 v1.2 §3（《亮蓝主色 · 搭配色方案与界面规范》方案 A 冷灰中性）。
+
+   **为什么另起一套 `--ip-` 前缀，而不是覆盖既有 token：**
+   本仓库现网 tokens.css 是「亮蓝 B 内衬层叠轻拟物」单主题（`--bg-canvas #F5F6F8`
+   / `--brand #4689E4` 族、15 处 box-shadow、没有任何暗色档）；规格要求的是
+   Calm Slate（`#F4F6FA` 族、**全页零 box-shadow**、全量暗色）。二者是两套配色，
+   不是一套配色的微调。直接改既有 token 会同时改掉晨报 / 看板 / 明细 / 时间线 /
+   KPI / 单位 / 成员 / 网点全部既有视图的观感，并让
+   `contrast-tokens.test.cjs` 的 29 项配对基线整体失效。
+
+   因此本视图自带一套同语义、`--ip-` 前缀的作用域令牌，仅作用于 `.ip-*` 组件。
+   后续设计规范全站收口时，把 `--ip-` 前缀去掉提升为全局即可，无需再改组件。
+
+   **四条硬结论的落点（规格 §3）：**
+   1. 主按钮实心 `--ip-primary-action #2174E1`（白字 4.52:1）——转待办 / 导出 / 标记相关；
+   2. 浅画布主色图标 `--ip-icon-brand-on-canvas #3787F0`（对画布 3.30:1），
+      **不用 #4992F1 压浅画布**；
+   3. 二维立体只靠 1px 描边——本作用域内 `box-shadow` 出现次数必须为 0（有守卫测试钉住）；
+   4. 搭配色默认 A 冷灰中性——阶段色只在主色家族取档，绿 / 橙 / 紫只用于状态标签。
+   ══════════════════════════════════════════════════════════════════════════ */
+.ip-scope {
+  /* 面与底 */
+  --ip-canvas: #F4F6FA;
+  --ip-canvas-subtle: #EDF1F7;
+  --ip-card: #FFFFFF;
+  --ip-card-muted: #F8FAFD;
+  --ip-inner: #E0EDFD;
+  /* 线 */
+  --ip-divider: #E3E8F0;
+  --ip-border-card: #DCE4EF;
+  --ip-border-clickable: #8390A1;   /* 对画布 3.00:1 */
+  --ip-border-interactive: #8A96A6; /* 对卡面 3.00:1 */
+  /* 字 */
+  --ip-text-primary: #172033;       /* 15.04:1 */
+  --ip-text-secondary: #4F5C73;     /* 6.24:1 */
+  --ip-text-muted: #606B80;         /* 4.96:1 */
+  --ip-icon-default: #4F5C73;
+  --ip-icon-brand-on-canvas: #3787F0; /* 对画布 3.30:1 */
+  /* 主色家族 */
+  --ip-primary-action: #2174E1;      /* 白字 4.52:1 */
+  --ip-primary-action-hover: #1C69CF;
+  --ip-primary-action-active: #195FBB;
+  --ip-primary-200: #C2DCFB;         /* 进度槽 / 连接线 */
+  --ip-primary-800: #1B5CB2;         /* 卡面强调字 6.52:1 */
+  --ip-primary-900: #17488A;         /* 内衬面文字 7.60:1 */
+  --ip-link: #1E68CB;                /* 对画布 4.98:1 */
+  /* 语义（只用于状态标签，不做阶段色） */
+  --ip-success: #1A7A4B;
+  --ip-success-bg: #E5F4EC;
+  --ip-warning: #945F0A;
+  --ip-warning-bg: #FBF0DC;
+  --ip-error: #C0341F;
+  --ip-error-bg: #FCE8E4;
+  --ip-aux: #6353E6;
+  --ip-aux-bg: #EEEBFD;
+}
+
+/* 暗色档：同一套语义，规格 §3 深色值。作用域同样只限本视图——
+   现网其余视图没有暗色实现，把暗色提到 :root 会让「画布仍是浅色、
+   内容却变深色」的拼贴感扩散到全部视图。 */
+.ip-scope[data-ip-theme="dark"] {
+  --ip-canvas: #0F1419;
+  --ip-canvas-subtle: #131A21;
+  --ip-card: #171E26;
+  --ip-card-muted: #1C242E;
+  --ip-inner: #16283C;
+  --ip-divider: #26313D;
+  --ip-border-card: #26313D;
+  --ip-border-clickable: #6C7B8C;
+  --ip-border-interactive: #7A8794;
+  --ip-text-primary: #E7EDF4;
+  --ip-text-secondary: #AFBAC8;
+  --ip-text-muted: #93A0B0;
+  --ip-icon-default: #AFBAC8;
+  --ip-icon-brand-on-canvas: #5C9EF3;
+  --ip-primary-action: #2174E1;
+  --ip-primary-action-hover: #2C7FEC;
+  --ip-primary-action-active: #1C69CF;
+  --ip-primary-200: #2A4460;
+  --ip-primary-800: #8FBDF6;
+  --ip-primary-900: #B8D5FA;
+  --ip-link: #71B0F7;
+  --ip-success: #5FCB92;
+  --ip-success-bg: #12281C;
+  --ip-warning: #E0A94A;
+  --ip-warning-bg: #2A2113;
+  --ip-error: #F0836C;
+  --ip-error-bg: #2C1714;
+  --ip-aux: #A79BF5;
+  --ip-aux-bg: #1E1B33;
+}
+
+/* ══ 布局：方案 A 主从双栏 ══ */
+.ip-scope { color: var(--ip-text-primary); }
+.ip-wrap {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);   /* 规格 §4：左栏 340px 固定宽，右栏自适应 */
+  gap: 16px;
+  align-items: start;
+  background: var(--ip-canvas);
+  padding: 12px;
+  border-radius: 6px;
+}
+.ip-left {
+  background: var(--ip-card);
+  border: 1px solid var(--ip-border-card);
+  border-radius: 6px;
+  display: flex; flex-direction: column;
+  max-height: 78vh;
+}
+.ip-left-tools {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ip-divider);
+  flex: none;
+}
+.ip-left-body { overflow-y: auto; padding: 8px; flex: 1; min-height: 0; }
+.ip-right { min-width: 0; }
+
+/* ── 左栏项目聚合卡 ── */
+.ip-kcard {
+  display: block; width: 100%; text-align: left;
+  background: var(--ip-card);
+  border: 1px solid var(--ip-border-card);   /* 纯容器态 */
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font: inherit; color: inherit;
+  transition: background-color 150ms ease, border-color 150ms ease;
+  box-shadow: none;
+}
+.ip-kcard:hover { background: var(--ip-card-muted); border-color: var(--ip-border-clickable); }
+.ip-kcard[aria-current="true"] {
+  border-color: var(--ip-primary-action);   /* selected = 1px 主色描边，不用阴影 */
+  background: var(--ip-card-muted);
+}
+.ip-kcard:focus-visible { outline: 2px solid var(--ip-link); outline-offset: 1px; }
+.ip-kcard-head { display: flex; align-items: flex-start; gap: 6px; }
+.ip-kname {
+  font-size: 15px; font-weight: 600; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;                    /* 项目名 2 行截断 */
+  word-break: break-word;
+  flex: 1; min-width: 0;
+}
+.ip-kmeta { font-size: 12px; color: var(--ip-text-secondary); margin-top: 2px; line-height: 1.5; }
+.ip-kfoot {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; color: var(--ip-text-muted); margin-top: 6px;
+}
+
+/* ── chip ── */
+.ip-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; line-height: 1;
+  padding: 3px 6px; border-radius: 4px;
+  border: 1px solid var(--ip-border-card);
+  background: var(--ip-canvas-subtle);
+  color: var(--ip-text-secondary);
+  white-space: nowrap;
+}
+.ip-chip--manual {                     /* 手动 chip：次级样式，不引入新色 */
+  background: var(--ip-canvas-subtle);
+  color: var(--ip-text-secondary);
+  border-color: var(--ip-border-card);
+}
+.ip-chip--cur { background: var(--ip-inner); color: var(--ip-primary-900); border-color: transparent; }
+.ip-chip--hit { background: var(--ip-canvas-subtle); color: var(--ip-text-muted); }
+.ip-chip--done { background: var(--ip-success-bg); color: var(--ip-success); border-color: transparent; }
+.ip-chip--warn { background: var(--ip-warning-bg); color: var(--ip-warning); border-color: transparent; }
+.ip-chip--err { background: var(--ip-error-bg); color: var(--ip-error); border-color: transparent; }
+.ip-chip--aux { background: var(--ip-aux-bg); color: var(--ip-aux); border-color: transparent; }
+
+/* ── 6 点阶段点条 ── */
+.ip-dots { display: flex; align-items: center; gap: 0; margin-top: 8px; }
+.ip-dotwrap {
+  width: 14px; height: 14px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: transparent;
+}
+.ip-dotwrap--now {                      /* 当前：8px 实心 + 2px 白环 + 1px 主色外环（用 border 拼，不用投影） */
+  border: 1px solid var(--ip-primary-action);
+  background: var(--ip-card);
+}
+.ip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ip-dot--done { background: var(--ip-primary-action); }
+.ip-dot--now { background: var(--ip-primary-action); }
+.ip-dot--future { background: transparent; border: 1px solid var(--ip-border-clickable); }
+.ip-dot--skip {                        /* 跳过：空心 + 斜向 1px 短线 */
+  background: linear-gradient(135deg, transparent 42%, var(--ip-border-clickable) 42%,
+    var(--ip-border-clickable) 58%, transparent 58%);
+  border: 1px solid var(--ip-border-clickable);
+}
+.ip-conn {
+  flex: 1 1 12px; min-width: 12px; height: 1px;
+  background: var(--ip-primary-200);
+}
+.ip-term {                              /* 终止 / 废标侧标：6px 方块，不参与进程推进 */
+  width: 6px; height: 6px; flex: none; margin-left: 6px;
+  background: var(--ip-error);
+}
+
+/* ── 右栏：抬头 / 阶段导航 / 纵向进程轴 ── */
+.ip-head {
+  background: var(--ip-card);
+  border: 1px solid var(--ip-border-card);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.ip-head h2 { font-size: 20px; font-weight: 600; margin: 0 0 6px; line-height: 1.3; color: var(--ip-text-primary); }
+.ip-head-meta { font-size: 13px; color: var(--ip-text-secondary); line-height: 1.7; }
+.ip-head-basis { font-size: 12px; color: var(--ip-text-muted); margin-top: 6px; }
+.ip-navchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.ip-navchip {
+  font: inherit; font-size: 12px; line-height: 1;
+  padding: 5px 8px; border-radius: 4px; cursor: pointer;
+  background: var(--ip-card); color: var(--ip-text-secondary);
+  border: 1px solid var(--ip-border-card);
+}
+.ip-navchip[aria-pressed="true"] { background: var(--ip-inner); color: var(--ip-primary-900); border-color: var(--ip-primary-action); }
+.ip-navchip:focus-visible { outline: 2px solid var(--ip-link); outline-offset: 1px; }
+
+.ip-axis { margin-top: 12px; }
+.ip-seg {
+  background: var(--ip-card);
+  border: 1px solid var(--ip-border-card);
+  border-radius: 6px;
+  padding: 12px 14px 12px 16px;
+  margin-bottom: 10px;
+  position: relative;
+}
+.ip-seg[data-ceg-current="true"] { border-color: var(--ip-primary-action); }
+.ip-seg-head { display: flex; align-items: center; gap: 8px; }
+.ip-seg-node {
+  width: 10px; height: 10px; border-radius: 50%; flex: none;
+  border: 1px solid var(--ip-border-clickable); background: var(--ip-card);
+}
+.ip-seg-node[data-st="done"], .ip-seg-node[data-st="now"] { background: var(--ip-primary-action); border-color: var(--ip-primary-action); }
+.ip-seg-node[data-st="terminate"] { background: var(--ip-error); border-color: var(--ip-error); }
+.ip-seg-title { font-size: 14px; font-weight: 600; }
+.ip-seg-count { font-size: 12px; color: var(--ip-text-muted); }
+.ip-seg-body { margin-top: 8px; }
+
+.ip-ann {
+  border-top: 1px solid var(--ip-divider);
+  padding: 8px 0 2px;
+}
+.ip-ann:first-child { border-top: 0; padding-top: 4px; }
+.ip-ann-title { font-size: 13px; color: var(--ip-text-primary); line-height: 1.5; }
+.ip-ann-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--ip-text-muted); margin-top: 3px; }
+.ip-ann-hit { font-size: 12px; color: var(--ip-text-muted); margin-top: 3px; }
+.ip-link { color: var(--ip-link); text-decoration: none; }
+.ip-link:hover { text-decoration: underline; }
+
+/* ── 空态 / 骨架 / 极端 ── */
+.ip-empty {
+  background: var(--ip-card); border: 1px solid var(--ip-border-card); border-radius: 6px;
+  padding: 40px; text-align: center; color: var(--ip-text-muted);
+}
+.ip-sk { border: 1px solid var(--ip-border-card); border-radius: 6px; padding: 12px; margin-bottom: 8px; background: var(--ip-card); }
+.ip-sk b { display: block; height: 10px; border-radius: 2px; background: var(--ip-canvas-subtle); margin-bottom: 8px; }
+.ip-sk b:nth-child(2) { width: 65%; }
+.ip-sk b:nth-child(3) { width: 40%; margin-bottom: 0; }
+
+/* ── 迁入面板（转待办 / 手动建档 / 对照）：轻量弹层，不是新表单页（规格 A-1 / A-7） ── */
+.ip-modal-mask {
+  position: fixed; inset: 0; background: rgba(23, 32, 51, 0.32);
+  display: grid; place-items: center; z-index: 60; padding: 16px;
+  animation: ip-fade 150ms ease-out;
+}
+.ip-modal {
+  background: var(--ip-card); border: 1px solid var(--ip-border-card);
+  border-radius: 6px; padding: 18px 20px; width: min(560px, 100%);
+  max-height: 86vh; overflow: auto;
+  color: var(--ip-text-primary);
+}
+.ip-modal h3 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+.ip-modal-sub { font-size: 12px; color: var(--ip-text-muted); margin-bottom: 12px; }
+.ip-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.ip-field > span { font-size: 12px; color: var(--ip-text-secondary); }
+.ip-field > span .ip-req { color: var(--ip-error); }
+.ip-input {
+  font: inherit; font-size: 13px; padding: 6px 8px;
+  background: var(--ip-card); color: var(--ip-text-primary);
+  border: 1px solid var(--ip-border-interactive);   /* 输入边界 3.00:1 */
+  border-radius: 4px;
+}
+.ip-input:focus { outline: 2px solid var(--ip-link); outline-offset: -1px; }
+.ip-modal-acts { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+
+/* ── 并排对照视图（规格 A-7）：字段差异高亮 ── */
+.ip-cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.ip-cmp-col { border: 1px solid var(--ip-border-card); border-radius: 6px; padding: 10px; background: var(--ip-card-muted); }
+.ip-cmp-col h4 { font-size: 12px; margin: 0 0 8px; color: var(--ip-text-secondary); font-weight: 600; }
+.ip-cmp-row { display: flex; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 4px; line-height: 1.5; }
+.ip-cmp-row .k { flex: none; width: 62px; color: var(--ip-text-muted); }
+.ip-cmp-row .v { min-width: 0; word-break: break-word; }
+.ip-cmp-row[data-diff="true"] { background: var(--ip-warning-bg); color: var(--ip-warning); }  /* 差异高亮：色 + 文字双编码 */
+.ip-cmp-row[data-diff="true"] .k { color: var(--ip-warning); }
+
+/* ── 疑似关联提示条 ── */
+.ip-hintbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--ip-warning); border-radius: 6px;
+  background: var(--ip-warning-bg); color: var(--ip-warning);
+  font-size: 12px; padding: 8px 10px; margin-top: 10px;
+}
+
+/* ── 底部工具条：主操作 / 次操作 / 文字按钮 ── */
+.ip-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-top: 1px solid var(--ip-divider);
+  margin-top: 14px; padding-top: 12px;
+}
+.ip-btn {
+  font: inherit; font-size: 13px; line-height: 1;
+  padding: 8px 14px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--ip-primary-action);
+  background: var(--ip-primary-action);        /* 主按钮实心 #2174E1 */
+  color: #FFFFFF;
+  transition: background-color 150ms ease;
+}
+.ip-btn:hover { background: var(--ip-primary-action-hover); border-color: var(--ip-primary-action-hover); }
+.ip-btn:active { background: var(--ip-primary-action-active); border-color: var(--ip-primary-action-active); }
+.ip-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ip-btn:focus-visible { outline: 2px solid var(--ip-link); outline-offset: 1px; }
+.ip-btn--secondary {                            /* 次按钮描边 */
+  background: var(--ip-card); color: var(--ip-text-primary);
+  border: 1px solid var(--ip-border-clickable);
+}
+.ip-btn--secondary:hover { background: var(--ip-card-muted); border-color: var(--ip-primary-action); color: var(--ip-primary-800); }
+.ip-btn--text {                                  /* 文字按钮 */
+  background: transparent; border-color: transparent; color: var(--ip-link); padding: 8px 6px;
+}
+.ip-btn--text:hover { background: var(--ip-canvas-subtle); }
+.ip-toolbar-msg { font-size: 12px; color: var(--ip-text-muted); }
+.ip-toolbar-msg[data-tone="err"] { color: var(--ip-error); }
+.ip-toolbar-msg[data-tone="ok"] { color: var(--ip-success); }
+
+/* ── 呈现形态切换（L2 情报顶部） ── */
+.ip-switch { display: inline-flex; border: 1px solid var(--ip-border-clickable); border-radius: 4px; overflow: hidden; }
+.ip-switch button {
+  font: inherit; font-size: 13px; line-height: 1; padding: 7px 14px; cursor: pointer;
+  background: var(--ip-card); color: var(--ip-text-secondary);
+  border: 0; border-radius: 0;
+}
+.ip-switch button + button { border-left: 1px solid var(--ip-border-card); }
+.ip-switch button[aria-pressed="true"] { background: var(--ip-inner); color: var(--ip-primary-900); font-weight: 600; }
+.ip-switch button:focus-visible { outline: 2px solid var(--ip-link); outline-offset: -2px; }
+
+/* 源站表折叠进「源站」抽屉（规格 §1：默认收起） */
+.ip-src-drawer[open] > summary { color: var(--ip-primary-800); }
+
+/* ── 适配（规格 §6）：1280 主页 / 768 左栏收 280 或抽屉 / 375 单列堆叠 ── */
+@media (max-width: 1100px) {
+  .ip-wrap { grid-template-columns: 280px minmax(0, 1fr); }
+}
+@media (max-width: 768px) {
+  .ip-wrap { grid-template-columns: 1fr; }
+  .ip-left { max-height: none; }
+  .ip-left-body { max-height: 46vh; }
+}
+@media (max-width: 480px) {
+  /* 375px：单列堆叠，卡内点条间距 10px；点卡进全屏进程页（由 app.js 切 data-ip-full） */
+  .ip-wrap { padding: 8px; gap: 10px; }
+  .ip-dots { gap: 0; }
+  .ip-head h2 { font-size: 17px; }
+  .ip-cmp { grid-template-columns: 1fr; }
+  .ip-modal { padding: 14px 14px; }
+  .ip-scope[data-ip-full="card"] .ip-right { display: none; }
+  .ip-scope[data-ip-full="page"] .ip-left { display: none; }
+}
+@keyframes ip-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .ip-modal-mask { animation: none; }
+  .ip-kcard { transition: none; }
+}
