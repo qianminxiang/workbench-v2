@@ -64,7 +64,10 @@
     const reason = String((node && node.stage_reason) || "");
 
     // 数据轨若已直接给出 6 段 code（规格口径），直接采信，不再走关键词拆分。
-    const KEYS = ["intent", "publish", "correct", "award", "contract", "terminate"];
+    // ⚠ contract 是**两端撞车**的码位：后端 5 段码 contract 与规格 6 段码 contract 同名。
+    //   若把 contract 放进快速通道，所有旧 contract 记录（含「中标结果公告」这类多数派）
+    //   会被直接判成「合同 / 验收」，永远进不到「中标成交」——必须留给下面的关键词拆分。
+    const KEYS = ["intent", "publish", "correct", "award", "terminate"];
     if (KEYS.includes(stage)) return { seg: stage, why: "后端直出六段口径" };
 
     // 终止/废标：后端无此段，只能从标题判；命中即侧状态，不推进进程（规格 §2）。
