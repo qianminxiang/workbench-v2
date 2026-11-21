@@ -1214,7 +1214,8 @@ fn card_with_ui_aliases(v: serde_json::Value) -> serde_json::Value {
     obj.insert("node_count".into(), serde_json::json!(nodes_len));
     obj.insert("manual".into(), serde_json::json!(is_manual));
     obj.insert("skipped_stages".into(), serde_json::json!(skipped.join("、")));
-    obj
+    // obj 是 as_object_mut 借来的 &mut Map，返回值需要 Value
+    serde_json::Value::Object(obj.clone())
 }
 
 /// 项目聚合列表（v3.2.0 接线）：走六段 payload 适配层
