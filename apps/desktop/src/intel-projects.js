@@ -63,12 +63,32 @@
     const title = String((node && (node.title || "")) || "");
     const reason = String((node && node.stage_reason) || "");
 
-    // 数据轨若已直接给出 6 段 code（规格口径），直接采信，不再走关键词拆分。
-    // ⚠ contract 是**两端撞车**的码位：后端 5 段码 contract 与规格 6 段码 contract 同名。
-    //   若把 contract 放进快速通道，所有旧 contract 记录（含「中标结果公告」这类多数派）
-    //   会被直接判成「合同 / 验收」，永远进不到「中标成交」——必须留给下面的关键词拆分。
-    const KEYS = ["intent", "publish", "correct", "award", "terminate"];
-    if (KEYS.includes(stage)) return { seg: stage, why: "后端直出六段口径" };
+    // ── 六段码表归一（跨轨一致的关键）────────────────────────────────────
+    // 同一个仓里有两套阶段口径，命名还不一样：
+    //   crates/wb-core/src/intel_segment.rs（六段 payload / CLI）: intent / tender / correction / award / contract / termination
+    //   crates/wb-core/src/intel_stage.rs  （五段 / 现行 Tauri 命令）: intent / review / contract / acceptance / operation / unknown
+    // 界面内部键沿用规格 §2 文案：intent / publish / correct / award / contract / terminate。
+    // 若不做归一，数据轨把 Tauri 命令切到六段 payload 后，tender / correction / termination
+    // 三个段会被静默判成「阶段未知」——界面照样能跑，只是那三段全空，最难看出来。
+    const SIX_TO_UI = {
+      intent: "intent", tender: "publish", correction: "correct",
+      award: "award", contract: "contract", termination: "terminate",
+      // 界面内部键也接受（幂等），便于将来直传
+      publish: "publish", correct: "correct", terminate: "terminate",
+    };
+
+    // 路径 A：六段 payload 自带 segment 字段 → 语义无歧义，contract 在此只可能是「合同/验收」。
+    const segField = String((node && (node.segment || node.segment_code)) || "");
+    if (segField && SIX_TO_UI[segField]) {
+      return { seg: SIX_TO_UI[segField], why: "六段 payload 的 segment 字段" };
+    }
+
+    // 路径 B：只有 stage 字段。**裸 contract 不能直采**：五段码 contract 并了规格 4+5，
+    // 含「中标结果公告」这类多数派，直采会让「中标成交」段永久空 —— 必须留给下面的关键词拆分。
+    const stageKey = SIX_TO_UI[stage];
+    if (stageKey && stage !== "contract") {
+      return { seg: stageKey, why: "后端直出六段口径" };
+    }
 
     // 终止/废标：后端无此段，只能从标题判；命中即侧状态，不推进进程（规格 §2）。
     if (hasKw(title, KW.terminate)) return { seg: "terminate", why: "标题含终止/废标词" };

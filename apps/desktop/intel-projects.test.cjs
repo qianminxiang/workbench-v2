@@ -372,3 +372,34 @@ test("渲染模板：不得重复 id、不得出现两支同值的三元", () =>
     .filter((m) => m[1] === m[2]);
   assert.equal(dead.length, 0, `发现两支同值的死三元表达式（条件白写）：${dead.map((m) => m[0].trim()).join("、")}`);
 });
+
+// ── 19. 六段码跨轨一致性：界面别名表必须覆盖后端 intel_segment 的真实码表 ────
+// 后端有两套阶段口径在同一仓里并存：
+//   crates/wb-core/src/intel_segment.rs（CLI payload，六段）: intent/tender/correction/award/contract/termination
+//   crates/wb-core/src/intel_stage.rs（Tauri 命令，五段）   : intent/review/contract/acceptance/operation/unknown
+// 界面内部键沿用规格 §2 文案（publish/correct/terminate）。若数据轨把 Tauri 命令
+// 切到六段 payload，而界面别名表没覆盖 tender/correction/termination，
+// 这三个段会被静默判成「阶段未知」——界面照样能跑，只是段全空，最难在评审里看出来。
+// 本断言直接读 Rust 侧码表，钉住「后端有的码，界面必须认识」。
+test("六段码跨轨一致：界面别名表覆盖 intel_segment 全部码值", () => {
+  const segRs = path.join(__dirname, "..", "..", "crates", "wb-core", "src", "intel_segment.rs");
+
+  // 仓库根相对 apps/desktop 是 ../..；但守卫也可能在只含 apps 的裁剪树里跑，
+  // 故读不到就明确 skip（不静默通过、不假绿）。
+  if (!fs.existsSync(segRs)) {
+    console.log("# 跳过：未找到 crates/wb-core/src/intel_segment.rs（裁剪树），本断言在后端同仓时生效");
+    return;
+  }
+  const rs = fs.readFileSync(segRs, "utf8");
+
+  // 抽 code() 里所有 => "xxx" 字面量
+  const codeFn = rs.slice(rs.indexOf("pub fn code(self)"), rs.indexOf("pub fn label(self)"));
+  const backendCodes = [...codeFn.matchAll(/=>\s*"([a-z]+)"/g)].map((m) => m[1]);
+  assert.ok(backendCodes.length >= 6,
+    `intel_segment 的 code() 应至少给出 6 个码值，实际抓到 ${backendCodes.length}：${backendCodes.join("、")}`);
+
+  const mod = fs.readFileSync(MOD, "utf8");
+  const missing = backendCodes.filter((c) => !new RegExp(`${c}:\\s*"`).test(mod));
+  assert.equal(missing.length, 0,
+    `界面别名表缺少后端码值（切到六段 payload 后这些段会被判成阶段未知）：${missing.join("、")}`);
+});
