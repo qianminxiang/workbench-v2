@@ -1166,7 +1166,7 @@ fn intel_leads_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, S
 /// `kcard` / `projectView` / `headHtml`）已按 `p.nodes` + 别名字段渲染整条进程轴，
 /// 而且节点里**五段 `stage` 与六段 `segment` 同时带**（见 `wb_core::intel_payload::CardNode`），
 /// 界面 `stage6Of` 走路径 A 即可拿到无歧义的六段码。这里只补别名，不改渲染主干。
-fn card_with_ui_aliases(v: serde_json::Value) -> serde_json::Value {
+fn card_with_ui_aliases(mut v: serde_json::Value) -> serde_json::Value {
     let Some(obj) = v.as_object_mut() else { return v; };
     let agg = obj.get("agg_key").cloned().unwrap_or_default();
     // 转待办把 `project_key` 直接当线索键用（项目键与线索键同口径 code:/fp:/body:），
