@@ -509,11 +509,10 @@
   /** 底部工具条：转待办（主）/ 标记相关·无关（次）/ 导出该项目进程（文字）。 */
   function toolbar(p, view) {
     const msg = st().flash;
-    const isManual = !!p.manual;
     return `<div class="ip-toolbar">
-      <button class="ip-btn" id="ip-to-todo" ${isManual ? "" : ""}>转待办</button>
-      <button class="ip-btn--secondary ip-btn" id="ip-mark" data-ip-mark="core">标记相关</button>
-      <button class="ip-btn--secondary ip-btn" id="ip-mark" data-ip-mark="excluded">标记无关</button>
+      <button class="ip-btn" id="ip-to-todo">转待办</button>
+      <button class="ip-btn--secondary ip-btn" data-ip-mark="core">标记相关</button>
+      <button class="ip-btn--secondary ip-btn" data-ip-mark="excluded">标记无关</button>
       <button class="ip-btn--text ip-btn" id="ip-export">导出该项目进程</button>
       <span class="ip-toolbar-msg" ${msg ? `data-tone="${msg.tone}"` : ""}>${esc(msg ? msg.text : "")}</span>
     </div>`;

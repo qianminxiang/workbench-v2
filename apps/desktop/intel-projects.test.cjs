@@ -345,3 +345,30 @@ test("门禁的门禁：CI 必须以目录口径跑全部桌面端守卫，不�
   assert.equal(offenders.length, 0,
     `多包 cargo test 必须带 --no-fail-fast，否则会 fail-fast 短路：${offenders.join("；")}`);
 });
+
+// ── 18. 渲染模板的两类「看起来对、实际没生效」缺陷 ─────────────────────
+// 都是本轮真机上抓到的：静态看代码完全正常，只有跑起来才发现。
+//  (a) 重复 id：同一段渲染里两个按钮共用 id="ip-mark"。绑定侧用的是
+//      querySelectorAll("[data-ip-mark]") 所以两个都能点，但 id 重复本身
+//      违反 DOM 唯一性：任何 getElementById / label for / aria 关联都会只取第一个，
+//      且日后一旦有人改用 q("#ip-mark") 就会静默只绑一半。
+//  (b) 死三元 `${cond ? "" : ""}`：两个分支同值，条件白写，多半是想写样式差异却没写成。
+test("渲染模板：不得重复 id、不得出现两支同值的三元", () => {
+  const mod = fs.readFileSync(MOD, "utf8");
+
+  // 只统计模板字符串里真实 emit 出来的 id="..."（含 ${...} 占位）
+  const ids = [...mod.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+  const seen = new Map();
+  const dups = [];
+  for (const id of ids) {
+    if (seen.has(id)) dups.push(id);
+    else seen.set(id, true);
+  }
+  assert.equal(dups.length, 0,
+    `渲染模板里出现重复 id（DOM 唯一性被破坏，改用 class/data-* 区分）：${[...new Set(dups)].join("、")}`);
+
+  // 死三元：? 与 : 两侧是完全相同的字面量（"" 或 ''）
+  const dead = [...mod.matchAll(/'?\s*\?\s*(""|'')\s*:\s*(""|'')\s*\}?/g)]
+    .filter((m) => m[1] === m[2]);
+  assert.equal(dead.length, 0, `发现两支同值的死三元表达式（条件白写）：${dead.map((m) => m[0].trim()).join("、")}`);
+});
