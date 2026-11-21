@@ -25,7 +25,10 @@ jobs:
       # 在没有 gtk+-3.0 的容器里同样 75/75 通过，说明这两个 crate 编译期不碰 GTK。
       # 该步骤不干活，却是一个额外的失败面（apt 源抖动就会让整条流水线红），删除。
       - name: 核心单测（wb-core + wbd）
-        run: cargo test -p wb-core -p wbd --locked
+        # 多包调用必须带 --no-fail-fast：cargo 默认 fail-fast 以**测试目标**为单位短路，
+        # 前一个包一红，后一个包根本不执行，日志里只出现一条 test result，
+        # 却极易被读成「两个包都验过」（门禁强度没变，被削的是红侧诊断信息）。
+        run: cargo test -p wb-core -p wbd --locked --no-fail-fast
       - name: 前端守卫单测（node --test，零依赖 · 目录通配）
         # 2026-11-20 v3.2.0 改：由「点名两个文件」改为「整目录通配」。
         # 原因（挂账项，11-19 教训的同一类缺陷）：点名式写法让目录里其余测试文件

@@ -323,4 +323,25 @@ test("门禁的门禁：CI 必须以目录口径跑全部桌面端守卫，不�
     .map((f) => fs.readFileSync(path.join(ciDir, f), "utf8"))
     .filter((b) => /cargo\s+test\s+-p\s+[^\n]*\s-p\s+/.test(b)).length;
   assert.ok(cargoMulti >= 1, "工作流里应至少有一处多包 cargo test（否则本守卫的上下文已漂移）");
+
+  // 多包 cargo test 必须带 --no-fail-fast（逐行判定，同一行里出现 ≥2 个 -p 才算多包）。
+  // 原因：cargo 默认 fail-fast 以**测试目标**为单位短路，前一个包红了后一个包就不执行，
+  // 日志里只出现一条 test result 行，极易被读成「两个包都验过」。门禁强度没变，
+  // 被削掉的是红侧诊断信息 —— 这类缺陷落地时全绿，出事时才暴露，必须静态钉住。
+  const offenders = [];
+  for (const f of wfFiles) {
+    const body = fs.readFileSync(path.join(ciDir, f), "utf8");
+    body.split("\n").forEach((line, i) => {
+      // 注释行不算真实调用：YAML 注释里常引用命令原文（本文件第 24 行就是），
+      // 若一并计入，注释里的示例会被误判成缺 flag（实测踩过，报在 :24）。
+      if (/^\s*#/.test(line)) return;
+      if (!/cargo\s+test/.test(line)) return;
+      const pkgCount = (line.match(/\s-p\s+/g) || []).length;
+      if (pkgCount >= 2 && !/--no-fail-fast/.test(line)) {
+        offenders.push(`${f}:${i + 1}（${pkgCount} 个 -p 缺 --no-fail-fast）`);
+      }
+    });
+  }
+  assert.equal(offenders.length, 0,
+    `多包 cargo test 必须带 --no-fail-fast，否则会 fail-fast 短路：${offenders.join("；")}`);
 });
