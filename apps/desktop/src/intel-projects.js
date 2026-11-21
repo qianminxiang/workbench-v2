@@ -192,18 +192,32 @@
     return o + "|" + n;
   };
 
-  /** 手动档案的本地占位存储。
-   *  ⚠ 后端暂无手动建档命令（`intel_projects_get` 只读引擎聚合结果，没有写入通道），
-   *  故本版把手动档案存进 webview 的 localStorage：**只在本机本实例可见，卸载或清
-   *  缓存即丢失，且不进引擎去重池**。数据轨补齐 `intel_manual_project_*` 命令后，
-   *  把 load/save 换成 invoke 即可，其余界面代码不用动。 */
+  /** 手动档案读取/写入：主路径走后端命令（`manual_project_list` / `manual_project_create`，
+   *  落库与 wbd CLI 同一批 wb-core 实现，进引擎去重池）；localStorage 只在
+   *  invoke 不可用（老后端 / 纯浏览器调试）时作降级兜底，不再是主路径。 */
    const LS_KEY = "wb.intel.manualProjects.v1";
-   IP.loadManual = function loadManual() {
+   /** localStorage 读取：只作为降级兜底（后端命令不可用时），不再是主路径。
+    *  挂在 IP 上是因为建档/对照合并的降级路径在别的 IIFE 里也要用。 */
+   IP.loadManualLS = function loadManualLS() {
     try {
       const raw = window.localStorage.getItem(LS_KEY);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch (_) { return []; }
+  };
+   /** 手动档案读取（主路径 = 后端 `manual_project_list`，与 wbd CLI 同一落库实现）；
+    *  invoke 不可用（老后端 / 纯浏览器调试）时降级 localStorage。
+    *  已合并（merged_into 非空）的档案不再作为独立卡显示——公告侧聚合卡已在列表里。 */
+   IP.loadManual = async function loadManual() {
+    const t = window.__TAURI__ && window.__TAURI__.core;
+    if (t && typeof t.invoke === "function") {
+      try {
+        const r = await t.invoke("manual_project_list", {});
+        const arr = (r && r.manuals) || [];
+        if (Array.isArray(arr)) return arr.filter((m) => !m.merged_into);
+      } catch (_) { /* 命令不存在或后端异常：降级 localStorage */ }
+    }
+    return IP.loadManualLS().filter((m) => !m.merged_into && !m.merged_at);
   };
    IP.saveManual = function saveManual(arr) {
     try { window.localStorage.setItem(LS_KEY, JSON.stringify(arr)); return true; }
@@ -437,17 +451,19 @@
       st.error = String(e || "读取失败");
     }
     // 手动档案并进列表（规格 A-6 口径 4：计入默认列表统计与计数，单独标「手动」chip）
-    IP.mergeManual();
+    await IP.mergeManual();
     st.loading = false;
     return st.projects;
   };
 
   /** 手动档案 → 与引擎项目同形的聚合对象，插到列表最前（最近建档在上）。 */
-  IP.mergeManual = function mergeManual() {
+  IP.mergeManual = async function mergeManual() {
     const st = IP.state;
     const base = (st.projects || []).filter((p) => !p.manual);
-    const man = IP.loadManual().map((m) => ({
+    const man = (await IP.loadManual()).map((m) => ({
       project_key: m.project_key,
+      manual_id: m.manual_id,       // 合并/忽略/重开的定位键（后端主路径）
+      agg_key: m.agg_key,           // 疑似关联检测的公告侧匹配键
       project_name: m.project_name,
       org: m.org,
       area: m.area,
@@ -849,7 +865,7 @@
       orgI?.addEventListener("input", check);
       q("#ip-m-cancel")?.addEventListener("click", IP.closeModal);
 
-      function save(force) {
+      async function save(force) {
         const name = nameI.value.trim(), org = orgI.value.trim();
         const msg = q("#ip-m-msg");
         if (!name || !org) { msg.textContent = "项目名与采购人均必填。"; msg.style.color = "var(--ip-error)"; return; }
@@ -857,6 +873,57 @@
         if (!force) {
           const hit = (IP.state.projects || []).find((p) => IP.normKey(p.org, p.project_name) === key);
           if (hit) { check(); msg.textContent = "命中已有项目，请先在上面二选一。"; msg.style.color = "var(--ip-warning)"; return; }
+        }
+        // 主路径：后端 manual_project_create（建档即查重、落库进引擎去重池，与 wbd CLI 同一实现）
+        const t = window.__TAURI__ && window.__TAURI__.core;
+        if (t && typeof t.invoke === "function") {
+          try {
+            const r = await t.invoke("manual_project_create", {
+              project_name: name, buyer: org,
+              area: q("#ip-m-area").value.trim() || null,
+              budget: q("#ip-m-budget").value.trim() || null,
+              note: q("#ip-m-note").value.trim() || null,
+              force: !!force,
+            });
+            if (r && r.outcome === "created") {
+              IP.select(r.agg_key); IP.closeModal(); IP.load().then(() => rerender()); return;
+            }
+            if (r && r.outcome === "duplicate") {
+              // 「重复」（dup_kind=manual，同库同键）与「疑似关联」（dup_kind=announcement，公告侧聚合）分开出口
+              msg.style.color = "var(--ip-warning)";
+              const openHit = (aggKey, manualOnly) => {
+                const cards = (IP.state.projects || []);
+                const card = manualOnly
+                  ? cards.find((p) => p.manual && p.agg_key === aggKey)
+                  : cards.find((p) => !p.manual && p.agg_key === aggKey);
+                if (!card) { msg.textContent = "命中的项目不在当前列表（可能被筛掉），请关闭后在列表里直接查找。"; return; }
+                IP.select(card.project_key); IP.closeModal(); rerender();
+              };
+              const prompt = document.createElement("div");
+              prompt.className = "ip-hintbar";
+              prompt.style.margin = "0";
+              prompt.innerHTML =
+                `<span>${esc(r.prompt || "已存在疑似同一项目。")}</span>` +
+                (r.manual_hit
+                  ? `<button class="ip-btn ip-btn--secondary" data-dup="open" style="padding:4px 8px;font-size:12px">打开已有档案</button>`
+                  : `<button class="ip-btn ip-btn--secondary" data-dup="open" style="padding:4px 8px;font-size:12px">打开疑似关联项目</button>`) +
+                `<button class="ip-btn ip-btn--text" data-dup="force" style="padding:4px 8px;font-size:12px">仍单独建档</button>`;
+              msg.textContent = "";
+              msg.appendChild(prompt);
+              const hitKey = r.manual_hit ? r.manual_hit.agg_key : r.agg_key;
+              prompt.querySelector('[data-dup="open"]')?.addEventListener("click", () => openHit(hitKey, !!r.manual_hit));
+              prompt.querySelector('[data-dup="force"]')?.addEventListener("click", () => save(true));
+              return;
+            }
+            msg.textContent = "建档返回未知结果，未保存。"; msg.style.color = "var(--ip-error)"; return;
+          } catch (e) {
+            const es = String(e || "");
+            if (!/not\s*found|unknown\s+command|unhandled\s+command|invalid\s+command/i.test(es)) {
+              // 命令存在但被后端拒绝（必填校验等）——如实展示，不静默降级
+              msg.textContent = "建档被拒：" + e; msg.style.color = "var(--ip-error)"; return;
+            }
+            // 命令不存在（老后端）：降级 localStorage 路径（下方）
+          }
         }
         const rec = {
           project_key: (force ? "manual:x:" : "manual:") + key + ":" + Date.now(),
@@ -866,7 +933,7 @@
           note: q("#ip-m-note").value.trim(),
           created_at: new Date().toISOString().slice(0, 10),
         };
-        const arr = IP.loadManual().concat([rec]);
+        const arr = IP.loadManualLS().concat([rec]);
         if (!IP.saveManual(arr)) { msg.textContent = "本地存储不可用，建档未保存（未静默成功）。"; msg.style.color = "var(--ip-error)"; return; }
         IP.select(rec.project_key);
         IP.closeModal();
@@ -951,13 +1018,51 @@
       const cand = (IP.state.projects || []).find((p) => p.project_key === b.dataset.ipCompare);
       if (!manual || !cand) return;
       IP.openModal(IP.comparePanel(manual, cand));
-      q("#ip-c-ignore")?.addEventListener("click", () => {
-        IP.ignoreKey(cand.project_key);
+      q("#ip-c-ignore")?.addEventListener("click", async () => {
+        // 主路径：后端 ignore_link（写审计、置 ignored，同一对不再提示）
+        const t = window.__TAURI__ && window.__TAURI__.core;
+        if (t && typeof t.invoke === "function" && manual.manual_id && cand.agg_key) {
+          try {
+            await t.invoke("manual_project_ignore", {
+              manual_id: manual.manual_id,
+              target_project: cand.agg_key,
+              actor: "ui",
+            });
+            IP.closeModal(); IP.load().then(() => rerender());
+            return;
+          } catch (e) {
+            if (!/not\s*found|unknown\s+command|unhandled\s+command/i.test(String(e || ""))) {
+              setFlash("err", "忽略失败：" + e); return;   // 命令在但被拒：如实展示，不静默降级
+            }
+          }
+        }
+        IP.ignoreKey(cand.project_key);   // 降级兜底（老后端 / 无 manual_id）
         IP.closeModal(); rerender();
       });
-      q("#ip-c-merge")?.addEventListener("click", () => {
+      q("#ip-c-merge")?.addEventListener("click", async () => {
         // 合并方向按规格 A-7：采购人/项目名以公告为准，手动补充字段保留并标注。
-        const arr = IP.loadManual().filter((m) => m.project_key !== manual.project_key);
+        const t = window.__TAURI__ && window.__TAURI__.core;
+        if (t && typeof t.invoke === "function" && manual.manual_id && cand.agg_key) {
+          try {
+            await t.invoke("manual_project_merge", {
+              manual_id: manual.manual_id,
+              target_project: cand.agg_key,   // 公告聚合键（target 语义见 intel_manual::merge_into_announcement）
+              name: cand.project_name,
+              buyer: cand.org,
+              actor: "ui",
+            });
+            IP.select(cand.project_key);
+            IP.closeModal();
+            IP.load().then(() => rerender());
+            return;
+          } catch (e) {
+            if (!/not\s*found|unknown\s+command|unhandled\s+command/i.test(String(e || ""))) {
+              setFlash("err", "合并失败：" + e); return;   // 命令在但被拒：如实展示，不静默降级
+            }
+          }
+        }
+        // 降级兜底（老后端 / 无 manual_id）：localStorage 旧路径
+        const arr = IP.loadManualLS().filter((m) => m.project_key !== manual.project_key);
         arr.push({
           project_key: cand.project_key,
           project_name: cand.project_name, org: cand.org,

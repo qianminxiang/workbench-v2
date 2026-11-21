@@ -28,7 +28,7 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 use wb_core::{
     brief::{self, DeliveryState, QuietHours},
-    intel, intel_store,
+    intel, intel_manual, intel_payload, intel_store,
     rules::{self, Ruleset},
     sync_client,
     CivilDate, Store, StoreError,
@@ -1159,8 +1159,72 @@ fn intel_leads_get(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, S
     Ok(serde_json::json!({ "leads": leads }))
 }
 
-/// 项目聚合列表（v3.2.0 T3）：一次返回所有项目 + 当前阶段 + 节点数 + 首末公告日期。
-/// `stage` 传空串表示不过滤；传非法值报错，不静默当「不过滤」（否则前端会以为筛过了）。
+/// 把一张 payload 聚合卡折成**界面兼容**的 JSON 对象：载荷字段全保留，
+/// 另注入界面层已在读的别名（`project_key` / `org` / `last_date` / `manual` 等）。
+///
+/// 为什么在这里注入而不是让界面自己适配：界面层（`intel-projects.js` 的
+/// `kcard` / `projectView` / `headHtml`）已按 `p.nodes` + 别名字段渲染整条进程轴，
+/// 而且节点里**五段 `stage` 与六段 `segment` 同时带**（见 `wb_core::intel_payload::CardNode`），
+/// 界面 `stage6Of` 走路径 A 即可拿到无歧义的六段码。这里只补别名，不改渲染主干。
+fn card_with_ui_aliases(v: serde_json::Value) -> serde_json::Value {
+    let Some(obj) = v.as_object_mut() else { return v; };
+    let agg = obj.get("agg_key").cloned().unwrap_or_default();
+    // 转待办把 `project_key` 直接当线索键用（项目键与线索键同口径 code:/fp:/body:），
+    // 因此别名取第一个引擎键；无引擎键（手动建档）回退聚合键。
+    let engine_key = obj
+        .get("engine_keys")
+        .and_then(|e| e.as_array())
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or_else(|| agg.clone());
+    let nodes_len = obj
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let first_date = obj
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .and_then(|a| a.first())
+        .and_then(|n| n.get("date"))
+        .cloned()
+        .unwrap_or_default();
+    let is_manual = obj.get("source_kind").and_then(|s| s.as_str()) == Some("manual");
+    // 跳段展示：当前段之前、没有公告的实段（headHtml 的「跳段」提示用）
+    let cur_idx = obj.get("current_stage_index").and_then(|i| i.as_u64());
+    let skipped: Vec<String> = obj
+        .get("stages")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|b| {
+                    let present = b.get("present").and_then(|p| p.as_bool()).unwrap_or(false);
+                    let idx = b.get("display_index").and_then(|i| i.as_u64());
+                    let adv = b.get("advances").and_then(|a| a.as_bool()).unwrap_or(true);
+                    !present && adv && idx.map(|i| Some(i) <= cur_idx).unwrap_or(false)
+                })
+                .filter_map(|b| b.get("code").and_then(|c| c.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    obj.insert("project_key".into(), engine_key);
+    obj.insert("org".into(), obj.get("buyer").cloned().unwrap_or_default());
+    obj.insert("last_date".into(), obj.get("latest_announcement_at").cloned().unwrap_or_default());
+    obj.insert("first_date".into(), first_date);
+    obj.insert("node_count".into(), serde_json::json!(nodes_len));
+    obj.insert("manual".into(), serde_json::json!(is_manual));
+    obj.insert("skipped_stages".into(), serde_json::json!(skipped.join("、")));
+    obj
+}
+
+/// 项目聚合列表（v3.2.0 接线）：走六段 payload 适配层
+/// （`wb_core::intel_payload::project_list_payload`，与 `wbd project payload` 同一份实现），
+/// 每张卡**同时带六段 `current_stage`/`stages` 与五段节点 `nodes[].stage`**，
+/// 界面按需取用；旧五段消费者读 `nodes[].stage` 仍是落库口径。
+///
+/// `stage` 传空串表示不过滤；非法值报错（不静默当「不过滤」）。
+/// 注意过滤口径已从旧五段（intent|review|…）切到六段（intent|tender|…），
+/// 与 `wbd project payload --stage` 完全一致。
 #[tauri::command]
 fn intel_projects_get(
     paths: State<Mutex<AppPaths>>,
@@ -1169,19 +1233,21 @@ fn intel_projects_get(
 ) -> Result<serde_json::Value, String> {
     let paths = paths.lock().unwrap();
     let store = open_store(&paths)?;
-    // 校验走 wb-core 共享实现（与 wbd CLI 同一份），避免两处各写一份、只靠"看起来一样"。
-    let staged = wb_core::intel_stage::Stage::parse_filter(stage.as_deref().unwrap_or(""))
-        .map_err(|e| format!("stage {e}"))?;
-    let projects = intel_store::list_projects(&store, staged, limit.unwrap_or(0))
-        .map_err(err_string)?;
-    Ok(serde_json::json!({
-        "total": projects.len(),
-        "stage_filter": staged.map(|s| s.code()).unwrap_or(""),
-        "projects": projects,
-    }))
+    let payload =
+        intel_payload::project_list_payload(&store, stage.as_deref(), limit.unwrap_or(0))
+            .map_err(err_string)?;
+    let mut v = serde_json::to_value(&payload).map_err(|e| e.to_string())?;
+    if let Some(arr) = v.get_mut("projects").and_then(|p| p.as_array_mut()) {
+        for card in arr.iter_mut() {
+            *card = card_with_ui_aliases(card.clone());
+        }
+    }
+    Ok(v)
 }
 
-/// 单项目时间轴（v3.2.0 T3）：同一项目多阶段公告按进程序 + 日期排成一条时间轴。
+/// 单项目明细（v3.2.0 接线）：走 `wb_core::intel_payload::project_detail_payload`
+/// （与 `wbd project detail` 同一份实现）。入参既可以是聚合键 `k:...`，也可以是
+/// 引擎项目键 `code:`/`fp:`/`body:`（payload 层内部兼容两种）。
 #[tauri::command]
 fn intel_project_get(
     paths: State<Mutex<AppPaths>>,
@@ -1189,10 +1255,230 @@ fn intel_project_get(
 ) -> Result<serde_json::Value, String> {
     let paths = paths.lock().unwrap();
     let store = open_store(&paths)?;
-    match intel_store::read_project_timeline(&store, key.trim()).map_err(err_string)? {
-        Some(p) => Ok(serde_json::json!({ "project": p })),
+    match intel_payload::project_detail_payload(&store, key.trim()).map_err(err_string)? {
+        Some(p) => {
+            let mut v = serde_json::to_value(&p).map_err(|e| e.to_string())?;
+            if let Some(obj) = v.as_object_mut() {
+                // 明细也注入同一组界面别名，保持列表/明细同构
+                let mut aliased = card_with_ui_aliases(serde_json::Value::Object(obj.clone()));
+                if let Some(o2) = aliased.as_object_mut() {
+                    for (k2, v2) in o2.iter() {
+                        obj.insert(k2.clone(), v2.clone());
+                    }
+                }
+            }
+            Ok(serde_json::json!({ "project": v }))
+        }
         None => Ok(serde_json::json!({ "project": null })),
     }
+}
+
+// ─────────────── 手动建档六命令（v3.2.0 数据接线轨 A-7） ───────────────
+// 全部只做「壳」：参数校验给可读中文错误，业务一律调 `wb_core::intel_manual`
+// （与 `wbd manual` CLI 同一份实现，桌面/命令行不各写一套）。
+
+/// 公告侧聚合卡 → 查重/疑似关联用的最小候选信息（引擎键 + 名称 + 采购人 + 编号 + 公告数）。
+fn announcement_candidates(store: &Store) -> Result<Vec<intel_manual::AnnouncementCandidate>, StoreError> {
+    let payload = intel_payload::project_list_payload(store, None, 0)?;
+    Ok(payload
+        .projects
+        .iter()
+        .map(|c| intel_manual::AnnouncementCandidate {
+            // 引擎键才是合并目标（merged_into 落的是引擎项目键）
+            project_key: c
+                .engine_keys
+                .first()
+                .cloned()
+                .unwrap_or_else(|| c.agg_key.clone()),
+            project_name: c.project_name.clone(),
+            buyer: c.buyer.clone(),
+            project_code: c
+                .engine_keys
+                .first()
+                .and_then(|k| k.strip_prefix("code:").map(String::from))
+                .unwrap_or_default(),
+            announcement_count: c.announcement_count,
+        })
+        .collect())
+}
+
+/// 手动建档：建档即查重（`force=true` 仅在用户明示「仍单独建档」后传）。
+/// 返回 `outcome=created` 或 `outcome=duplicate`（重复再分 `dup_kind=manual|announcement`，
+/// 界面据此区分「重复」与「疑似关联」并给出两个出口）。
+#[tauri::command]
+fn manual_project_create(
+    paths: State<Mutex<AppPaths>>,
+    project_name: String,
+    buyer: String,
+    area: Option<String>,
+    budget: Option<String>,
+    note: Option<String>,
+    lead_source: Option<String>,
+    expect_method: Option<String>,
+    force: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    // 必填校验放最前面：给字段级的中文错误，而不是让深层报「数据库错误」
+    if project_name.trim().is_empty() {
+        return Err("建档被拒：项目名必填".into());
+    }
+    if buyer.trim().is_empty() {
+        return Err("建档被拒：采购人必填".into());
+    }
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let draft = intel_manual::ManualDraft {
+        project_name,
+        buyer,
+        area,
+        budget,
+        note,
+        lead_source,
+        expect_method,
+    };
+    // 查重范围 = 引擎已聚合的全部公告项目（与 CLI 不同：CLI 只传手动档案库本身）
+    let payload = intel_payload::project_list_payload(&store, None, 0).map_err(err_string)?;
+    let keys: Vec<(String, String)> = payload
+        .projects
+        .iter()
+        .map(|c| (c.agg_key.clone(), c.project_name.clone()))
+        .collect();
+    match intel_manual::create_manual(&store, &draft, force.unwrap_or(false), &keys, None) {
+        Ok(intel_manual::CreateOutcome::Created(m)) => Ok(serde_json::json!({
+            "outcome": "created",
+            "manual_id": m.manual_id,
+            "agg_key": m.agg_key,
+            "agg_basis": m.agg_basis,
+        })),
+        Ok(intel_manual::CreateOutcome::Duplicate(d)) => Ok(serde_json::json!({
+            "outcome": "duplicate",
+            "prompt": d.prompt(),
+            "agg_key": d.key.key,
+            "dup_kind": if d.manual_hit.is_some() { "manual" } else { "announcement" },
+            "manual_hit": d.manual_hit.as_ref().map(|m| serde_json::json!({
+                "manual_id": m.manual_id, "project_name": m.project_name, "agg_key": m.agg_key,
+            })),
+            "announcement_hit": d.announcement_hit,
+        })),
+        Err(e) => Err(err_string(e)),
+    }
+}
+
+/// 手动档案列表（界面左栏并卡用；返回对象已注入界面别名，与引擎卡同构）。
+#[tauri::command]
+fn manual_project_list(
+    paths: State<Mutex<AppPaths>>,
+    merged_only: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let manuals = intel_manual::list_manual(&store, merged_only.unwrap_or(false)).map_err(err_string)?;
+    let mut out = Vec::with_capacity(manuals.len());
+    for m in manuals.iter() {
+        let card = serde_json::to_value(intel_payload::manual_card(m)).map_err(|e| e.to_string())?;
+        let mut obj = match card_with_ui_aliases(card) {
+            v if v.is_object() => v,
+            _ => continue,
+        };
+        if let Some(o) = obj.as_object_mut() {
+            // 手动档案本体字段保留（manual_id 是合并/忽略/重开的定位键）
+            o.insert("manual_id".into(), serde_json::json!(m.manual_id));
+            o.insert("note".into(), serde_json::json!(m.note.clone().unwrap_or_default()));
+            o.insert("created_at".into(), serde_json::json!(m.created_at));
+            o.insert("updated_at".into(), serde_json::json!(m.updated_at));
+            o.insert("merged_into".into(), serde_json::json!(m.merged_into));
+        }
+        out.push(obj);
+    }
+    Ok(serde_json::json!({ "manuals": out }))
+}
+
+/// 疑似关联：先按当前公告侧候选**检测**（落 pending 提示，从不自动合并），
+/// 再取该档案的关联列表（默认只取 pending）。
+#[tauri::command]
+fn manual_project_links(
+    paths: State<Mutex<AppPaths>>,
+    manual_id: String,
+    pending_only: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let candidates = announcement_candidates(&store).map_err(err_string)?;
+    intel_manual::detect_suspected_links(&store, &candidates, None).map_err(err_string)?;
+    let links = intel_manual::links_of(&store, manual_id.trim(), pending_only.unwrap_or(true))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "links": links }))
+}
+
+/// 确认合并：手动档案并进公告聚合项目。采购人/项目名以公告为准，
+/// 手动补充字段保留并标注；写「手动合并」审计。
+#[tauri::command]
+fn manual_project_merge(
+    paths: State<Mutex<AppPaths>>,
+    manual_id: String,
+    target_project: String,
+    name: String,
+    buyer: String,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if manual_id.trim().is_empty() || target_project.trim().is_empty() {
+        return Err("合并被拒：manual_id 与 target_project 均必填".into());
+    }
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    match intel_manual::merge_manual_into_project(
+        &store,
+        manual_id.trim(),
+        target_project.trim(),
+        &name,
+        &buyer,
+        actor.as_deref().unwrap_or("ui"),
+        None,
+    ) {
+        Ok(o) => Ok(serde_json::to_value(&o).map_err(|e| e.to_string())?),
+        Err(e) => Err(err_string(e)),
+    }
+}
+
+/// 忽略（「不是同一项目」）：写审计、置 ignored，之后同一对不再提示。
+#[tauri::command]
+fn manual_project_ignore(
+    paths: State<Mutex<AppPaths>>,
+    manual_id: String,
+    target_project: String,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    intel_manual::ignore_link(
+        &store,
+        manual_id.trim(),
+        target_project.trim(),
+        actor.as_deref().unwrap_or("ui"),
+        None,
+    )
+    .map_err(err_string)?;
+    Ok(serde_json::json!({ "outcome": "ignored", "manual_id": manual_id, "target_project": target_project }))
+}
+
+/// 重开对照：ignored 改回 pending，写审计（规格 A-7「可手动重开对照」）。
+#[tauri::command]
+fn manual_project_reopen(
+    paths: State<Mutex<AppPaths>>,
+    manual_id: String,
+    target_project: String,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    intel_manual::reopen_link(
+        &store,
+        manual_id.trim(),
+        target_project.trim(),
+        actor.as_deref().unwrap_or("ui"),
+        None,
+    )
+    .map_err(err_string)?;
+    Ok(serde_json::json!({ "outcome": "reopened", "manual_id": manual_id, "target_project": target_project }))
 }
 
 /// 线索动作：confirm（确认）/ reject（忽略，终态）/ todo（转待办，落 work_item 进晨报看板）。
@@ -1483,6 +1769,14 @@ pub fn run() {
             intel_projects_get,
             intel_project_get,
             intel_lead_act,
+            // 六个手动档案命令：壳层只做必填校验与别名注入，
+            // 实现全部走 wb_core::intel_manual（与 wbd CLI 同一批函数）。
+            manual_project_create,
+            manual_project_list,
+            manual_project_links,
+            manual_project_merge,
+            manual_project_ignore,
+            manual_project_reopen,
             subsidy_export,
             dealer_get,
             dealer_refresh,

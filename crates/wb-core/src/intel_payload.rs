@@ -79,6 +79,58 @@ pub struct AnnouncementBrief {
     pub relevance_label: String,
 }
 
+/// 扁平公告节点（**两套码表同时给**）。
+///
+/// 为什么在 payload 里再加一层扁平节点：旧的聚合查询（`intel_store::list_projects`）
+/// 产出的 `ProjectAggregate.nodes` 里节点只有五段 `stage`，界面层已经按 `nodes` 数组
+/// 渲染整条进程轴（`IP.projectView`）。切到六段 payload 后若只给 `stage_groups`，
+/// 界面要么改渲染主干、要么拿不到节点——两种都容易把「段全空」这种缺陷伪装成
+/// 「本项目没公告」。
+///
+/// 所以这里直接给扁平节点，且**每条节点同时带两套码**：
+/// - `stage`：五段码（`intent|review|contract|acceptance|operation|unknown`），
+///   落库口径，旧消费者（WBD CLI、既有 timeline 测试口径）读它；
+/// - `segment`：六段码（`intent|tender|correction|award|contract|termination`），
+///   新口径，界面 `stage6Of` 的路径 A 读它。
+///
+/// 界面 `stage6Of` 对「裸 `contract`」的保护（五段 contract 并了规格 4+5，
+/// 「中标结果公告」是多数派，直采会让中标段永久空）因此依然成立：有 `segment`
+/// 时走路径 A 语义无歧义，没有 `segment` 时才落回关键词拆分。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CardNode {
+    /// 记录主键（`IntelItem.key` = `site_id|url`；转待办 / 改判据此定位）
+    pub record_id: String,
+    pub title: String,
+    pub date: String,
+    /// 公告类型 chip（取判据命中词；无则「公告」）
+    pub announcement_type: String,
+    /// **五段码**（落库口径，向后兼容）
+    pub stage: String,
+    pub stage_label: String,
+    /// **六段码**（规格 §2 口径，界面路径 A）
+    pub segment: String,
+    pub segment_label: String,
+    /// 判据来源 rule / heuristic / manual / unknown
+    pub stage_source: String,
+    /// 判据说明（「为什么是这个阶段」）
+    pub stage_reason: String,
+    pub url: String,
+    pub source_name: String,
+    /// 源站 id（界面重建线索键 `site_id|url` 用）
+    pub source_id: String,
+    /// 转载/副本链接（跨源合并进来的）
+    pub alias_urls: Vec<String>,
+    pub area: String,
+    pub amount: Option<String>,
+    pub body_head: String,
+    /// 命中依据原文
+    pub hit_evidence: Vec<String>,
+    /// 命中词（界面高亮用）
+    pub hit_words: Vec<String>,
+    pub relevance: String,
+    pub relevance_label: String,
+}
+
 /// 聚合卡（左栏一项）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectCard {
@@ -121,6 +173,11 @@ pub struct ProjectCard {
     pub empty_label: String,
     /// 需挂「阶段待确认」标记的公告条数（heuristic/unknown 判据）
     pub pending_confirm_count: usize,
+    /// 扁平公告节点（日期升序；**每条同时带五段 `stage` 与六段 `segment`**）。
+    ///
+    /// 加性字段：界面 `IP.projectView` 迭代 `p.nodes` 渲染整条进程轴，切六段口径后
+    /// 不必改渲染主干；手动建档项目为空数组（并保留 `empty_label` 口径）。
+    pub nodes: Vec<CardNode>,
 }
 
 /// 左栏列表 payload。
@@ -214,6 +271,11 @@ pub struct ProjectDetailPayload {
     pub empty_label: String,
     /// 界面「展开其余 N 段」用：实际有公告的段数
     pub present_stage_count: usize,
+    /// 扁平公告节点（日期升序；每条同时带五段 `stage` 与六段 `segment`）。
+    ///
+    /// 与 `stage_groups` 同源同序（`stage_groups` 是同一批条目按段分桶的展示视图），
+    /// 给扁平数组是为了让界面单项目视图也能走同一条 `p.nodes` 渲染路径。
+    pub nodes: Vec<CardNode>,
 }
 
 /// payload 契约版本。改动字段语义时递增，界面按此判兼容。
@@ -305,6 +367,8 @@ fn relevance_of(items: &[&crate::intel::IntelItem]) -> (String, String) {
 struct AnnRow {
     engine_key: String,
     item: crate::intel::IntelItem,
+    /// 落库的五段阶段（向后兼容口径：`stage` 字段直接取它）
+    old_stage: Stage,
     stage_source: StageSource,
     stage_reason: String,
     segment: Segment,
@@ -317,6 +381,37 @@ impl AnnRow {
     }
     fn buyer(&self) -> &str {
         &self.item.org
+    }
+
+    /// 折成扁平节点：**同一行同时填五段 `stage` 与六段 `segment`**。
+    ///
+    /// 两套码都在这一处填，避免列表 / 明细 / 分段三处各填一份、日后漂移成
+    /// 「列表是六段、明细是五段」这种最难看出来的不一致。
+    fn card_node(&self) -> CardNode {
+        let (rel, rel_label) = relevance_of(&[&self.item]);
+        CardNode {
+            record_id: self.item.key.clone(),
+            title: self.item.title.clone(),
+            date: self.item.date.clone(),
+            announcement_type: announcement_type_of(&self.stage_reason, &self.item.title),
+            stage: self.old_stage.code().to_string(),
+            stage_label: self.old_stage.label().to_string(),
+            segment: self.segment.code().to_string(),
+            segment_label: self.segment.label().to_string(),
+            stage_source: self.stage_source.code().to_string(),
+            stage_reason: self.stage_reason.clone(),
+            url: self.item.url.clone(),
+            source_name: self.item.site_name.clone(),
+            source_id: self.item.site_id.clone(),
+            alias_urls: self.alias_urls.clone(),
+            area: self.item.area.clone(),
+            amount: self.item.amount.clone(),
+            body_head: self.item.body_head.clone(),
+            hit_evidence: self.item.reasons.clone(),
+            hit_words: hit_words_of(&self.item.reasons),
+            relevance: rel,
+            relevance_label: rel_label,
+        }
     }
 }
 
@@ -358,6 +453,7 @@ fn load_announcements(store: &Store) -> Result<Vec<AnnRow>, StoreError> {
         out.push(AnnRow {
             engine_key: crate::intel_store::split_project_key(&biz_key).0.to_string(),
             item,
+            old_stage,
             stage_source: src,
             stage_reason: reason,
             segment,
@@ -487,6 +583,21 @@ pub fn project_list_payload(
             source_count: sources.len(),
             empty_label: EMPTY_NO_ANNOUNCEMENT.to_string(),
             pending_confirm_count: pending,
+            nodes: {
+                // 与既有 `ProjectAggregate.nodes` 同序：先按六段进程序、再按日期升序。
+                // 直接对 `AnnRow` 排序（它手里已有 `Segment`），不重新解析码串——
+                // 少一次「码串 ↔ 枚举」来回，也就少一处可能漂移的地方。
+                let mut rs: Vec<&AnnRow> = rows.iter().collect();
+                rs.sort_by(|a, b| {
+                    a.segment
+                        .order()
+                        .unwrap_or(255)
+                        .cmp(&b.segment.order().unwrap_or(255))
+                        .then_with(|| a.date().cmp(b.date()))
+                        .then_with(|| a.item.key.cmp(&b.item.key))
+                });
+                rs.iter().map(|r| r.card_node()).collect()
+            },
         };
         if let Some(want) = filter {
             let hit = if want.advances() {
@@ -680,6 +791,18 @@ pub fn project_detail_payload(store: &Store, agg_key: &str) -> Result<Option<Pro
         stage_groups: groups,
         empty_label: EMPTY_NO_ANNOUNCEMENT.to_string(),
         present_stage_count,
+        nodes: {
+            let mut rs: Vec<&AnnRow> = rows.iter().collect();
+            rs.sort_by(|a, b| {
+                a.segment
+                    .order()
+                    .unwrap_or(255)
+                    .cmp(&b.segment.order().unwrap_or(255))
+                    .then_with(|| a.date().cmp(b.date()))
+                    .then_with(|| a.item.key.cmp(&b.item.key))
+            });
+            rs.iter().map(|r| r.card_node()).collect()
+        },
     }))
 }
 
@@ -716,6 +839,7 @@ pub fn manual_card(m: &crate::intel_manual::ManualProject) -> ProjectCard {
         source_count: 0,
         empty_label: EMPTY_NO_ANNOUNCEMENT.to_string(),
         pending_confirm_count: 0,
+        nodes: Vec::new(),
     }
 }
 
@@ -747,6 +871,7 @@ pub fn manual_detail(m: &crate::intel_manual::ManualProject) -> ProjectDetailPay
         stage_groups: Vec::new(),
         empty_label: EMPTY_NO_ANNOUNCEMENT.to_string(),
         present_stage_count: 0,
+        nodes: Vec::new(),
     }
 }
 
@@ -954,6 +1079,82 @@ mod tests {
         assert!(project_list_payload(&store, Some("review"), 0).is_err(), "旧五段短码不是六段口径，应报错");
         assert!(project_list_payload(&store, Some("nonsense"), 0).is_err());
         assert!(project_list_payload(&store, Some(""), 0).is_ok());
+    }
+
+    /// 扁平节点必须**同时**带五段 `stage` 与六段 `segment`。
+    ///
+    /// 这条是本单的核心契约：界面 `IP.projectView` 迭代 `p.nodes` 渲染进程轴，
+    /// 而 `IP.stage6Of` 的路径 A 靠 `segment`、既有五段消费者（WBD CLI / 引擎口径）
+    /// 靠 `stage`。只给一套就会出现「界面能开、数据半空」——正是本单要修的现象。
+    #[test]
+    fn nodes_carry_both_stage_tables() {
+        let store = tmp_store("bothcodes");
+        persist_fetch(
+            &store,
+            &[item(
+                "pjwnc",
+                "综合农事服务中心无人机采购项目招标公告",
+                "http://x/1",
+                "2026-10-20",
+                "项目编号：TLTRZB【2026】074",
+                "普农集团",
+            )],
+            Some("2026-10-20T00:00:00Z"),
+        )
+        .unwrap();
+        persist_fetch(
+            &store,
+            &[item(
+                "pjwnc",
+                "综合农事服务中心无人机采购项目中标（成交）结果公告",
+                "http://x/2",
+                "2026-11-10",
+                "项目编号：TLTRZB【2026】074",
+                "普农集团",
+            )],
+            Some("2026-11-10T00:00:00Z"),
+        )
+        .unwrap();
+
+        let p = project_list_payload(&store, None, 0).unwrap();
+        assert_eq!(p.projects.len(), 1);
+        let card = &p.projects[0];
+        assert_eq!(card.nodes.len(), 2, "扁平节点条数 = 公告条数");
+        for n in card.nodes.iter() {
+            assert_ne!(n.stage, "", "五段 stage 不得为空（旧消费者依赖）");
+            assert_ne!(n.segment, "", "六段 segment 不得为空（界面路径 A 依赖）");
+            assert!(
+                matches!(
+                    n.stage.as_str(),
+                    "intent" | "review" | "contract" | "acceptance" | "operation" | "unknown"
+                ),
+                "stage 必须是五段码：{}",
+                n.stage
+            );
+            assert!(
+                Segment::from_code(&n.segment).is_some(),
+                "segment 必须是六段码：{}",
+                n.segment
+            );
+            assert!(!n.record_id.is_empty(), "记录主键要带（转待办/改判据此定位）");
+            assert!(!n.source_id.is_empty(), "源站 id 要带（界面重建线索键用）");
+        }
+        // 中标公告：五段 contract（并了规格 4+5），六段 award（语义无歧义）
+        let award = card
+            .nodes
+            .iter()
+            .find(|n| n.title.contains("中标"))
+            .expect("应有中标公告节点");
+        assert_eq!(award.stage, "contract", "落库口径仍是五段 contract");
+        assert_eq!(award.segment, "award", "六段口径是 award，界面不再靠关键词猜");
+        // 节点顺序：六段进程序 → 日期升序
+        assert_eq!(card.nodes[0].segment, "tender");
+        assert_eq!(card.nodes[1].segment, "award");
+
+        // 明细 payload 的扁平节点与列表同源同数量
+        let d = project_detail_payload(&store, &card.agg_key).unwrap().expect("应有明细");
+        assert_eq!(d.nodes.len(), 2);
+        assert_eq!(d.nodes.len(), d.stage_groups.iter().map(|g| g.count).sum::<usize>());
     }
 
     /// 手动建档卡：无公告 → 统一「暂无公告 · 手动建档」，source_kind=manual。

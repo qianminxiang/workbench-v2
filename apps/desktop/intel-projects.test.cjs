@@ -262,10 +262,37 @@ test("只做加法：不新增一级入口、不动既有导航与设置层", ()
 
 test("不编造后端接口：只用已存在的 tauri 命令名", () => {
   const CMD = [...mod.matchAll(/invoke\("([a-z_]+)"/g)].map((m) => m[1]);
-  const ALLOWED = ["intel_projects_get", "intel_lead_act", "intel_set_verdict"];
+  const ALLOWED = [
+    "intel_projects_get", "intel_project_get", "intel_lead_act", "intel_set_verdict",
+    "manual_project_create", "manual_project_list", "manual_project_links",
+    "manual_project_merge", "manual_project_ignore", "manual_project_reopen",
+  ];
   const unknown = CMD.filter((c) => !ALLOWED.includes(c));
   assert.deepStrictEqual(unknown, [],
     `界面层调用了后端不存在的命令：${unknown.join("、")}。数据接线轨补齐前，前端不得自行发明命令名。`);
+});
+
+/* ── 注册存在性守卫：界面的每个 invoke 命令必须在 lib.rs 的 invoke_handler 里注册 ──
+ *
+ * Tauri 2.x 里 `#[tauri::command]` 只是定义，不进 `generate_handler![]` 清单就
+ * 等于命令不存在（运行时报 unknown command）。上一条白名单只保证「名字认识」，
+ * 这一条直接对 lib.rs 源码：界面调的每个命令名都必须出现在注册清单里，
+ * 防止「壳层函数写了、注册漏了」这类静默断线。 */
+test("界面 invoke 的每个命令名必须注册在 lib.rs 的 invoke_handler（未注册 = 命令不存在）", () => {
+  const libPath = path.join(__dirname, "src-tauri", "src", "lib.rs");
+  assert.ok(fs.existsSync(libPath), `找不到 lib.rs：${libPath}（路径变了请同步更新本守卫）`);
+  const lib = fs.readFileSync(libPath, "utf8");
+  const block = lib.match(/generate_handler!\s*\[([\s\S]*?)\]/);
+  assert.ok(block, "lib.rs 里找不到 generate_handler![...] 注册清单");
+  // 注册清单每行一个命令名（逗号结尾）；逐行匹配而不是全文子串，
+  // 避免把注释里的英文单词误认成注册项。
+  const registered = new Set([...block[1].matchAll(/^\s*([a-z_]+)\s*,\s*$/gm)].map((x) => x[1]));
+  assert.ok(registered.size >= 40, `注册清单应有几十个命令，实测 ${registered.size} 个——匹配口径可能失效`);
+  const CMD = [...new Set([...mod.matchAll(/invoke\("([a-z_]+)"/g)].map((x) => x[1]))];
+  assert.ok(CMD.length > 0, "界面层应至少调用一个后端命令（正则口径失效会走到这里）");
+  const missing = CMD.filter((c) => !registered.has(c));
+  assert.deepStrictEqual(missing, [],
+    `界面调用了 invoke 但 lib.rs invoke_handler 未注册：${missing.join("、")}——未注册的命令在运行时不存在`);
 });
 
 
