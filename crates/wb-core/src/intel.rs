@@ -175,8 +175,18 @@ pub const SITE_REGISTRY: &[SiteSpec] = &[
         base: "https://ggzy.fuyang.gov.cn", epoint: Some(EpointCfg { cnum: "001", rn: 15, ..EpointCfg::std() }),
         note: "预研实测 2026-10-28：需用其默认参数形态（cnum=001、time:null）；标题12/全文29" },
     SiteSpec { id: "suzhou_ah", name: "宿州市公共资源交易平台", city: "宿州", tier: Tier::CityBatch2,
-        base: "https://ggzy.suzhou.gov.cn", epoint: Some(EpointCfg { cnum: "", rn: 15, ..EpointCfg::std() }),
-        note: "v2.3.0 实测 2026-11-05：cnum 传全串（001;…;009）源站直接 code=500；改空串得 totalcount=40。响应为双层包装（外层 content 为 JSON 字符串），由 unwrap_double_json 统一解包" },
+        // **v3.3.1 修正（拼音撞名）**：旧值 https://ggzy.suzhou.gov.cn 实测是**江苏苏州市**公共资源交易平台
+        // （页面标题「苏州市公共资源交易平台」，苏ICP备08019857号-3，首页 466 处「苏州」、0 处「宿州」）。
+        // 宿州（安徽）真实站点为 https://ggzyjy.ahsz.gov.cn（标题「全国公共资源交易平台（安徽省·宿州市）」，
+        // 皖ICP备2021000861号，0 处「苏州」、1770 处「宿州」）。「suzhou」既是苏州也是宿州的拼音，
+        // 这是配错域名的根因；v3.3.1 起改指 ahsz。
+        base: "https://ggzyjy.ahsz.gov.cn",
+        // 该站全文检索走 /XZinteligentsearch 前缀（页面 /search/fullsearch.html 内 global.getfulltextdataurl 明写），
+        // 不是标准的 /inteligentsearch；标准前缀在本站 404（nginx）。
+        // cnum 必须写真实分类号串：传空串服务端返回 {"result":{"error":null}}（无记录），
+        // 传 001;002;…;007 才出 totalcount（实测「无人机」近 3 月 40 条、全年 944 条）。
+        epoint: Some(EpointCfg { prefix: "/XZinteligentsearch", cnum: "001;002;003;004;005;006;007", rn: 15, double_wrap: false }),
+        note: "v3.3.1 实测 2026-11-22：base 改 ggzyjy.ahsz.gov.cn（旧值 ggzy.suzhou.gov.cn 是江苏苏州站）；全文端点 /XZinteligentsearch/rest/esinteligentsearch/getFullTextDataNew；cnum 空串=0 条、须传 001;002;003;004;005;006;007；日期窗 sdt/edt 接受 yyyy-MM-dd；记录字段用 title/content/webdate/xiaquname/linkurl，无 purchaseName/projectno，采购人与编号需正文兜底" },
     SiteSpec { id: "wuhu", name: "芜湖市公共资源交易平台", city: "芜湖", tier: Tier::CityBatch2,
         base: "https://ggzy.wuhu.gov.cn", epoint: None,
         note: "预研实测 2026-10-28：独立 .NET API（GET /api/Home/GetNoticePage），仅标题式检索" },
