@@ -28,7 +28,7 @@
 //! **五段口径**且**不分段成桶**。界面要「每段一个节点 + 该段下挂公告条目卡」，
 //! 分组是展示结构，放在适配层一次算完，界面就不必再排序/再分组。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -343,6 +343,119 @@ fn relevance_rank(r: &str) -> u8 {
     }
 }
 
+/// ① 组间合并：两张项目卡的公告内容签名**集合**完全一致 → 并成一张。
+///
+/// 典型成因：A 渠道带采购人、B 渠道 buyer 缺失，`aggregate_key` 拆成两张卡，
+/// 但两边公告逐条内容全等——用户看到的「同一个项目很多条记录」主场景。
+/// 边界（工作伙伴条款：只合并逐字段相同的重复）：集合里多出任何一条**不同**
+/// 签名的公告就不并——「同一项目、不同写法」仍走既有「采购人+项目名」聚合。
+/// 返回「被并掉组 → 宿主组」的重定向映射（明细查询用它跟随合并结果）。
+fn merge_identical_sig_groups(groups: &mut BTreeMap<String, Vec<AnnRow>>) -> BTreeMap<String, String> {
+    let mut redirect: BTreeMap<String, String> = BTreeMap::new();
+    let mut host_of: BTreeMap<BTreeSet<String>, String> = BTreeMap::new();
+    let mut merge_into: Vec<(String, String)> = Vec::new();
+    for (agg, rows) in groups.iter() {
+        let set: BTreeSet<String> = rows.iter().filter_map(|r| content_sig_of(&r.item)).collect();
+        if set.is_empty() {
+            continue; // 无可判行（正文全空）→ 集合不可比，不并
+        }
+        match host_of.get(&set) {
+            Some(host) => merge_into.push((agg.clone(), host.clone())),
+            None => {
+                host_of.insert(set, agg.clone());
+            }
+        }
+    }
+    for (from, to) in merge_into {
+        if from == to {
+            continue;
+        }
+        let moved = groups.remove(&from).unwrap_or_default();
+        groups.entry(to.clone()).or_default().extend(moved);
+        redirect.insert(from, to);
+    }
+    redirect
+}
+
+/// ② 组内去重：同内容签名的行只留一条（人工改判 > 采购人非空 > 先到），
+/// 被并掉那行的原文链接并进保留行的 `alias_urls`（跨渠道原文都可点）。
+fn dedup_identical_rows(rows: &mut Vec<AnnRow>) {
+    let src = std::mem::take(rows);
+    let mut keep: Vec<AnnRow> = Vec::with_capacity(src.len());
+    let mut idx_of_sig: BTreeMap<String, usize> = BTreeMap::new();
+    for mut r in src {
+        let Some(sig) = content_sig_of(&r.item) else {
+            keep.push(r);
+            continue;
+        };
+        match idx_of_sig.get(&sig) {
+            Some(&i) => {
+                // 谁留谁并要分清「谁的链接转别名」：留的那行自己的 URL 不进别名，
+                // 被并掉那行的 URL / 渠道才进。首轮红正是把两者写反了
+                // （顶替者进来时把自己的 URL 当成了别名、原宿主的链接反而丢掉）。
+                let incoming_url = r.item.url.clone();
+                let incoming_site = r.item.site_id.clone();
+                let mut extra = std::mem::take(&mut r.alias_urls);
+                let mut extra_sites = std::mem::take(&mut r.alias_sites);
+                if row_completeness(&r) > row_completeness(&keep[i]) {
+                    // 并入方字段更全 → 顶替宿主；原宿主的链接 / 渠道转为别名
+                    let mut old_host = std::mem::replace(&mut keep[i], r);
+                    extra.push(old_host.item.url.clone());
+                    extra_sites.push(old_host.item.site_id.clone());
+                    extra.extend(std::mem::take(&mut old_host.alias_urls));
+                    extra_sites.extend(std::mem::take(&mut old_host.alias_sites));
+                } else {
+                    // 宿主保留：并入方的链接 / 渠道转为别名
+                    extra.push(incoming_url);
+                    extra_sites.push(incoming_site);
+                }
+                let host = &mut keep[i];
+                for a in extra {
+                    if !host.alias_urls.contains(&a) {
+                        host.alias_urls.push(a);
+                    }
+                }
+                for s in extra_sites {
+                    if !host.alias_sites.contains(&s) {
+                        host.alias_sites.push(s);
+                    }
+                }
+            }
+            None => {
+                idx_of_sig.insert(sig, keep.len());
+                keep.push(r);
+            }
+        }
+    }
+    *rows = keep;
+}
+
+/// 公告内容签名（v3.3.1 跨渠道「内容完全一样」判据）：
+/// 归一标题 + 发布日期 + 归一正文（去空白）。三者任一为空 → None（不参与判重）。
+fn content_sig_of(item: &crate::intel::IntelItem) -> Option<String> {
+    let title = crate::lead_dedup::normalize_title(&item.title);
+    let body: String = item.body_head.split_whitespace().collect::<Vec<_>>().join("");
+    if title.is_empty() || item.date.trim().is_empty() || body.is_empty() {
+        return None;
+    }
+    Some(format!("{}\u{1f}{}\u{1f}{}", title, item.date, body))
+}
+
+/// 同签名行的取舍优先级：人工改判 > 采购人非空 > 地区非空（越大越优先保留）。
+fn row_completeness(r: &AnnRow) -> u8 {
+    let mut s = 0u8;
+    if r.item.manual_verdict {
+        s += 4;
+    }
+    if !r.item.org.trim().is_empty() {
+        s += 2;
+    }
+    if !r.item.area.trim().is_empty() {
+        s += 1;
+    }
+    s
+}
+
 fn relevance_of(items: &[&crate::intel::IntelItem]) -> (String, String) {
     let mut best = "excluded";
     for it in items {
@@ -364,6 +477,7 @@ fn relevance_of(items: &[&crate::intel::IntelItem]) -> (String, String) {
 }
 
 /// 一条公告在适配层的中间态（从 `ProjectNode` 拆出来，便于跨项目重新分组）。
+#[derive(Clone)]
 struct AnnRow {
     engine_key: String,
     item: crate::intel::IntelItem,
@@ -373,6 +487,9 @@ struct AnnRow {
     stage_reason: String,
     segment: Segment,
     alias_urls: Vec<String>,
+    /// 被「内容完全一样」去重并掉的行所属渠道（v3.3.1）：
+    /// 行本身只剩一条，但「该项目有几个来源」必须把并入渠道也算上。
+    alias_sites: Vec<String>,
 }
 
 impl AnnRow {
@@ -458,6 +575,7 @@ fn load_announcements(store: &Store) -> Result<Vec<AnnRow>, StoreError> {
             stage_reason: reason,
             segment,
             alias_urls,
+            alias_sites: Vec::new(),
         });
     }
     Ok(out)
@@ -492,6 +610,12 @@ pub fn project_list_payload(
         groups.entry(key.key.clone()).or_default().push(r);
     }
 
+    // v3.3.1 · 跨渠道「内容完全一样」合并（口径见 [`merge_identical_sig_groups`]）。
+    merge_identical_sig_groups(&mut groups);
+    for rows in groups.values_mut() {
+        dedup_identical_rows(rows);
+    }
+
     let mut cards: Vec<ProjectCard> = Vec::new();
     for (agg_key, rows) in groups.iter() {
         let key = &group_key_of[agg_key];
@@ -516,7 +640,10 @@ pub fn project_list_payload(
         let mut engine_keys: Vec<String> = rows.iter().map(|r| r.engine_key.clone()).collect();
         engine_keys.sort();
         engine_keys.dedup();
-        let mut sources: Vec<String> = rows.iter().map(|r| r.item.site_id.clone()).collect();
+        let mut sources: Vec<String> = rows
+            .iter()
+            .flat_map(|r| std::iter::once(r.item.site_id.clone()).chain(r.alias_sites.iter().cloned()))
+            .collect();
         sources.sort();
         sources.dedup();
         let pending = rows
@@ -662,37 +789,43 @@ pub fn project_detail_payload(store: &Store, agg_key: &str) -> Result<Option<Pro
     }
     let rows = load_announcements(store)?;
 
-    // 目标分组：聚合键直接匹配；引擎键则取出它所属的那个聚合组
-    let target: Option<(AggKey, Vec<AnnRow>)> = if key_str.starts_with("k:") {
-        let hit: Option<(AggKey, Vec<AnnRow>)>;
-        let mut buckets: BTreeMap<String, (AggKey, Vec<AnnRow>)> = BTreeMap::new();
-        for r in rows {
-            let k = aggregate_key(r.buyer(), &crate::intel_store::project_name_of_pub(&r.item.title));
-            buckets.entry(k.key.clone()).or_insert((k, Vec::new())).1.push(r);
-        }
-        hit = buckets.remove(key_str);
-        hit
+    // v3.3.1 · 与列表同一套「内容完全一样」合并口径：列表并成一张卡后，
+    // 点开明细必须能看到并进来的渠道链接（alias_urls），否则两侧口径不一致。
+    let mut buckets: BTreeMap<String, Vec<AnnRow>> = BTreeMap::new();
+    let mut group_key_of: BTreeMap<String, AggKey> = BTreeMap::new();
+    for r in rows {
+        let k = aggregate_key(r.buyer(), &crate::intel_store::project_name_of_pub(&r.item.title));
+        group_key_of.entry(k.key.clone()).or_insert(k.clone());
+        buckets.entry(k.key.clone()).or_default().push(r);
+    }
+    let redirect = merge_identical_sig_groups(&mut buckets);
+    for rows in buckets.values_mut() {
+        dedup_identical_rows(rows);
+    }
+
+    // 目标分组：聚合键直接匹配；引擎键先定位它所属的聚合组。
+    // 被合并掉的组跟随重定向到宿主组（宿主行含同一内容，原链接进 alias_urls）。
+    let target_key: String = if key_str.starts_with("k:") {
+        key_str.to_string()
     } else {
-        // 引擎键：先定位到该键的项目，再用项目的聚合键分组
+        // 引擎键：先定位到该键的项目，再取项目的聚合键
         let Some(agg) = read_project_timeline(store, key_str)? else { return Ok(None) };
         let first = agg.nodes.first();
         let (buyer, name) = match first {
             Some(n) => (n.org.clone(), crate::intel_store::project_name_of_pub(&n.title)),
             None => (String::new(), agg.project_name.clone()),
         };
-        let k = aggregate_key(&buyer, &name);
-        let mut buckets: BTreeMap<String, (AggKey, Vec<AnnRow>)> = BTreeMap::new();
-        for r in rows {
-            let kk = aggregate_key(r.buyer(), &crate::intel_store::project_name_of_pub(&r.item.title));
-            buckets.entry(kk.key.clone()).or_insert((kk, Vec::new())).1.push(r);
-        }
-        buckets.remove(&k.key)
+        aggregate_key(&buyer, &name).key
     };
-
-    let Some((key, rows)) = target else { return Ok(None) };
+    let resolved_key = redirect.get(&target_key).cloned().unwrap_or(target_key);
+    let Some(rows) = buckets.remove(&resolved_key) else { return Ok(None) };
     if rows.is_empty() {
         return Ok(None);
     }
+    let key: AggKey = group_key_of
+        .get(&resolved_key)
+        .cloned()
+        .unwrap_or_else(|| aggregate_key("", &crate::intel_store::project_name_of_pub("")));
 
     let anns: Vec<(Segment, String)> = rows.iter().map(|r| (r.segment, r.date().to_string())).collect();
     let view = stage_view_of(&anns);
@@ -910,6 +1043,109 @@ mod tests {
             body_head: body.into(),
             native_code: None,
         }
+    }
+
+    /// v3.3.1 · 跨渠道「内容完全一样」合并（验收③）：A 渠道带采购人、B 渠道
+    /// buyer 缺失 ⇒ aggregate_key 拆成两张卡，但两边公告内容逐条全等 → 必须并成一张。
+    ///
+    /// 直接用裸 SQL 种 ext_record（绕开 persist_fetch 自身的三层去重），
+    /// 复现的是「库里已经存在的历史重复」形态——payload 适配层必须兜住。
+    fn raw_record(store: &Store, id: &str, site: &str, proj_key: &str, org: &str, url: &str) {
+        let it = IntelItem {
+            key: format!("{site}|{url}"),
+            site_id: site.into(),
+            site_name: format!("{site}-name"),
+            title: "某县2026年植保无人机采购项目招标公告".into(),
+            org: org.into(),
+            area: "宿州".into(),
+            date: "2026-11-10".into(),
+            amount: Some("80万元".into()),
+            url: url.into(),
+            relevance: Relevance::Core,
+            reasons: vec!["主题词:无人机".into()],
+            incomplete: false,
+            manual_verdict: false,
+            first_seen: "2026-11-10".into(),
+            body_head: "项目概况：采购植保无人机 10 架，预算 80 万元，供货期 30 天。".into(),
+            native_code: None,
+        };
+        let json = serde_json::to_string(&it).unwrap();
+        let node = format!("{proj_key}#tender|2026-11-10");
+        let guard = store.begin_write("seed").unwrap();
+        guard
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO ext_record
+                   (id, source_id, biz_key, record_json, valid_from, is_current, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, '2026-11-10T00:00:00Z', 1, 'h')",
+                rusqlite::params![format!("{site}|{id}"), site, node, json],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn identical_cross_channel_records_collapse_into_one_card() {
+        let store = tmp_store("v331-merge");
+        // A 渠道：采购人齐全；B 渠道：buyer 缺失（正是 aggregate_key 拆卡的根因）
+        raw_record(&store, "a", "pjwnc", "code:AAA-001", "某县农业农村局", "http://a/1");
+        raw_record(&store, "b", "chuzhou", "fp:某县2026年植保无人机采购项目招标公告-19416", "", "http://b/2");
+
+        let p = project_list_payload(&store, None, 0).unwrap();
+        assert_eq!(p.total, 1, "内容完全一样的跨渠道记录必须并成一张卡，实际 {} 张", p.total);
+        let card = &p.projects[0];
+        assert_eq!(card.announcement_count, 1, "同内容的行只显示一条");
+        assert_eq!(card.buyer, "某县农业农村局", "保留采购人非空那一条的字段");
+        assert_eq!(card.nodes.len(), 1);
+        assert_eq!(card.source_count, 2, "两个渠道都算该项目的来源");
+        // 被并掉那行的原文链接进 alias（跨渠道原文都可点）——列表与明细同口径
+        let detail = project_detail_payload(&store, &card.agg_key)
+            .unwrap()
+            .expect("并卡后按聚合键应能查到明细");
+        let urls: Vec<String> = detail
+            .stage_groups
+            .iter()
+            .flat_map(|s| s.entries.iter().flat_map(|n| n.alias_urls.iter().cloned().collect::<Vec<_>>()))
+            .collect();
+        assert!(urls.iter().any(|u| u.contains("http://b/2")), "被并行的链接应进 alias_urls：{urls:?}");
+        assert_eq!(detail.announcement_count, 1, "明细侧同样只显示一条");
+    }
+
+    #[test]
+    fn different_writing_records_stay_separate_cards() {
+        let store = tmp_store("v331-nomerge");
+        // 同标题同日期，但正文多一个字 ⇒ 不是「内容完全一样」，不并
+        raw_record(&store, "a", "pjwnc", "code:BBB-002", "某县农业农村局", "http://a/1");
+        let it = IntelItem {
+            key: "chuzhou|http://b/2".into(),
+            site_id: "chuzhou".into(),
+            site_name: "chuzhou-name".into(),
+            title: "某县2026年植保无人机采购项目招标公告".into(),
+            org: "某县农业农村局（采购人）".into(),
+            area: "宿州".into(),
+            date: "2026-11-10".into(),
+            amount: None,
+            url: "http://b/2".into(),
+            relevance: Relevance::Core,
+            reasons: vec!["主题词:无人机".into()],
+            incomplete: false,
+            manual_verdict: false,
+            first_seen: "2026-11-10".into(),
+            body_head: "项目概况：采购植保无人机 10 架，预算 80 万元，供货期 31 天。".into(),
+            native_code: None,
+        };
+        let guard = store.begin_write("seed").unwrap();
+        guard
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO ext_record
+                   (id, source_id, biz_key, record_json, valid_from, is_current, content_hash)
+                 VALUES ('chuzhou|b', 'chuzhou', 'code:BBB-009#tender|2026-11-10', ?1, '2026-11-10T00:00:00Z', 1, 'h')",
+                rusqlite::params![serde_json::to_string(&it).unwrap()],
+            )
+            .unwrap();
+
+        let p = project_list_payload(&store, None, 0).unwrap();
+        assert_eq!(p.total, 2, "不同写法（正文差一天供货期）必须仍是两张卡：{}", p.total);
     }
 
     /// 列表 payload：六段、每段公告数、最新时间、命中词、相关态、聚合依据齐备。

@@ -31,6 +31,7 @@ pub mod intel_store;
 pub mod intel_key;
 pub mod intel_segment;
 pub mod intel_manual;
+pub mod intel_clean;
 pub mod intel_payload;
 pub mod subsidy_export;
 

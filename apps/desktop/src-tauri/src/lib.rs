@@ -1803,7 +1803,31 @@ pub fn run() {
                 .app_data_dir()
                 .expect("无法确定用户数据目录");
             std::fs::create_dir_all(&data_dir).expect("无法创建用户数据目录");
-            app.manage(Mutex::new(AppPaths { data_dir }));
+            app.manage(Mutex::new(AppPaths { data_dir: data_dir.clone() }));
+
+            // ── v3.3.1 · 启动期清洗（宿州源历史苏州误抓数据，幂等一次性）──
+            // 详见 wb_core::intel_clean：先备份 + 账本（backups/clean/），后删除。
+            // 任何一步失败都不阻断启动，但必须可见——清洗失败意味着苏州数据还在库里。
+            match open_store(&AppPaths { data_dir }) {
+                Ok(store) => {
+                    for r in wb_core::intel_clean::run_v331_startup(&store) {
+                        match r {
+                            Ok(rep) if rep.executed => eprintln!(
+                                "[v3.3.1 清洗] {} 已清 {} 行（current {} / 线索 {} / 洞察 {}），备份 {}，账本 {}",
+                                rep.source_id, rep.rows_total, rep.rows_current,
+                                rep.leads_deleted, rep.insights_deleted,
+                                rep.backup_file, rep.ledger_file
+                            ),
+                            Ok(rep) if rep.skipped_read_only => eprintln!(
+                                "[v3.3.1 清洗] {} 只读库，本轮跳过", rep.source_id
+                            ),
+                            Ok(_) => {} // 幂等：上一轮已清过 / 该源无数据，无需动作
+                            Err(e) => eprintln!("[v3.3.1 清洗] 失败：{e}"),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[v3.3.1 清洗] 打开库失败：{e}"),
+            }
 
             // ── 托盘菜单（P0-2 缺失项：此前完全没有构建） ──
             let handle = app.handle().clone();

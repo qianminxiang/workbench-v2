@@ -38,7 +38,6 @@ const state = {
   prefs: null, // 单机偏好（免打扰窗口），boot 时读、改时写
   members: [],      // F5 成员表（成员页 / 指派下拉共用；null 表示还没读过）
   me: null,         // F5 本机身份 {member_name, role, known}
-  intelMode: "projects", // v3.2.0 情报呈现形态："projects"（项目进程，默认）/ "list"（公告清单）
   intelRun: null, // 采集中状态 {done,total,site}；null = 当前没有采集在跑。
                   // 存在 state 而不是只写在按钮上：切到别的舱段再切回来时
                   // 按钮是重建的，不恢复就会变回「立即刷新」，让人以为采集已经停了。
@@ -65,6 +64,7 @@ async function reload() {
     state.units = await invoke("units", { year: YEAR });
     await loadMembers();
     if (state.view === "intel") { await loadIntelByMode(); await loadLeads(); }
+    else if (state.view === "settings") await loadIntel(); // v3.3.1 设置页新增「情报采集」节
     if (state.view === "dealer") await loadDealer();
     render();
     updateFilterCount();
@@ -202,11 +202,12 @@ function dateCell(item) {
 async function loadIntel() {
   try { state.intel = await invoke("intel_get"); } catch (_) { state.intel = null; }
 }
-/** v3.2.0 情报视图按形态加载：项目进程读项目聚合，公告清单读原情报快照。
- *  两条互不阻塞——项目聚合读失败不得让公告清单也变成空白（规格 §5 措辞要求）。 */
+/** v3.3.1 公告清单页已删除：情报视图只保留「项目进程」。原情报快照（state.intel）
+ *  仍要加载——设置页「情报采集」节与源站状态表都从它渲染。项目聚合读失败
+ *  不得影响源站状态呈现（原规格 §5 措辞延续）。 */
 async function loadIntelByMode() {
   await loadIntel();
-  if (window.__IP && state.intelMode === "projects" && window.__IP.state.projects === null) {
+  if (window.__IP && window.__IP.state.projects === null) {
     await window.__IP.load();
   }
 }
@@ -237,17 +238,22 @@ function tierZh(t) {
     city_batch2: "二批", city_weekly: "周频观察", manual_only: "人工通道", infeasible: "不可行" }[t] || t;
 }
 function viewIntel() {
-  // v3.2.0 · L2 情报呈现形态切换（规格 §1，落点=资源→L2 情报顶部）：
-  //   「项目进程」（新增，默认）走 intel-projects.js（方案 A 主从双栏）；
-  //   「公告清单」（现有）保持下面这段原有渲染**原样不动**，只在顶部多一条切换条。
-  // 只做加法：L0 常驻三项、四个一级入口、项目层、设置层全部未改。
-  if (state.intelMode === "projects" && window.__IP) {
-    return window.__IP.switcherOnly("projects") + window.__IP.view();
-  }
+  // v3.3.1 · 公告清单页删除：情报舱只保留「项目进程」（方案 A 主从双栏）。
+  //   采集统计/源站状态/补贴导出迁入设置页；线索转待办保留，挂在项目视图下方。
+  //   改判入口不丢：项目进程底部工具条已有「标记相关/无关」（data-ip-mark）。
+  const base = window.__IP
+    ? window.__IP.view()
+    : `<div class="panel"><div class="empty">项目进程视图未加载（intel-projects.js 缺失）。</div></div>`;
+  return base + viewLeads();
+}
+
+/** v3.3.1 · 源站状态小窗（设置页「情报采集」节渲染）：公告清单页删除后，
+ *  原顶部采集统计条 + 源站状态表整体迁入设置页，站点行渲染逻辑原样保留。 */
+function viewIntelSites() {
   const d = state.intel;
   if (!d) {
-    return `<div class="panel"><div class="empty">情报数据加载失败（离线或数据库异常）。<br>
-      <button class="btn" id="intel-refresh">${ICO("refresh")}重试</button></div></div>`;
+    return `<div class="empty">情报数据加载失败（离线或数据库异常）。<br>
+      <button class="btn" id="intel-refresh">${ICO("refresh")}重试</button></div>`;
   }
   const cov = d.coverage || {};
   const sites = d.sites || {};
@@ -274,36 +280,12 @@ function viewIntel() {
     return `<tr><td>${r.name}</td><td>${r.city}</td><td>${tierZh(r.tier)}</td><td>${status}</td>
       <td class="mini">${diagCell}</td><td class="mini">${esc(r.note)}</td></tr>`;
   }).join("");
-  const items = (d.items || []).map((it) => {
-    const verdictBtns = it.manual_verdict
-      ? '<span class="mini">已人工改判</span>'
-      : `<button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="core">✓ 相关</button>
-         <button class="btn btn--sm" data-verdict-key="${esc(it.key)}" data-verdict-val="excluded">✗ 无关</button>`;
-    return `<div class="card card--intel${it.relevance === "core" ? " card--selected" : ""}">
-      <div class="body">
-        <div class="card-title">${it.incomplete ? "⚠ " : ""}${esc(it.title)}</div>
-        <div class="mini">${esc(it.org || "单位缺失")} · ${esc(it.area || "地区缺失")} · ${esc(it.date || "日期缺失")}${it.amount ? " · " + esc(it.amount) : ""}</div>
-        <div class="mini">来源：${esc(it.site_name)} · <a href="${esc(it.url)}" target="_blank">原文链接</a></div>
-        ${it.reasons?.length ? `<div class="mini">命中：${esc(it.reasons.join("，"))}</div>` : ""}
-        <div class="intel-actions">${relBadge(it.relevance)} ${verdictBtns}</div>
-      </div>
-    </div>`;
-  }).join("");
-  return `${window.__IP ? window.__IP.switcherOnly("list") : ""}
-  <div class="panel">
-    <div><b>项目情报</b> · 最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条
-      <button class="btn" id="intel-refresh">${ICO("refresh")}立即刷新</button></div>
-  </div>
-  <div class="panel">
-    <div><b>源站状态</b>（${reg.length} 源）</div>
-    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>诊断</th><th>依据</th></tr>${siteRows}</table>
-  </div>
-  <div class="panel">
-    <div><b>相关项目</b>（${(d.items || []).length} 条，按发布日期倒序；「疑似不相关」可人工改判）</div>
-    ${items || '<div class="empty">今日 0 条相关——已检查的源均无命中，与「没采到」区分见上表各源状态。</div>'}
-  </div>
-  ${viewSubsidyExport()}
-  ${viewLeads()}`;
+  return `
+    <div class="settings-row" style="flex-wrap:wrap">
+      <span style="flex:1;min-width:340px">最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条</span>
+      <button class="btn" id="intel-refresh">${ICO("refresh")}立即刷新</button>
+    </div>
+    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>诊断</th><th>依据</th></tr>${siteRows}</table>`;
 }
 
 // 改判一（AC-3）：补贴明细导出面板——v2.3.0 完整补贴明细视图的最小入口。
@@ -330,8 +312,6 @@ function parseSubFilters(raw) {
 function viewSubsidyExport() {
   const fromName = state.subFrom ? state.subFrom.split(/[\\/]/).pop() : "";
   return `
-  <div class="panel">
-    <div><b>补贴明细导出</b>（按筛选条件全量导出，非当前页）</div>
     <div class="settings-row" style="flex-wrap:wrap">
       <span style="flex:1;min-width:340px;display:flex;gap:8px;align-items:center">
         <button class="btn btn--ghost" id="sub-pick">选择数据源（CSV）…</button>
@@ -341,8 +321,7 @@ function viewSubsidyExport() {
         <button class="btn" id="sub-go">${ICO("export")}导出 Excel</button>
       </span>
     </div>
-    <div class="mini" id="sub-status">筛选格式：「字段=值」精确匹配、「字段:值」包含匹配，多条用「；」分隔；留空导出全量。字段须与 CSV 表头一致。</div>
-  </div>`;
+    <div class="mini" id="sub-status">筛选格式：「字段=值」精确匹配、「字段:值」包含匹配，多条用「；」分隔；留空导出全量。字段须与 CSV 表头一致。</div>`;
 }
 
 // 改判一（AC-3）：线索转待办面板——发现 → 确认 → 转待办 闭环的应用内入口。
@@ -611,7 +590,7 @@ function viewAdd() {
 // v2.1：多端同步入口已移除（用户放弃多端模式，本地功能离线完整可用）。
 // 免打扰 time input 接真实读写（get_prefs/set_prefs → sync_state 键值表）。
 function viewSettings() {
-  return `<div class="panel" style="padding:16px; max-width:720px">
+  return `<div class="panel" style="padding:16px; max-width:960px">
     <b>数据</b>
     <div class="settings-row">
       <span>导入存量 Excel</span>
@@ -623,6 +602,12 @@ function viewSettings() {
       <span>立即全量备份</span>
       <button class="btn btn--ghost" id="bk-go">立即备份</button>
     </div>
+    <hr class="divider">
+    <b>情报采集（源站状态）</b>
+    ${viewIntelSites()}
+    <hr class="divider">
+    <b>补贴明细导出</b>（按筛选条件全量导出，非当前页）
+    ${viewSubsidyExport()}
     <hr class="divider">
     <b>提醒送达</b>
     <div class="settings-row">
@@ -718,7 +703,6 @@ function render(mode) {
 /** 情报「项目进程」模块的回调钩子（intel-projects.js 内的局部重渲染 /
  *  形态切换都回到这里，不自己再造一套 render，避免两套动画与状态不同步）。 */
 window.__ipRenderIntel = (mode) => render(mode || "reflow");
-window.__ipSetIntelMode = (m) => { if (m) state.intelMode = m; };
 
 /** 跳转到指定视图（通知主操作 / 托盘菜单共用），保持 nav 高亮同步。 */
 function gotoView(view) {
@@ -726,6 +710,123 @@ function gotoView(view) {
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b.dataset.view === view)));
   render();
+}
+
+/** v3.3.1 · 情报采集控件（设置页「情报采集」节）：公告清单页删除后从
+ *  intel 分支迁来。runState 恢复与点击启动采集的逻辑原样保留——
+ *  采集可能在上一个舱段里启动，重建出的按钮必须回到「进行中」形态。 */
+function bindIntelCollectControls() {
+  const runState = state.intelRun;
+  const btn = $("#intel-refresh");
+  if (btn && runState) {
+    btn.textContent = runState.total
+      ? `采集中… ${runState.done}/${runState.total} 站${runState.site ? `，正在跑 ${runState.site}` : ""}`
+      : runState.busy
+        ? "采集中…（上一轮还没跑完，请稍候）"   // 被拒：确实有一轮在跑
+        : "采集中…（逐站推进）"; // 刚启动：首站还没跑完，不能说自己"被拒"
+    btn.disabled = true;
+  }
+  btn?.addEventListener("click", async (e) => {
+    // 时长不能写死一个乐观值：单请求最坏 140s（40s 超时 ×3 次 + 5s/15s 退避），
+    // 地市站还要翻页（MAX_PAGES_PER_SITE = 5），单站最坏 300s。整轮绝对上限经实算
+    // 为 4654s ≈ 77.6 分钟（14 个 Epoint 站 ×300s + 省级主站双请求 2×140s
+    // + 徽采云 140s + 站间 17×2s）。注意不是 16 个：芜湖/池州 epoint=None，
+    // 解析期即返回 ParseError、不发请求，不占网络时长。
+    // 不写总时长承诺，只写「逐站推进」——中途失败即止步，
+    // 真实耗时跨度极大，写任何一个固定数字都会在某种输入下变成谎话。
+    e.target.textContent = "采集中…（逐站推进）";
+    e.target.disabled = true;
+    // 点击即置为进行中：第一个进度事件要等首站跑完才回来（地市站单站最坏 300s），
+    // 这期间切走再切回来，按钮得还是「采集中」，不能变回可点的「立即刷新」。
+    state.intelRun = { done: 0, total: 0, site: "", busy: false };
+    try { await invoke("intel_refresh"); } catch (err) {
+      state.intelRun = null;
+      alert("启动采集失败：" + err);
+      e.target.textContent = "立即刷新";
+      e.target.disabled = false;
+    }
+  });
+  // 「复制诊断」：整段（最近 3 次）一次带走，用户直接贴回群里，
+  // 不必让他截图或描述——用户机器是唯一能连通政务站的环境，这段文本就是全部证据。
+  document.querySelectorAll("[data-diag-copy]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const st = (state.intel?.sites || {})[b.dataset.diagCopy] || {};
+      const reg = (state.intel?.registry || []).find((r) => r.id === b.dataset.diagCopy) || {};
+      const head = `站点：${reg.name || b.dataset.diagCopy}（${b.dataset.diagCopy}）`;
+      const body = (st.diags || []).map((g, i, a) => (i === a.length - 1 ? "【最近一次】\n" : "【历史】\n") + diagText(g)).join("\n");
+      const text = `${head}\n${body || "（暂无诊断记录）"}`;
+      try {
+        await navigator.clipboard.writeText(text);
+        const old = b.textContent;
+        b.textContent = "已复制";
+        setTimeout(() => { b.textContent = old; }, 1600);
+      } catch (err) {
+        // 剪贴板不可用时退化成弹窗让用户手动复制，不静默失败
+        const w = window.open("", "_blank");
+        if (w) { w.document.write(`<pre style="white-space:pre-wrap;font:13px/1.6 monospace">${esc(text)}</pre>`); }
+        else { alert(text); }
+      }
+    });
+  });
+}
+
+/** v3.3.1 · 补贴明细导出控件：随面板迁入设置页，绑定逻辑原样保留。 */
+function bindSubsidyExportControls() {
+  $("#sub-pick")?.addEventListener("click", async () => {
+    try {
+      const dlg = window.__TAURI__?.dialog;
+      if (!dlg || typeof dlg.open !== "function") { alert("当前环境不支持原生文件选择器。"); return; }
+      const picked = await dlg.open({
+        multiple: false, directory: false, title: "选择补贴明细全量数据 CSV",
+        filters: [{ name: "CSV 文件", extensions: ["csv"] }],
+      });
+      if (typeof picked === "string" && picked) { state.subFrom = picked; render("reflow"); }
+    } catch (e) { alert("打开文件选择器失败：" + e); }
+  });
+  $("#sub-go")?.addEventListener("click", async () => {
+    const status = $("#sub-status");
+    if (!state.subFrom) { status.textContent = "请先点「选择数据源（CSV）」选取全量数据文件。"; return; }
+    const parsed = parseSubFilters($("#sub-filter")?.value);
+    if (parsed.error) { status.textContent = parsed.error; return; }
+    let out;
+    try {
+      const dlg = window.__TAURI__?.dialog;
+      if (!dlg || typeof dlg.save !== "function") { alert("当前环境不支持保存对话框。"); return; }
+      out = await dlg.save({
+        title: "导出补贴明细",
+        defaultPath: "补贴明细-导出.xlsx",
+        filters: [{ name: "Excel 工作表", extensions: ["xlsx"] }, { name: "CSV 文件", extensions: ["csv"] }],
+      });
+    } catch (e) { alert("打开保存对话框失败：" + e); return; }
+    if (!out) return; // 用户取消：无任何副作用
+    status.textContent = "导出中…（全量数据应用筛选，耗时取决于行数）";
+    try {
+      const r = await invoke("subsidy_export", { from: state.subFrom, out, filters: parsed.filters });
+      status.textContent = `已导出 ${r.rows_exported} 行（数据源共 ${r.source_rows_total} 行）→ ${r.out}`;
+    } catch (e) {
+      status.textContent = "导出失败：" + e;
+    }
+  });
+}
+
+/** v3.3.1 · 线索转待办入口：公告清单页删除后保留，挂在项目进程视图下方。 */
+function bindLeadActions() {
+  document.querySelectorAll("[data-lead-act]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        const r = await invoke("intel_lead_act", { action: b.dataset.leadAct, key: b.dataset.leadKey });
+        if (r?.todo) alert(`已生成待办：${r.todo.title}\n截止 ${r.todo.due_date} · 负责人 ${r.todo.owner}\n下一步：${r.todo.next_action}`);
+        await loadLeads();
+        render("reflow");
+      } catch (err) {
+        alert("操作失败：" + err);
+        b.disabled = false;
+      }
+    });
+  });
+  $("#leads-retry")?.addEventListener("click", async () => { await loadLeads(); render("reflow"); });
+  $("#leads-reload")?.addEventListener("click", async () => { await loadLeads(); render("reflow"); });
 }
 
 function bindView() {
@@ -762,130 +863,10 @@ function bindView() {
   }
 
   if (state.view === "intel") {
-    // v3.2.0 · 情报呈现形态：切换条两种形态都在，绑定一次即可。
-    document.querySelectorAll("[data-ip-mode]").forEach((b) => {
-      b.addEventListener("click", async () => {
-        state.intelMode = b.dataset.ipMode;   // "projects" | "list"
-        if (state.intelMode === "projects" && window.__IP) await window.__IP.load();
-        render("reflow");
-      });
-    });
-    if (window.__IP && state.intelMode === "projects") window.__IP.bind();
-    // 采集可能在上一个舱段里就启动了：重建出来的按钮必须回到「进行中」形态。
-    const runState = state.intelRun;
-    const btn = $("#intel-refresh");
-    if (btn && runState) {
-      btn.textContent = runState.total
-        ? `采集中… ${runState.done}/${runState.total} 站${runState.site ? `，正在跑 ${runState.site}` : ""}`
-        : runState.busy
-          ? "采集中…（上一轮还没跑完，请稍候）"   // 被拒：确实有一轮在跑
-          : "采集中…（逐站推进）"; // 刚启动：首站还没跑完，不能说自己"被拒"
-      btn.disabled = true;
-    }
-    $("#intel-refresh")?.addEventListener("click", async (e) => {
-      // 时长不能写死一个乐观值：单请求最坏 140s（40s 超时 ×3 次 + 5s/15s 退避），
-      // 地市站还要翻页（MAX_PAGES_PER_SITE = 5），单站最坏 300s。整轮绝对上限经实算
-      // 为 4654s ≈ 77.6 分钟（14 个 Epoint 站 ×300s + 省级主站双请求 2×140s
-      // + 徽采云 140s + 站间 17×2s）。注意不是 16 个：芜湖/池州 epoint=None，
-      // 解析期即返回 ParseError、不发请求，不占网络时长。
-      // 不写总时长承诺，只写「逐站推进」——中途失败即止步，
-      // 真实耗时跨度极大，写任何一个固定数字都会在某种输入下变成谎话。
-      e.target.textContent = "采集中…（逐站推进）";
-      e.target.disabled = true;
-      // 点击即置为进行中：第一个进度事件要等首站跑完才回来（地市站单站最坏 300s），
-      // 这期间切走再切回来，按钮得还是「采集中」，不能变回可点的「立即刷新」。
-      state.intelRun = { done: 0, total: 0, site: "", busy: false };
-      try { await invoke("intel_refresh"); } catch (err) {
-        state.intelRun = null;
-        alert("启动采集失败：" + err);
-        e.target.textContent = "立即刷新";
-        e.target.disabled = false;
-      }
-    });
-    document.querySelectorAll("[data-verdict-key]").forEach((b) => {
-      b.addEventListener("click", async () => {
-        try {
-          await invoke("intel_set_verdict", { key: b.dataset.verdictKey, verdict: b.dataset.verdictVal });
-          await loadIntel();
-          render("reflow");
-        } catch (err) { alert("改判失败：" + err); }
-      });
-    });
-    // 「复制诊断」：整段（最近 3 次）一次带走，用户直接贴回群里，
-    // 不必让他截图或描述——用户机器是唯一能连通政务站的环境，这段文本就是全部证据。
-    document.querySelectorAll("[data-diag-copy]").forEach((b) => {
-      b.addEventListener("click", async () => {
-        const st = (state.intel?.sites || {})[b.dataset.diagCopy] || {};
-        const reg = (state.intel?.registry || []).find((r) => r.id === b.dataset.diagCopy) || {};
-        const head = `站点：${reg.name || b.dataset.diagCopy}（${b.dataset.diagCopy}）`;
-        const body = (st.diags || []).map((g, i, a) => (i === a.length - 1 ? "【最近一次】\n" : "【历史】\n") + diagText(g)).join("\n");
-        const text = `${head}\n${body || "（暂无诊断记录）"}`;
-        try {
-          await navigator.clipboard.writeText(text);
-          const old = b.textContent;
-          b.textContent = "已复制";
-          setTimeout(() => { b.textContent = old; }, 1600);
-        } catch (err) {
-          // 剪贴板不可用时退化成弹窗让用户手动复制，不静默失败
-          const w = window.open("", "_blank");
-          if (w) { w.document.write(`<pre style="white-space:pre-wrap;font:13px/1.6 monospace">${esc(text)}</pre>`); }
-          else { alert(text); }
-        }
-      });
-    });
-    // ── 改判一（AC-3）：补贴导出按钮 ──
-    $("#sub-pick")?.addEventListener("click", async () => {
-      try {
-        const dlg = window.__TAURI__?.dialog;
-        if (!dlg || typeof dlg.open !== "function") { alert("当前环境不支持原生文件选择器。"); return; }
-        const picked = await dlg.open({
-          multiple: false, directory: false, title: "选择补贴明细全量数据 CSV",
-          filters: [{ name: "CSV 文件", extensions: ["csv"] }],
-        });
-        if (typeof picked === "string" && picked) { state.subFrom = picked; render("reflow"); }
-      } catch (e) { alert("打开文件选择器失败：" + e); }
-    });
-    $("#sub-go")?.addEventListener("click", async () => {
-      const status = $("#sub-status");
-      if (!state.subFrom) { status.textContent = "请先点「选择数据源（CSV）」选取全量数据文件。"; return; }
-      const parsed = parseSubFilters($("#sub-filter")?.value);
-      if (parsed.error) { status.textContent = parsed.error; return; }
-      let out;
-      try {
-        const dlg = window.__TAURI__?.dialog;
-        if (!dlg || typeof dlg.save !== "function") { alert("当前环境不支持保存对话框。"); return; }
-        out = await dlg.save({
-          title: "导出补贴明细",
-          defaultPath: "补贴明细-导出.xlsx",
-          filters: [{ name: "Excel 工作表", extensions: ["xlsx"] }, { name: "CSV 文件", extensions: ["csv"] }],
-        });
-      } catch (e) { alert("打开保存对话框失败：" + e); return; }
-      if (!out) return; // 用户取消：无任何副作用
-      status.textContent = "导出中…（全量数据应用筛选，耗时取决于行数）";
-      try {
-        const r = await invoke("subsidy_export", { from: state.subFrom, out, filters: parsed.filters });
-        status.textContent = `已导出 ${r.rows_exported} 行（数据源共 ${r.source_rows_total} 行）→ ${r.out}`;
-      } catch (e) {
-        status.textContent = "导出失败：" + e;
-      }
-    });
-    // ── 改判一（AC-3）：线索转待办入口 ──
-    document.querySelectorAll("[data-lead-act]").forEach((b) => {
-      b.addEventListener("click", async () => {
-        b.disabled = true;
-        try {
-          const r = await invoke("intel_lead_act", { action: b.dataset.leadAct, key: b.dataset.leadKey });
-          if (r?.todo) alert(`已生成待办：${r.todo.title}\n截止 ${r.todo.due_date} · 负责人 ${r.todo.owner}\n下一步：${r.todo.next_action}`);
-          await loadLeads();
-          render("reflow");
-        } catch (err) {
-          alert("操作失败：" + err);
-          b.disabled = false;
-        }
-      });
-    });
-    $("#leads-retry")?.addEventListener("click", async () => { await loadLeads(); render("reflow"); });
-    $("#leads-reload")?.addEventListener("click", async () => { await loadLeads(); render("reflow"); });
+    // v3.3.1 · 公告清单页删除：本分支只留项目进程视图绑定 + 线索转待办；
+    //   采集/源站状态/补贴导出控件已迁设置页（bindIntelCollectControls 等）。
+    if (window.__IP) window.__IP.bind();
+    bindLeadActions();
     return;
   }
 
@@ -909,6 +890,8 @@ function bindView() {
   }
 
   if (state.view === "settings") {
+    bindIntelCollectControls(); // v3.3.1 设置页「情报采集（源站状态）」节
+    bindSubsidyExportControls(); // v3.3.1 设置页「补贴明细导出」节
     const doImport = async (rawPath) => {
       const path = (rawPath || "").trim();
       if (!path) { alert("请先选择要导入的 Excel 文件（.xlsx）。"); return; }

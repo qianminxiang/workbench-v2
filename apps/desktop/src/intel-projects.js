@@ -6,7 +6,8 @@
  * 本文件只做界面层，独立成模块，避免与并行数据接线轨（高级开发工程师）
  * 改动 app.js / lib.rs 时在 git 上硬冲突。挂载点两处，均为加法：
  *   1. index.html 在 app.js 之前引入本文件；
- *   2. app.js 的 viewIntel() 改为调度：state.intelMode 决定走本模块还是原有清单。
+ *   2. app.js 的 viewIntel() 直接调本模块 IP.view()——v3.3.1 起公告清单页已删除，
+ *      项目进程是情报舱唯一形态（源站状态/补贴导出已迁设置页）。
  *
  * ── 阶段口径（关键差异，必须看懂再改） ─────────────────────────────────────
  * 后端 crates/wb-core/src/intel_stage.rs 的 Stage 是 **5 段**：
@@ -494,20 +495,6 @@
   const esc = IP.esc;
   const st = () => IP.state;
 
-  /** 呈现形态切换：公告清单（现有，原样保留）/ 项目进程（新增，默认）。
-   *  规格 §1：默认「项目进程」；此处只做切换条，不改既有清单视图任何内容。 */
-  IP.switcher = function switcher(mode) {
-    return `<div class="ip-scope" style="padding:0 12px 8px">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span class="ip-switch" role="group" aria-label="情报呈现形态">
-          <button data-ip-mode="projects" aria-pressed="${mode === "projects"}">项目进程</button>
-          <button data-ip-mode="list" aria-pressed="${mode !== "projects"}">公告清单</button>
-        </span>
-        <span style="font-size:12px;color:var(--ip-text-muted)">同一项目多阶段公告聚合为一张进程卡；「公告清单」保留原有逐条流水。</span>
-      </div>
-    </div>`;
-  };
-
   function themed() {
     const dark = st().theme === "dark";
     return `<div class="ip-scope" data-ip-theme="${dark ? "dark" : "light"}">`;
@@ -523,8 +510,7 @@
     const manualCount = projects.filter((p) => p.manual).length;
     const cards = shown.length
       ? shown.map((p) => IP.kcard(p, { selected: p.project_key === s.selected })).join("")
-      : `<div class="ip-empty" style="padding:24px">没有匹配的项目。<br>
-           <button class="ip-btn--text ip-btn" data-ip-mode="list">切到「公告清单」看逐条流水</button></div>`;
+      : `<div class="ip-empty" style="padding:24px">没有匹配的项目。</div>`;
     const pager = pages > 1
       ? `<div style="display:flex;gap:8px;justify-content:center;padding:8px 0;font-size:12px;color:var(--ip-text-muted)">
           <button class="ip-btn--secondary ip-btn" data-ip-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
@@ -603,7 +589,6 @@
       if (!sel) {
         inner = `<div class="ip-wrap">${leftCol(list)}<div class="ip-right"><div class="ip-empty">
           首次运行还没有聚合项目。引擎采集到公告后，同一采购人的同一项目会在这里聚成一张卡。
-          <div style="margin-top:12px"><button class="ip-btn--text ip-btn" data-ip-mode="list">切到公告清单看流水</button></div>
         </div></div></div>`;
       } else {
         const view = IP.projectView(sel);
@@ -787,13 +772,6 @@
 
   /** 渲染后绑定：由 app.js 的 bindView() 在 intel 分支调用。 */
   IP.bind = function bind() {
-    // 形态切换（L2 情报顶部）
-    qa("[data-ip-mode]").forEach((b) => b.addEventListener("click", () => {
-      IP.state.mode = b.dataset.ipMode;
-      if (window.__ipSetIntelMode) window.__ipSetIntelMode(b.dataset.ipMode);
-      rerender();
-    }));
-
     // 左栏选卡
     qa("[data-ip-key]").forEach((b) => b.addEventListener("click", () => {
       IP.select(b.dataset.ipKey);
@@ -1083,16 +1061,10 @@
 /* ── 对外入口（app.js 的 viewIntel 只调这里） ─────────────────────────────── */
 (function () {
   const IP = window.__IP;
-  IP.state.mode = "projects";   // 规格 §1：默认「项目进程」
   IP.state.theme = "light";
 
-  /** 供 app.js 调用的整块视图（不含既有清单内容）。mode = "projects"。 */
+  /** 供 app.js 调用的整块视图。v3.3.1：公告清单页已删除，项目进程是情报舱唯一形态。 */
   IP.view = function view() {
     return IP.render();
-  };
-
-  /** app.js 的 viewIntel 在「公告清单」模式下用它取切换条，保证两种形态都有入口。 */
-  IP.switcherOnly = function switcherOnly(mode) {
-    return IP.switcher(mode || IP.state.mode);
   };
 })();

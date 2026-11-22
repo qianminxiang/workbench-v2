@@ -158,19 +158,20 @@ test("规格 §3 实测对比度：视图令牌全部达标（正文 4.5 / 图�
   assert.deepStrictEqual(fails, [], `对比度跌破门槛：\n${fails.join("\n")}`);
 });
 
-test("规格 §1 / 任务书口径：默认「项目进程」，公告清单原样保留", () => {
-  assert.match(mod, /IP\.state\.mode = "projects"/, "默认形态必须是「项目进程」");
-  assert.match(app, /intelMode: "projects"/, "app.js 的 state 默认值必须是 projects");
-  // 切换条两个入口都在
-  assert.ok(mod.includes('data-ip-mode="projects"'), "切换条缺少「项目进程」入口");
-  assert.ok(mod.includes('data-ip-mode="list"'), "切换条缺少「公告清单」入口");
-  // 公告清单分支必须在原 return 前挂上切换条，否则切进清单就回不去了
-  assert.match(app, /window\.__IP \? window\.__IP\.switcherOnly\("list"\) : ""/,
-    "公告清单分支必须在自身内容前渲染切换条（否则进去就切不回来）");
-  // 只做加法：既有三个面板标题必须原样还在
-  for (const keep of ["<b>项目情报</b>", "<b>源站状态</b>", "<b>相关项目</b>", "<b>补贴明细导出</b>", "<b>线索转待办</b>"]) {
-    assert.ok(app.includes(keep), `既有情报内容被改动：缺少「${keep}」`);
-  }
+test("v3.3.1 口径：公告清单页删除，源站状态/补贴导出迁入设置，线索转待办保留", () => {
+  // 公告清单切换入口必须整体移除（app.js 与 intel-projects.js 两处）
+  assert.ok(!app.includes("intelMode"), "app.js 的 state.intelMode 应随公告清单一起删除");
+  assert.ok(!app.includes("switcherOnly"), "app.js 不应再引用切换条");
+  assert.ok(!app.includes("data-ip-mode="), "app.js 不应再有形态切换按钮");
+  assert.ok(!mod.includes('data-ip-mode="list"'), "项目进程视图不应再有「公告清单」切换入口");
+  assert.ok(!app.includes("data-verdict-key"), "公告卡片人工改判按钮应随清单页删除（项目视图工具条另有 data-ip-mark 入口）");
+  // 源站状态与补贴导出必须迁入设置页，线索转待办保留在项目视图下方
+  assert.ok(app.includes("<b>情报采集（源站状态）</b>"), "设置页必须有「情报采集（源站状态）」节");
+  assert.ok(app.includes("<b>补贴明细导出</b>"), "补贴明细导出必须保留（现位于设置页）");
+  assert.ok(app.includes("<b>线索转待办</b>"), "线索转待办必须保留（现挂项目进程视图下方）");
+  assert.match(app, /function viewIntelSites\(\)/, "源站状态表渲染函数必须存在");
+  // 迁移后绑定必须挂在设置分支，intel 分支不得再绑采集/补贴控件
+  assert.match(app, /if \(state\.view === "settings"\) \{[\s\S]*?bindIntelCollectControls\(\)/, "设置分支必须绑定情报采集控件");
 });
 
 test("规格 §4：方案 A 主从双栏（左 340px 固定 / 右自适应）与底部工具条三动作", () => {
