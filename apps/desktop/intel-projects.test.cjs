@@ -170,6 +170,10 @@ test("v3.3.1 口径：公告清单页删除，源站状态/补贴导出迁入设
   assert.ok(app.includes("<b>补贴明细导出</b>"), "补贴明细导出必须保留（现位于设置页）");
   assert.ok(app.includes("<b>线索转待办</b>"), "线索转待办必须保留（现挂项目进程视图下方）");
   assert.match(app, /function viewIntelSites\(\)/, "源站状态表渲染函数必须存在");
+  // v3.3.1 弹窗修复回归钉：openModal 必须挂 .ip-scope 容器（挂 body 会脱离
+  // --ip-* 变量作用域 → 弹窗全透明，实测主按钮文字仅 1.36:1）
+  assert.match(mod, /querySelector\("\.ip-scope"\)\s*\|\|\s*document\.body/,
+    "openModal 必须优先挂 .ip-scope 容器，缺变量作用域兜底");
   // 迁移后绑定必须挂在设置分支，intel 分支不得再绑采集/补贴控件
   assert.match(app, /if \(state\.view === "settings"\) \{[\s\S]*?bindIntelCollectControls\(\)/, "设置分支必须绑定情报采集控件");
 });

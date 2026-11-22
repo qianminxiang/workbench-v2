@@ -655,7 +655,13 @@
     mask.className = "ip-modal-mask";
     mask.id = "ip-modal-mask";
     mask.innerHTML = `<div class="ip-modal" role="dialog" aria-modal="true">${html}</div>`;
-    document.body.appendChild(mask);
+    // v3.3.1 修复（弹窗全透明）：--ip-* 变量只定义在 .ip-scope 选择器下
+    // （tokens.css L644 浅色 / L684 深色），挂到 document.body 会脱离 .ip-scope
+    // 子树 → mask/modal/input/button 全部拿不到变量、背景变 rgba(0,0,0,0)。
+    // 改挂当前 .ip-scope 容器内：mask 是 position:fixed 不受祖先布局影响，
+    // 且自动继承 data-ip-theme 深浅切换（无 transform/filter 祖先，fixed 定位基准不变）。
+    const host = document.querySelector(".ip-scope") || document.body;
+    host.appendChild(mask);
     mask.addEventListener("click", (e) => { if (e.target === mask) IP.closeModal(); });
     document.addEventListener("keydown", IP._escHandler = (e) => { if (e.key === "Escape") IP.closeModal(); });
     const first = mask.querySelector("input, .ip-btn");
