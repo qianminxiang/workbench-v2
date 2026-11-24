@@ -150,3 +150,125 @@ test("样式闭合：JS 里的 pv-* 类在 tokens.css 都有对应选择器", ()
   const missing = [...used].filter((x) => !c.includes(`.${x}`));
   assert.deepEqual(missing, [], `CSS 缺选择器：${missing.join(", ")}`);
 });
+
+
+/* ════════════════════════════════════════════════════════════════════
+ * W4 守卫（全年总览 · 纵向时间河流 / 时间线视图 / Bento 摘要带）
+ * 钉住的规格点：§3.1 分段控件与默认 · §5.2 折叠 · §5.3 河流形态与三态 ·
+ * §6.1 铁律③（错误不降级）· §7.3（全篇无甘特）· §7.4（不裁剪不虚构）。
+ * 谁把预置月份、甘特条、KPI 墙、错误降级加回来，这里立刻红。
+ * ════════════════════════════════════════════════════════════════════ */
+
+test("W4 河流生长规则：起点是语义锚点不是过滤器；月份一律由真实记录归月", () => {
+  const v = read(PV);
+  assert.ok(/const RIVER_START = "2026-11"/.test(v), "缺 RIVER_START 语义锚点常量");
+  // 不是过滤器：RIVER_START 不得出现在任何比较/裁剪表达式（补录更早日期按真实归月 §7.4）
+  const uses = v.split("\n").filter((l) => l.includes("RIVER_START") && !l.includes("const RIVER_START"));
+  assert.deepEqual(uses.filter((l) => /[<>=!]/.test(l)), [], "RIVER_START 被用作过滤/裁剪——只允许作注释锚点");
+  // 归月键必须来自真实记录的 occurred_at 前 7 位（与后端 ProjectNote::month_key 同口径）
+  assert.ok(/String\(n\.occurred_at\)\.slice\(0, 7\)/.test(v), "归月键必须取自真实记录 occurred_at");
+  const monthLiterals = v.match(/"(?!2026-11")20\d{2}-\d{2}"/g) || [];
+  assert.deepEqual(monthLiterals, [], "出现预置月份字面量——月份节点只能由记录生长，不铺 12 个月");
+});
+
+test("W4 约束 C（§7.3 全篇无甘特）：河流纵向，无横向甘特条 / 时间刻度横轴", () => {
+  const v = read(PV);
+  const c = read(CSS);
+  const noComments = v.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.ok(!/gantt|甘特/i.test(noComments), "出现甘特元素");
+  const riverCss = c.slice(c.indexOf(".rv-river"), c.indexOf(".pv-tl-head"));
+  assert.ok(/\.rv-trunk[\s\S]{0,240}linear-gradient\(180deg/.test(riverCss), "河流主干必须是纵向（180deg）渐变带");
+  assert.ok(!/linear-gradient\(90deg/.test(riverCss), "河流区块出现横向渐变条（甘特条形态）");
+});
+
+test("W4 空态逐字（§5.3/§6.1）：河流未起三步引导 / 河流等待第一笔动作 / 时间线还没有记录", () => {
+  const v = read(PV);
+  assert.ok(v.includes("河流未起"), "缺「河流未起」空态标题");
+  assert.ok(v.includes("给项目一个名字、阶段与计划日期"), "三步引导 01 文案被改动");
+  assert.ok(v.includes("时间、地点、内容、照片与附件"), "三步引导 02 文案被改动");
+  assert.ok(v.includes("月份节点、当月小结与卷首语同步更新"), "三步引导 03 文案被改动");
+  assert.ok(v.includes("河流等待第一笔动作"), "缺「河流等待第一笔动作」空态");
+  assert.ok(v.includes("打开任务记过程"), "缺「打开任务记过程」按钮");
+  assert.ok(v.includes("再建一条任务"), "缺「再建一条任务」按钮");
+  assert.ok(v.includes("每一次保存的过程记录，都会成为河上的一张卡片；没有照片就不显示照片位。"), "缺空态尾注");
+  assert.ok(v.includes("时间线还没有记录"), "缺「时间线还没有记录」空态");
+  // 「有任务无记录」态不得显示空月份节点
+  const wait = v.slice(v.indexOf("function riverWaitCard"), v.indexOf("function riverStream"));
+  assert.ok(!/rv-month|rv-node/.test(wait), "等待态不得渲染空月份节点");
+});
+
+test("W4 错误态不降级（§5.3/§6.1 铁律③）：读取全年记录失败 ≠ 河流未起", () => {
+  const v = read(PV);
+  assert.ok(v.includes("读取全年记录失败"), "缺河流错误卡标题");
+  assert.ok(v.includes('id="pv-rv-retry"'), "缺河流重试按钮");
+  const rv = v.slice(v.indexOf("function riverView"));
+  const iErr = rv.indexOf("if (st.river.error)");
+  const iWait = rv.indexOf("if (!rn.length)");
+  assert.ok(iErr >= 0 && iWait >= 0 && iErr < iWait, "错误分支必须先于空态分支（读取失败不伪装成还没有记录）");
+});
+
+test("W4 月份小结自动拼接（§5.3 实测句式）：N 个动作 · 活跃项目 ≤3 名 + 等 N 个", () => {
+  const v = read(PV);
+  assert.ok(v.includes("${items.length} 个动作 · 活跃项目 ${namesZh}"), "小结句式被改动");
+  assert.ok(v.includes("names.slice(0, 3)"), "项目名最多显示 3 个");
+  assert.ok(v.includes("（等 ${names.length} 个）"), "第 4 个起必须折叠为「等 N 个」");
+});
+
+test("W4 动作卡六要素（§5.3）：日期 mono 宝蓝 / 摘要 ≤2 行 / 58×42 缩略 / 记录详情穿透", () => {
+  const v = read(PV);
+  const c = read(CSS);
+  const dateRule = c.slice(c.indexOf(".rv-date"));
+  assert.ok(/font-family: var\(--font-mono\)/.test(dateRule), "日期必须 mono 等宽");
+  assert.ok(/color: var\(--brand-text\)/.test(dateRule), "日期必须宝蓝色");
+  assert.ok(/\.rv-body[\s\S]{0,220}-webkit-line-clamp: 2/.test(c), "摘要必须 ≤2 行截断");
+  assert.ok(/\.rv-thumb \{ width: 58px; height: 42px;/.test(c), "缩略必须 58×42（实测口径）");
+  assert.ok(v.includes("updateDrawer(el.dataset.note)"), "整卡点击必须穿透到该记录的详情（不是项目详情）");
+});
+
+test("W4 分段控件（§3.1 实测）：全年河流默认，三视图齐全，切换只改渲染面", () => {
+  const v = read(PV);
+  assert.ok(/sub: "river"/.test(v), "默认子视图必须是全年河流");
+  assert.ok(v.includes('seg("river", "全年河流")'), "缺子视图「全年河流」");
+  assert.ok(v.includes('seg("list", "列表")'), "缺子视图「列表」");
+  assert.ok(v.includes('seg("timeline", "时间线")'), "缺子视图「时间线」");
+  assert.ok(v.includes("function subBody()"), "缺子视图路由");
+});
+
+test("W4 卷首语（§5.3 实测逐字）：叙述不是考核，无 KPI 墙元素，0 不入句", () => {
+  const v = read(PV);
+  assert.ok(v.includes("全年总览 · 纵向时间河流"), "缺 kicker 文案");
+  assert.ok(v.includes("把这一年的动作，按月摊开。"), "缺卷首语标题");
+  assert.ok(v.includes("河流记录了 ${rn.length} 个动作，流经 ${activeProjects} 个项目"), "缺正文句式");
+  assert.ok(v.includes("个月有动作"), "缺 meta 句式");
+  const bento = v.slice(v.indexOf("function bento"), v.indexOf("function segBar"));
+  assert.ok(!/环比|达成率|目标值/.test(bento), "Bento 不得带考核元素（KPI 墙）");
+  assert.ok(/rn\.length \? `河流记录了/.test(bento), "0 动作时正文句必须整句不渲染（不写「0 次」）");
+});
+
+test("W4 时间线折叠（§5.2）：阈值 200，当月展开、往月折叠，折叠头「月份 · N 条」", () => {
+  const v = read(PV);
+  assert.ok(/TL_FOLD_LIMIT = 200/.test(v), "折叠阈值必须是 200");
+  const fold = v.slice(v.indexOf("function tlFolded"), v.indexOf("// ── 事件绑定"));
+  assert.ok(fold.includes('k === curKey || hasHl ? " open"'), "当月 / 含高亮月必须展开");
+  assert.ok(fold.includes("${monthZh(k)} · ${items.length} 条"), "折叠头句式被改动");
+  assert.ok(v.includes(": tlFolded(d.notes, d.atts, highlightId)"), "抽屉时间线也必须走折叠口径");
+});
+
+test("W4 聚合接线：任务池重读作废重取、gen 防竞态、附件部分失败不阻断", () => {
+  const v = read(PV);
+  assert.ok(/st\.river\.notes = null; st\.river\.error = null;/.test(v), "任务池重读必须作废跨项目聚合");
+  assert.ok(/\+\+st\.river\.gen/.test(v), "缺 gen 计数");
+  assert.ok(v.includes("if (gen !== st.river.gen) return;"), "旧回包不得落地渲染（竞态防护）");
+  assert.ok(/catch \{ st\.river\.atts\[n\.id\] = null; \}/.test(v), "附件读取失败必须记 null（部分失败不阻断河流）");
+});
+
+test("W4 样式闭合：JS 里的 rv-* 类在 tokens.css 都有对应选择器", () => {
+  const v = read(PV);
+  const c = read(CSS);
+  // 剥掉 id 选择器上下文（id="pv-rv-retry" / "#pv-rv-retry"），
+  // 否则 id 里的 "rv-retry" 子串会被误当类名提取出来
+  const stripped = v.replace(/id="pv-[a-z0-9-]+"/g, "").replace(/#pv-[a-z0-9-]+/g, "");
+  const used = new Set(stripped.match(/rv-[a-z0-9-]+/g) || []);
+  const missing = [...used].filter((x) => !c.includes(`.${x}`));
+  assert.deepEqual(missing, [], `CSS 缺选择器：${missing.join(", ")}`);
+});
