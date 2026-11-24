@@ -261,12 +261,12 @@ test("规格 §6 无障碍：动效尊重 prefers-reduced-motion、焦点环可�
 test("只做加法：不新增一级入口、不动既有导航与设置层", () => {
   const navBlock = html.slice(html.indexOf('<nav class="nav" id="nav"'), html.indexOf("</nav>"));
   const viewNames = [...navBlock.matchAll(/data-view="([a-z]+)"/g)].map((m) => m[1]);
-  // v3.4.0 规格 §2.1：任务（project）第一入口、待办（todo）第二入口（W5 合入后共 13 项）。
-  // 本守卫原断言「11 项不变」已随 v3.4 过时——W1/W3 合入后改为钉住 12 项顺序；
-  // W5 按规格把「待办」加为第二入口，守卫随之更新为钉住 13 项顺序，
-  // 防的是顺序漂移与再新增第 14 项，而不是拒绝规格内的演进。
-  assert.deepStrictEqual(viewNames, ["project", "todo", "brief", "kanban", "detail", "timeline", "kpi", "units", "members", "intel", "dealer", "add", "settings"],
-    "一级入口必须是 v3.4 的 13 项（project 第一、todo 第二，§2.1），不得再增删或漂移");
+  // v3.4.0 规格 §2.1：五版块导航。W8 退役清理后剩 6 个按钮
+  // （任务/待办/情报/网点/添加/设置；「监控」五版块形态属 W6，不在本守卫范围）。
+  // 本守卫防的是顺序漂移与退役入口复活，而不是拒绝规格内的演进：
+  // W1/W3（12 项）→ W5（+todo，13 项）→ W8（-7 退役项，6 项）。
+  assert.deepStrictEqual(viewNames, ["project", "todo", "intel", "dealer", "add", "settings"],
+    "一级入口必须是 W8 退役后的 6 项（project 第一、todo 第二，§2.1），退役入口不得复活");
   // 新模块必须在 app.js 之前引入（app.js 里 viewIntel 会读 window.__IP）
   const iMod = html.indexOf('<script src="intel-projects.js">');
   const iApp = html.indexOf('<script src="app.js">');

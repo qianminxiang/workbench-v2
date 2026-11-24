@@ -95,33 +95,17 @@
   <!-- 无障碍播报区（UI 规范 6.3 红线）：每条通知入队时写入一次，视觉隐藏 -->
   <div class="sr-only" id="mq-live" aria-live="polite"></div>
 
-  <!-- 筛选条（F4-1）：四维筛选，状态在三种形态间共享 -->
-  <div class="panel" style="padding:8px 12px; --panel-strip: var(--brand)">
-    <div class="rowline" style="flex-wrap:wrap; gap:8px">
-      <button class="chip" data-filter="board" value="">全部板块</button>
-      <button class="chip" data-filter="board" value="政策项目">政策</button>
-      <button class="chip" data-filter="board" value="政府关系">政府</button>
-      <button class="chip" data-filter="board" value="行业资源">行业</button>
-      <button class="chip" data-filter="board" value="媒体品牌">媒体</button>
-      <button class="chip" data-filter="board" value="活动管理">活动</button>
-      <button class="chip" data-filter="board" value="客户线索">客户</button>
-      <span class="mini" id="filter-count">– / –</span>
-      <button class="btn--ghost btn" id="filter-clear" style="margin-left:auto">清空复原</button>
-    </div>
-  </div>
+  <!-- W8 退役清理：6 板块筛选条已下掉（design §2.1「界面全删·含筛选条」，arch §2.2）。
+       退役视图函数与 state.filterBoard 保留在 app.js（只清入口不清数据）。 -->
 
   <nav class="nav" id="nav" style="margin-bottom:16px">
     <!-- W3：任务为第一入口（规格 §2.1） -->
-    <button data-view="project"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>任务</button>
-    <!-- W5：待办为第二入口（规格 §2.1，位于任务之后；旧入口 W8 再下） -->
+    <button data-view="project" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>任务</button>
+    <!-- W5：待办为第二入口（规格 §2.1，位于任务之后） -->
     <button data-view="todo"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>待办</button>
-    <button data-view="brief" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>晨报</button>
-    <button data-view="kanban">看板</button>
-    <button data-view="detail">明细</button>
-    <button data-view="timeline">时间线</button>
-    <button data-view="kpi">KPI</button>
-    <button data-view="units">单位</button>
-    <button data-view="members">成员</button>
+    <!-- W8 退役清理（arch §2.2，只清入口不清数据）：晨报/看板/明细/时间线/KPI/单位/成员
+         七个旧入口下掉；视图函数与 VIEWS 映射保留（数据呈现能力不删），命令与数据表一律不动。
+         成员管理功能由并行实现单 B 的设置页改版（W7）承接，此处不触碰设置页。 -->
     <button data-view="intel"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>情报</button>
     <button data-view="dealer">网点</button>
     <button data-view="add"><svg class="ico" aria-hidden="true"><use href="#ic-import"/></svg>添加</button>

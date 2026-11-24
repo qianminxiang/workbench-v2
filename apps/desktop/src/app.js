@@ -29,7 +29,7 @@ function toast(text, ms) {
 
 // ── 状态 ──
 const state = {
-  view: "brief",
+  view: "project", // W8 退役清理：晨报入口下掉，默认视图改为任务版块（第一入口，§2.1）
   items: [],
   filterBoard: "",
   alertsData: null,
@@ -81,7 +81,10 @@ function filtered() {
   return code ? state.items.filter((i) => i.board === code) : state.items;
 }
 function updateFilterCount() {
-  $("#filter-count").textContent = `${filtered().length} / ${state.items.length}`;
+  // W8 退役清理：6 板块筛选条已随退役入口一并下掉（design §2.1「界面全删·含筛选条」）。
+  // 退役视图函数保留（只清入口不清数据），深链渲染时计数无宿主则静默跳过。
+  const el = $("#filter-count");
+  if (el) el.textContent = `${filtered().length} / ${state.items.length}`;
 }
 
 const ICO = (id) => `<svg class="ico" aria-hidden="true"><use href="#ic-${id}"/></svg>`;
@@ -705,7 +708,8 @@ const VIEWS = {
 function render(mode) {
   const main = $("#main");
   main.classList.remove("reflow-fade", "view-fade");
-  main.innerHTML = (VIEWS[state.view] || viewBrief)();
+  // W8 退役清理：兜底视图由晨报改为任务版块（晨报入口已下掉）
+  main.innerHTML = (VIEWS[state.view] || viewProject)();
   // v3.4.0 · W3：切走任务版块时拆掉抽屉/弹层等浮层（PV.sync 幂等，其他视图无操作）
   window.__PV?.sync(state.view);
   // v3.4.0 · W5：切走待办版块时拆掉弹层并复位详情二级页（TV.sync 幂等）
@@ -1364,24 +1368,9 @@ $("#nav").addEventListener("click", async (e) => {
   if (state.view === "dealer") await loadDealer();
   render();
 });
-document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
-    if (chip.dataset.filter === "board") {
-      state.filterBoard = chip.value;
-      document.querySelectorAll('.chip[data-filter="board"]').forEach((c) =>
-        c.setAttribute("data-active", String(c === chip)));
-      updateFilterCount();
-      render("reflow");
-    }
-  });
-});
-$("#filter-clear").addEventListener("click", () => {
-  state.filterBoard = "";
-  document.querySelectorAll('.chip[data-filter="board"]').forEach((c) =>
-    c.setAttribute("data-active", String(!c.value)));
-  updateFilterCount();
-  render("reflow");
-});
+// W8 退役清理：6 板块筛选条（板块 chips + filter-clear）已随退役入口下掉，
+// 其模块级绑定一并移除（筛选条宿主不存在，绑定会 null 崩）。
+// state.filterBoard / filtered() 保留：退役视图函数经通知深链渲染时仍依赖。
 
 // B7 补推：启动时检查上次未送达的晨报
 (async function boot() {
@@ -1397,7 +1386,8 @@ $("#filter-clear").addEventListener("click", () => {
         level: "high",
         title: "晨报待补发",
         text: `◆ 有未送达的晨报（${pending.pending_date || ""}），可点击查看`,
-        action: { label: "查看晨报", run: () => gotoView("brief") },
+        // W8 退役清理：晨报入口已下掉，动作深链到任务版块（arch §2.2）
+        action: { label: "去任务版块", run: () => gotoView("project") },
       });
     }
   } catch (_) { /* 无记录即正常 */ }
@@ -1455,7 +1445,8 @@ async function bindShellEvents() {
       level: "high",
       title: "晨报待补发",
       text: `◆ 有未送达的晨报（${dt}），可点击查看`,
-      action: { label: "查看晨报", run: () => gotoView("brief") },
+      // W8 退役清理：晨报入口已下掉，动作深链到任务版块（arch §2.2）
+      action: { label: "去任务版块", run: () => gotoView("project") },
     });
   });
 
@@ -1475,9 +1466,9 @@ async function bindShellEvents() {
       text: d.new_version
         ? `◆ 检测到版本更新 ${d.version_from || "?"} → ${d.version_to || "?"}，晨报已即时送达`
         : `◆ 今日晨报已送达，可点击查看`,
-      action: { label: "查看晨报", run: () => gotoView("brief") },
+      // W8 退役清理：晨报入口已下掉，动作深链到任务版块（arch §2.2）
+      action: { label: "去任务版块", run: () => gotoView("project") },
     });
-    if (state.view === "brief") reload();
   });
 
   // 送达失败：严重级字幕 + 红灯带，不静默
@@ -1491,8 +1482,9 @@ async function bindShellEvents() {
     });
   });
 
-  // 托盘菜单「查看晨报」→ 切到晨报页
-  await listen("brief-open", () => gotoView("brief"));
+  // 托盘菜单「查看晨报」→ W8 退役清理：晨报入口已下掉，brief-open 改为
+  // 深链到任务版块（arch §2.2：提醒能力转入滚动字幕条，晨报数据仍在库里）。
+  await listen("brief-open", () => gotoView("project"));
 
   // 已有采集在跑（防重入）：明确告诉用户「这一轮还在跑」，不装作刚启动了一轮。
   await listen("intel-busy", () => {
