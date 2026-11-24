@@ -570,8 +570,112 @@ pub fn generate_todo(
             ],
         )?;
         lead.state = LeadState::Todoed;
+        // v3.4.0 W5（架构 §4.1 缺陷补齐）：转待办成功后同步向 work_item 落一行，
+        // 否则「已转待办」的线索在任务/待办版块里看不到。
+        // 幂等：id = todo_id（lead:<dedup_key>），INSERT OR IGNORE 天然复用幂等键，
+        // 重复确认不会产生第二条；不影响 generate_todo 既有的幂等契约。
+        insert_todo_work_item(conn, todo, &ts)?;
     }
     Ok(outcome)
+}
+
+/// 把一条 `LeadTodo` 写成 `work_item` 行（架构 §4.1 补齐方案的逐字段口径）。
+/// - `id = todo.todo_id`（幂等键）；`board_code = 'prj'`（v3.4 占位板块，§3.2）；
+/// - `fiscal_year` 取 `due_date` 年份；`planned_end_date = due_date`（精度 day）；
+/// - `status = '待启动'`（`ItemStatus::from_zh` 认的中文全量值；架构 §4.1 写的「未启」
+///   是前端 chip 显示缩写，入库必须是「待启动」，否则读回 status 解析为 None）；`next_action` / `owner` 传入值；
+/// - `seq_no` 取同 `fiscal_year` 内 `MAX(seq_no)+1`（沿用既有 UNIQUE 约束）；
+/// - 来源徽标口径（§3.2）：ext_json 记 `v34_source = "intel"`，前端据此渲染「情报导出」。
+pub(crate) fn insert_todo_work_item(
+    conn: &Connection,
+    todo: &LeadTodo,
+    ts: &str,
+) -> Result<(), StoreError> {
+    let fiscal_year: i64 = todo
+        .due_date
+        .get(0..4)
+        .and_then(|y| y.parse::<i64>().ok())
+        .or_else(|| ts.get(0..4).and_then(|y| y.parse::<i64>().ok()))
+        .unwrap_or(0);
+    let seq_no: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq_no), 0) + 1 FROM work_item WHERE fiscal_year = ?1",
+        params![fiscal_year],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO work_item
+           (id, seq_no, board_code, title, priority,
+            planned_start_date, planned_start_precision,
+            planned_end_date, planned_end_precision,
+            progress_pct, status, milestone_stage, next_action, owner,
+            source_sheet, fiscal_year, ext_json, created_at, updated_at)
+         VALUES (?1, ?2, 'prj', ?3, NULL,
+                 NULL, 'unknown',
+                 ?4, 'day',
+                 0, '待启动', NULL, ?5, ?6,
+                 NULL, ?7, ?8, ?9, ?9)",
+        params![
+            todo.todo_id,
+            seq_no,
+            todo.title,
+            todo.due_date,
+            todo.next_action,
+            todo.owner,
+            fiscal_year,
+            serde_json::json!({"v34_source": "intel", "lead_url": todo.source_url, "lead_key": todo.lead_key}).to_string(),
+            ts
+        ],
+    )?;
+    Ok(())
+}
+
+/// 历史待办回填报告（W5 一次性幂等任务，失败可重跑）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct BackfillReport {
+    /// 扫描到的已转待办线索数（state='todoed' 且 todo_json 非空）
+    pub scanned: usize,
+    /// 本次新插入 work_item 的行数
+    pub inserted: usize,
+    /// 已存在（INSERT OR IGNORE 命中 id）而跳过的行数
+    pub skipped: usize,
+    /// todo_json 解析失败（脏数据不搬运，如实计数）
+    pub invalid_json: usize,
+}
+
+/// 历史待办回填（W5，架构 §4.1：0007 只建表不搬数，回填走一次性幂等任务）。
+///
+/// 按 `todo_json` 重放：对每条 `state='todoed'` 且已有 `todo_json` 的线索，
+/// 以 `todo_id` 为幂等键 INSERT OR IGNORE 到 `work_item`。
+/// 已存在的行不改写（§五-2 「不改写存量行」）；失败可整批重跑。
+pub fn backfill_todos(store: &Store) -> Result<BackfillReport, StoreError> {
+    let guard = store.begin_write("todo-backfill")?;
+    let conn = guard.conn();
+    let ts = now_iso_pub();
+    let mut stmt =
+        conn.prepare("SELECT todo_id, todo_json FROM intel_lead WHERE state = 'todoed' AND todo_id IS NOT NULL AND todo_json IS NOT NULL")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut report = BackfillReport { scanned: rows.len(), ..Default::default() };
+    for (todo_id, todo_json) in rows {
+        let todo: LeadTodo = match serde_json::from_str(&todo_json) {
+            Ok(t) => t,
+            Err(_) => {
+                report.invalid_json += 1;
+                continue;
+            }
+        };
+        let before = conn.prepare("SELECT COUNT(*) FROM work_item WHERE id = ?1")?;
+        let existed: i64 = before.query_row(params![todo_id], |r| r.get(0))?;
+        drop(before);
+        insert_todo_work_item(conn, &todo, &ts)?;
+        if existed > 0 {
+            report.skipped += 1;
+        } else {
+            report.inserted += 1;
+        }
+    }
+    Ok(report)
 }
 
 /// 拉链 + 线索池的暗重复审计（dedup_rule.md 的 dedup_audit 判定）。
