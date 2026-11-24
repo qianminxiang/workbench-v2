@@ -192,6 +192,88 @@ body { background: var(--bg-canvas); min-height: 100vh; }
 .divider { border: 0; border-top: var(--w-rule) solid var(--border-default); margin: var(--sp-4) 0; }
 .text-2 { color: var(--text-2); }
 .text-3 { color: var(--text-3); }
+
+/* ── v3.4.0 设置版块两列网格（设计基线规范 §4.1 / §3.5 实机口径）──
+   1fr 1fr / 间距 14px：左列 = ① 数据 · ② 情报采集，右列 = ③ 补贴导出 · ④ 提醒送达；
+   ⑤ 服务器同步与 ⑥ 更新独占整行（内含较长表单与结果行，挤进半列会折行）；
+   账号管理为迁入项，用分隔线隔开独占整行。
+   窄屏（<900px）回落单列——两列只在有大屏空间时成立，硬撑两列会把表单压成一条。 */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.settings-grid > .set-card--wide { grid-column: 1 / -1; }
+@media (max-width: 900px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-grid > .set-card--wide { grid-column: auto; }
+}
+.set-card {
+  background: var(--bg-card);
+  border: var(--w-rule) solid var(--border-default);
+  border-radius: var(--radius-panel);
+  padding: var(--sp-3) var(--sp-4);
+  min-width: 0; /* 允许 grid 子项收缩，否则长诊断文本会把列撑爆 */
+}
+.set-card__head {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  font-size: 13px; font-weight: 600; color: var(--text-1);
+}
+.set-card__no { font-size: 12px; color: var(--text-3); font-weight: 400; }
+.set-card__hint { font-size: 12px; line-height: 1.6; color: var(--text-3); margin-top: var(--sp-2); }
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-2); min-height: 32px; flex-wrap: wrap;
+}
+/* 迁入项（账号管理）与六节之间的分隔：暗示它是搬进来的，不是原设置功能 */
+.settings-migrated {
+  grid-column: 1 / -1;
+  border-top: var(--w-rule) solid var(--border-default);
+  padding-top: var(--sp-4);
+  margin-top: var(--sp-1);
+}
+/* 保护规则触发态：按钮禁用可视态（规范 §4.3 三通道之一，颜色 + 文案 + disabled 真拦截） */
+.btn--locked {
+  color: var(--text-3) !important;
+  box-shadow: none !important;
+  opacity: 0.85;
+  cursor: not-allowed;
+}
+.set-warn-inline { font-size: 13px; color: var(--warn-amber); }
+.set-error-bar {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--red-bg); color: var(--red-fg);
+  border: var(--w-rule) solid var(--warn-red);
+  border-radius: var(--radius-panel);
+  font-size: 13px;
+}
+.set-status { font-size: 12px; color: var(--text-3); }
+.set-status--bad { color: var(--red-fg); }
+/* 账号管理（规范 §4.3）：角色 / 状态徽标。色 + 字双通道，不单靠颜色区分。 */
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; line-height: 18px; border: var(--w-rule) solid transparent; }
+.badge--admin { background: var(--brand-liner); color: var(--brand-text); border-color: var(--brand-line); }
+.badge--member { background: var(--bg-canvas); color: var(--text-2); border-color: var(--border-default); }
+.badge--active { background: var(--green-bg); color: var(--green-fg); border-color: var(--ok); }
+.badge--disabled { background: var(--bg-canvas); color: var(--text-3); border-color: var(--border-default); }
+/* 监控版块页签（W6）：注册表驱动，抖音页签 enabled=false 时只出占位态 */
+.mon-tabs { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); flex-wrap: wrap; }
+.mon-tab {
+  padding: 6px 14px; border-radius: 999px;
+  border: var(--w-rule) solid var(--border-default);
+  background: var(--bg-card); color: var(--text-2);
+  font-size: 13px; cursor: pointer;
+}
+.mon-tab[aria-selected="true"] {
+  background: var(--brand-liner); color: var(--brand-text);
+  border-color: var(--brand-line); box-shadow: inset 0 -2px 0 var(--brand-solid);
+}
+.mon-pane-placeholder {
+  padding: var(--sp-5); text-align: center;
+  color: var(--text-3); font-size: 13px; line-height: 1.8;
+}
 .mono { font-family: var(--font-mono); }
 
 /* ── 警示徽标（色 + 形 + 文字三通道冗余；不循环闪烁） ── */
