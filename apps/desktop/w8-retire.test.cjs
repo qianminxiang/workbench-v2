@@ -21,8 +21,9 @@ test("W8·入口下掉：七个退役入口不得出现在导航", () => {
     assert.ok(!navBlock.includes(`data-view="${v}"`), `退役入口 ${v} 不得复活`);
   }
   const names = [...navBlock.matchAll(/data-view="([a-z]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(names, ["project", "todo", "intel", "dealer", "add", "settings"],
-    "退役后导航应为 6 项且顺序固定");
+  // W6（单B）：「网点」升级为「监控」页签容器（design §3.4），退役后第 4 项为 monitor
+  assert.deepEqual(names, ["project", "todo", "intel", "monitor", "add", "settings"],
+    "退役后导航应为 6 项且顺序固定（W6 网点→监控）");
 });
 
 test("W8·6 板块筛选条下掉：宿主与模块级绑定必须同删（防 null 崩）", () => {

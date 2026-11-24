@@ -266,12 +266,15 @@ test("规格 §6 无障碍：动效尊重 prefers-reduced-motion、焦点环可�
 test("只做加法：不新增一级入口、不动既有导航与设置层", () => {
   const navBlock = html.slice(html.indexOf('<nav class="nav" id="nav"'), html.indexOf("</nav>"));
   const viewNames = [...navBlock.matchAll(/data-view="([a-z]+)"/g)].map((m) => m[1]);
-  // v3.4.0 规格 §2.1：五版块导航。W8 退役清理后剩 6 个按钮
-  // （任务/待办/情报/网点/添加/设置；「监控」五版块形态属 W6，不在本守卫范围）。
-  // 本守卫防的是顺序漂移与退役入口复活，而不是拒绝规格内的演进：
-  // W1/W3（12 项）→ W5（+todo，13 项）→ W8（-7 退役项，6 项）。
-  assert.deepStrictEqual(viewNames, ["project", "todo", "intel", "dealer", "add", "settings"],
-    "一级入口必须是 W8 退役后的 6 项（project 第一、todo 第二，§2.1），退役入口不得复活");
+  // v3.4.0 规格 §2.1：五版块导航。W8 退役清理后剩 6 个按钮；单B 并行两步：
+  // W7 把「成员」入口迁入设置页（§4.3 账号管理），W6 把「网点」升级为「监控」
+  // 页签容器（§3.4）。本守卫防的是顺序漂移与退役入口复活，而不是拒绝规格内的演进：
+  // W1/W3（12 项）→ W5（+todo，13 项）→ W8（-7 退役项，6 项）→ W6（dealer→monitor）。
+  assert.deepStrictEqual(viewNames, ["project", "todo", "intel", "monitor", "add", "settings"],
+    "一级入口必须是 W8 退役 + W6 网点→监控后的 6 项（project 第一、todo 第二，§2.1），退役入口不得复活");
+  // 迁入/升级必须是「移动」而不是「两处并存」——旧入口不得残留
+  assert.ok(!viewNames.includes("members"), "「成员」入口必须已迁入设置页，不得在导航里残留");
+  assert.ok(!viewNames.includes("dealer"), "「网点」已升级为「监控」，不得以旧名残留在导航");
   // 新模块必须在 app.js 之前引入（app.js 里 viewIntel 会读 window.__IP）
   const iMod = html.indexOf('<script src="intel-projects.js">');
   const iApp = html.indexOf('<script src="app.js">');
