@@ -1244,6 +1244,14 @@ fn project_reclaim(paths: State<Mutex<AppPaths>>, dry_run: Option<bool>) -> Resu
     Ok(serde_json::json!({ "ledger": ledger }))
 }
 
+/// v3.4.0 · W3：数据目录绝对路径。附件缩略/预览走 asset 协议时必须用绝对路径拼接
+/// （`storage_path` 是相对数据目录的路径，架构 §3.2）；前端不从 path 插件取，
+/// 与 Store 根目录单一来源同源，避免两处目录不一致。
+#[tauri::command]
+fn data_dir_path(paths: State<Mutex<AppPaths>>) -> String {
+    paths.lock().unwrap().data_dir.to_string_lossy().into_owned()
+}
+
 // ── 存量 work_item 一次性迁移向导（预览 → 确认执行） ──
 
 #[tauri::command]
@@ -1966,6 +1974,7 @@ pub fn run() {
             project_reclaim,
             project_migration_preview,
             project_migration_run,
+            data_dir_path,
         ])
         // B7：点关闭 = 最小化到托盘，晨报仍从托盘送达；
         // 只有托盘菜单「退出」才真正退出（退出后的补推靠 last_brief.json）。

@@ -26,7 +26,14 @@
       "tooltip": "综合工作台"
     },
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": ["$APPDATA/**"],
+          "deny": []
+        }
+      }
     }
   },
   "bundle": {
