@@ -1244,6 +1244,118 @@ fn project_reclaim(paths: State<Mutex<AppPaths>>, dry_run: Option<bool>) -> Resu
     Ok(serde_json::json!({ "ledger": ledger }))
 }
 
+// ─────────── v3.4.0 待办版块（W5：generate_todo → work_item 落库的读命令） ───────────
+//
+// 写路径在 `wb_core::intel_store::generate_todo / backfill_todos`（同库同表），
+// 闭环复用既有 `update_item`；壳层只做读取与参数整形。
+
+/// 待办版块列表（§3.2）：work_item 全量（未归档未删），LEFT JOIN project 供穿透。
+/// `project_alive = false` 表示待办挂着的 project 已被软删——前端显示「原项目已不存在」。
+#[tauri::command]
+fn todo_list(paths: State<Mutex<AppPaths>>, year: i32) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let conn = store.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT w.id, w.title, w.priority, w.status, w.planned_end_date,
+                    w.next_action, w.owner, w.project_id, w.ext_json,
+                    w.created_at, w.updated_at,
+                    p.name, p.stage,
+                    CASE WHEN p.id IS NULL THEN 0 ELSE 1 END
+             FROM work_item w
+             LEFT JOIN project p
+               ON p.id = w.project_id AND p.deleted_at IS NULL
+             WHERE w.fiscal_year = ?1 AND w.archived_at IS NULL AND w.deleted_at IS NULL
+             ORDER BY (w.planned_end_date IS NULL), w.planned_end_date, w.seq_no",
+        )
+        .map_err(err_string)?;
+    let rows = stmt
+        .query_map(rusqlite::params![year], |r| {
+            let ext_json: String = r.get(8)?;
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "title": r.get::<_, String>(1)?,
+                "priority": r.get::<_, Option<String>>(2)?,
+                "status": r.get::<_, Option<String>>(3)?,
+                "dueDate": r.get::<_, Option<String>>(4)?,
+                "nextAction": r.get::<_, Option<String>>(5)?,
+                "owner": r.get::<_, Option<String>>(6)?,
+                "projectId": r.get::<_, String>(7)?,
+                "ext": serde_json::from_str::<serde_json::Value>(&ext_json).unwrap_or_default(),
+                "createdAt": r.get::<_, Option<String>>(9)?,
+                "updatedAt": r.get::<_, Option<String>>(10)?,
+                "projectName": r.get::<_, Option<String>>(11)?,
+                "projectStage": r.get::<_, Option<String>>(12)?,
+                "projectAlive": r.get::<_, i64>(13)? == 1,
+            }))
+        })
+        .map_err(err_string)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "todos": rows }))
+}
+
+/// 新建待办（§3.2 标题行「新建待办」/ 空态「手动建档」后的自动待办，§5.4）。
+/// 人工新建不写 `v34_source` —— 前端据此不显示来源徽标（§3.2 口径）。
+#[tauri::command]
+fn todo_create(
+    paths: State<Mutex<AppPaths>>,
+    title: String,
+    due_date: Option<String>,
+    project_id: Option<String>,
+    owner: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let conn = store.conn();
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("待办标题不能为空".into());
+    }
+    let ts = wb_core::store::now_iso_pub();
+    let fiscal_year: i64 = due_date
+        .as_deref()
+        .and_then(|d| d.get(0..4))
+        .and_then(|y| y.parse::<i64>().ok())
+        .or_else(|| ts.get(0..4).and_then(|y| y.parse::<i64>().ok()))
+        .unwrap_or(0);
+    let id = format!("todo:{}", &ts.replace(['-', ':', '.', 'T'], "")[..14]);
+    let seq_no: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(seq_no), 0) + 1 FROM work_item WHERE fiscal_year = ?1",
+            rusqlite::params![fiscal_year],
+            |r| r.get(0),
+        )
+        .map_err(err_string)?;
+    conn.execute(
+        "INSERT INTO work_item
+           (id, seq_no, board_code, title,
+            planned_start_date, planned_start_precision,
+            planned_end_date, planned_end_precision,
+            progress_pct, status, next_action, owner, project_id,
+            fiscal_year, ext_json, created_at, updated_at)
+         VALUES (?1, ?2, 'prj', ?3,
+                 NULL, 'unknown',
+                 ?4, 'day',
+                 0, '待启动', NULL, ?5, ?6,
+                 ?7, '{}', ?8, ?8)",
+        rusqlite::params![id, seq_no, title, due_date, owner,
+                          project_id.unwrap_or_default(), fiscal_year, ts],
+    )
+    .map_err(err_string)?;
+    Ok(serde_json::json!({ "id": id }))
+}
+
+/// 历史待办回填（W5，架构 §4.1：按 todo_json 重放，幂等可重跑）。
+#[tauri::command]
+fn todo_backfill(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let report = wb_core::intel_store::backfill_todos(&store).map_err(err_string)?;
+    serde_json::to_value(&report).map_err(|e| e.to_string())
+}
+
 /// v3.4.0 · W3：数据目录绝对路径。附件缩略/预览走 asset 协议时必须用绝对路径拼接
 /// （`storage_path` 是相对数据目录的路径，架构 §3.2）；前端不从 path 插件取，
 /// 与 Store 根目录单一来源同源，避免两处目录不一致。
@@ -1974,6 +2086,10 @@ pub fn run() {
             project_reclaim,
             project_migration_preview,
             project_migration_run,
+            // v3.4.0 待办版块（W5）
+            todo_list,
+            todo_create,
+            todo_backfill,
             data_dir_path,
         ])
         // B7：点关闭 = 最小化到托盘，晨报仍从托盘送达；
