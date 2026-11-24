@@ -113,6 +113,8 @@
   <nav class="nav" id="nav" style="margin-bottom:16px">
     <!-- W3：任务为第一入口（规格 §2.1） -->
     <button data-view="project"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>任务</button>
+    <!-- W5：待办为第二入口（规格 §2.1，位于任务之后；旧入口 W8 再下） -->
+    <button data-view="todo"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>待办</button>
     <button data-view="brief" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>晨报</button>
     <button data-view="kanban">看板</button>
     <button data-view="detail">明细</button>
@@ -203,6 +205,9 @@
 <!-- v3.4.0 · W3 任务版块（项目列表 + 详情抽屉 + 录入弹层 + 迁移向导）。
      与 intel-projects.js 同构的独立模块：window.__PV，app.js 只调度。 -->
 <script src="project-views.js"></script>
+<!-- v3.4.0 · W5 待办版块（列表 + 筛选 + 来源徽标 + 穿透 + 详情二级页 + 新建弹层）。
+     与 project-views.js 同构的独立模块：window.__TV，app.js 只调度。 -->
+<script src="todo-views.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

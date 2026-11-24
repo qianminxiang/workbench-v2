@@ -255,6 +255,13 @@ function viewProject() {
     : `<div class="panel"><div class="empty">任务版块未加载（project-views.js 缺失）。</div></div>`;
 }
 
+/** v3.4.0 · W5 待办版块调度（与 viewProject 同构）：本体在 todo-views.js（window.__TV）。 */
+function viewTodo() {
+  return window.__TV
+    ? window.__TV.view()
+    : `<div class="panel"><div class="empty">待办版块未加载（todo-views.js 缺失）。</div></div>`;
+}
+
 /** v3.3.1 · 源站状态小窗（设置页「情报采集」节渲染）：公告清单页删除后，
  *  原顶部采集统计条 + 源站状态表整体迁入设置页，站点行渲染逻辑原样保留。 */
 function viewIntelSites() {
@@ -690,6 +697,7 @@ const VIEWS = {
   timeline: viewTimeline, kpi: viewKpi, units: viewUnits,
   members: viewMembers,
   project: viewProject, // v3.4.0 · W3 任务版块（第一入口，§2.1）
+  todo: viewTodo,      // v3.4.0 · W5 待办版块（第二入口，§2.1）
   intel: viewIntel, dealer: viewDealer,
   add: viewAdd, settings: viewSettings,
 };
@@ -700,6 +708,8 @@ function render(mode) {
   main.innerHTML = (VIEWS[state.view] || viewBrief)();
   // v3.4.0 · W3：切走任务版块时拆掉抽屉/弹层等浮层（PV.sync 幂等，其他视图无操作）
   window.__PV?.sync(state.view);
+  // v3.4.0 · W5：切走待办版块时拆掉弹层并复位详情二级页（TV.sync 幂等）
+  window.__TV?.sync(state.view);
   bindView();
   void main.offsetWidth; // 重启动画时间轴
   if (mode === "reflow") {
@@ -876,6 +886,12 @@ function bindView() {
   if (state.view === "project") {
     // v3.4.0 · W3 任务版块：绑定与首载全部在模块内（project-views.js）。
     if (window.__PV) window.__PV.bind();
+    return;
+  }
+
+  if (state.view === "todo") {
+    // v3.4.0 · W5 待办版块：绑定与首载全部在模块内（todo-views.js）。
+    if (window.__TV) window.__TV.bind();
     return;
   }
 
