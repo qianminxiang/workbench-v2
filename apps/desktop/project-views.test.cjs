@@ -119,11 +119,16 @@ test("浮层拆层：Esc 逐层退、切走视图时 PV.sync 全拆", () => {
   assert.ok(/\$all\("\.pv-drawer-mask"\)\.forEach\(\(m\) => m\.remove\(\)\)/.test(v), "重复开抽屉必须先清旧浮层");
 });
 
-test("asset 协议：tauri.conf.json 开通且 CSP 放行、作用域限 $APPDATA", () => {
+test("asset 协议：tauri.conf.json 开通且 CSP 放行、作用域只开附件子目录", () => {
   const conf = JSON.parse(read(CONF));
   const sec = conf.app.security;
   assert.equal(sec.assetProtocol.enable, true, "assetProtocol 未启用");
-  assert.deepEqual(sec.assetProtocol.scope.allow, ["$APPDATA/**"], "作用域必须限在应用数据目录");
+  // v3.4.0 · H1：作用域收窄到附件存储子目录 attachments/（store.rs 的 Layout::attachments_dir
+  // = <data_dir>/attachments，附件落盘形如 attachments/<sha八位>/<sha>.<ext>）。
+  // 不允许退回 $APPDATA/**——那等于把 workbench.db / archive.db / backups / snapshots
+  // 一并交给 webview 的 asset 协议读取，是质检点名的越权面。
+  assert.deepEqual(sec.assetProtocol.scope.allow, ["$APPDATA/attachments/**"],
+    "作用域必须收窄到附件子目录（不得回到整个 $APPDATA）");
   assert.ok(sec.csp.includes("asset:"), "CSP img-src 未放行 asset:");
   assert.ok(sec.csp.includes("http://asset.localhost"), "CSP 未放行 Windows asset 域");
 });

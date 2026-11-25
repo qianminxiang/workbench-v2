@@ -30,7 +30,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["$APPDATA/**"],
+          "allow": ["$APPDATA/attachments/**"],
           "deny": []
         }
       }
