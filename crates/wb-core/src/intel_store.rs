@@ -665,7 +665,7 @@ pub fn backfill_todos(store: &Store) -> Result<BackfillReport, StoreError> {
                 continue;
             }
         };
-        let before = conn.prepare("SELECT COUNT(*) FROM work_item WHERE id = ?1")?;
+        let mut before = conn.prepare("SELECT COUNT(*) FROM work_item WHERE id = ?1")?;
         let existed: i64 = before.query_row(params![todo_id], |r| r.get(0))?;
         drop(before);
         insert_todo_work_item(conn, &todo, &ts)?;
