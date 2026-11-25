@@ -113,9 +113,19 @@ function buildEpointRequest(spec, wd, start, end, page) {
 const byId = (id) => REGISTRY.find((s) => s.id === id);
 
 // 90 天窗口：与 lib.rs spawn_intel_run 同一口径（today.add_days(-90).to_iso() → today）
+//
+// v3.4.0 质检 B2·阻断 修复：窗口一律按「日期字符串」算，全程不碰时刻。
+// 旧实现 const START_90 = toIso(new Date(TODAY.getTime() - 90 * 86400_000)) 让 START_90
+// 被 toIso 截成纯日期（UTC 00:00），而 TODAY 仍带执行时刻；两者相减在 UTC 时数 ≥ 12 时
+// 得到 90.5+ 天，被 Math.round 进位成 91 —— 断言随执行时刻漂移，是质检点名的时刻耦合缺陷。
 const TODAY = new Date();
 const toIso = (d) => d.toISOString().slice(0, 10);
-const START_90 = toIso(new Date(TODAY.getTime() - 90 * 86400_000));
+// 把 Date 或 'YYYY-MM-DD' 归一到该日的 UTC 零点毫秒数；日期差用它算，与时区/时刻无关
+const dayUtc = (v) => {
+  const iso = typeof v === 'string' ? v.slice(0, 10) : toIso(v);
+  return Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+};
+const START_90 = toIso(new Date(dayUtc(TODAY) - 90 * 86400_000));
 
 // ─────────────────────────────────────────────────────────────────────────
 // §1 断言：静态契约与盘点文档 §三逐字段对齐
@@ -205,8 +215,8 @@ test('W9 · 标准站请求体逐字段 diff（以亳州为例，90 天窗 + 全
     fields: 'title;content', cnum: '', sort: "{'webdate':'0'}",
     ssort: 'title', cl: 500, terminal: '', condition: [], time: null,
   });
-  // 90 天窗自检：start 到 end 恰好 90 天
-  const days = Math.round((TODAY.getTime() - new Date(START_90).getTime()) / 86400_000);
+  // 90 天窗自检：start 到 end 恰好 90 天（按日期字符串算，与时区/执行时刻无关）
+  const days = (dayUtc(toIso(TODAY)) - dayUtc(START_90)) / 86400_000;
   assert.strictEqual(days, 90);
 });
 
