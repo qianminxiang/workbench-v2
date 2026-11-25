@@ -250,8 +250,15 @@ test('W9 · 特例站请求体逐字段 diff（宿州 / 六安 / 马鞍山 / 黄
 const LIVE_SITES = ['luan', 'suzhou_ah', 'chuzhou'];
 const liveEvidence = [];
 
+// SKIP_LIVE 门控（2026-11-25 追加授权，归 W9 PR #9 边界；与 guard-gate.cjs 判据联合对齐）：
+// 默认关闭——本地/境内环境活站三例照跑（金丝雀语义不变）。
+// 仅显式 SKIP_LIVE=1 时跳过：GitHub 境外 runner 物理不可达境内站（ETIMEDOUT 实证），
+// 门禁口径为「境外 runner 不承载活站断言，活站三例由境内环境验证」——已知取舍，非验证通过。
+// guard-gate.cjs 只容忍「SKIP_LIVE=1 且跳过恰好 3 条、全部是本三例」，其余任何跳过仍红。
+const SKIP_LIVE = process.env.SKIP_LIVE === '1';
+
 for (const id of LIVE_SITES) {
-  test(`W9 · 活站实测：${id} 按契约请求体真实 POST 命中`, { timeout: 60_000 }, async () => {
+  test(`W9 · 活站实测：${id} 按契约请求体真实 POST 命中`, { timeout: 60_000, skip: SKIP_LIVE && 'SKIP_LIVE=1（境外 runner 不可达境内站，由境内环境验证）' }, async () => {
     const spec = byId(id);
     const { url, body } = buildEpointRequest(spec, KEYWORD, START_90, toIso(TODAY), 0);
     const resp = await fetch(url, {
@@ -285,6 +292,7 @@ for (const id of LIVE_SITES) {
 test('W9 · 金丝雀报告落盘（CANARY_OUT 设置时）', () => {
   const out = process.env.CANARY_OUT;
   if (!out) return; // 常规跑测试不写盘
+  if (SKIP_LIVE) return; // 活站被跳过时无证据可收，不生成报告（活站断言归境内环境验证）
   assert.strictEqual(liveEvidence.length, LIVE_SITES.length, '活站证据未收齐，不生成报告');
   fs.writeFileSync(out, JSON.stringify({
     run_at: new Date().toISOString(),
