@@ -52,11 +52,21 @@ jobs:
         # 没有汇总行，任一成立即红。被跳过的守卫等于没验，但它会让整轮仍显示 pass，
         # 是最典型的假绿来源。判据只写一份，两条工作流共用。
         # node --test 的退出码经 `| tee` 会被 tee 吃掉，故用 pipefail 保真。
+        # 2026-11-25 追加授权（B3/H3/H4 修复单）两处对齐 pre-release-gate.yml：
+        #   ① `--test-reporter=tap` —— GitHub runner（ubuntu）上 node --test 默认输出
+        #      spec 风格、没有 `# tests` 汇总行，guard-gate 按 TAP 解析必误判「没有汇总行」
+        #      （rc2 实证）；本地管道环境默认 TAP，两边命令必须显式固定同一格式。
+        #   ② env SKIP_LIVE=1 —— W9 活站三例（六安/宿州/滁州）需真实 POST 境内政府站，
+        #      境外 runner 物理不可达（ETIMEDOUT）；活站断言由境内环境验证（已知取舍，
+        #      非验证通过）。guard-gate.cjs 只容忍「SKIP_LIVE=1 且恰 3 条活站 skip」，
+        #      其余任何跳过仍红。发布逻辑零改动：本步仍是同一测试命令 + 同一汇总闸门。
+        env:
+          SKIP_LIVE: '1'
         run: |
           set -o pipefail
           # 用 `&& rc=0 || rc=$?` 而不是裸 `$?`：runner 的 bash 带 -e，
           # 裸写会让测试一红就在这一行退出，后面的汇总判据永远跑不到。
-          node --test apps/desktop/*.test.cjs | tee apps-desktop-guards.tap && rc=0 || rc=$?
+          node --test --test-reporter=tap apps/desktop/*.test.cjs | tee apps-desktop-guards.tap && rc=0 || rc=$?
           if ! node apps/desktop/scripts/guard-gate.cjs apps-desktop-guards.tap; then
             exit 1
           fi

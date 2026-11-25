@@ -43,6 +43,15 @@ name: pre-release-gate
 #     拆成两个 job 是刻意的：`gate-rust` 的绿/红只反映 Rust 侧，
 #     前端赤侧不会淹没 cargo 日志（反之亦然）。
 #
+#   · **境外 runner 不承载活站断言**：W9 金丝雀的活站三例（六安/宿州/滁州）要真实
+#     POST 境内政府站，GitHub 美国 runner 物理不可达（ETIMEDOUT，rc2 run 45542868385
+#     实证）。本 job 显式设 SKIP_LIVE=1 跳过这三例——**已知取舍，非验证通过**：
+#     活站三例由境内环境跑（本地对 apps/desktop 目录跑测试、不设 SKIP_LIVE，
+#     默认即含活站）。guard-gate.cjs 只容忍「SKIP_LIVE=1 且恰 3 条活站 skip」
+#     这一种组合，其余任何跳过仍判红，防洗绿。
+#     同一命令必须固定 `--test-reporter=tap`：runner 上 node --test 默认出 spec
+#     风格（无 `# tests` 汇总行），guard-gate 的 TAP 判据会误判（rc2 实证）。
+#
 #
 # 四、与正式发布路径的隔离（防误发布）
 #
@@ -106,11 +115,17 @@ jobs:
       - name: 前端守卫依赖（apps/desktop，jsdom 供渲染级断言）
         run: npm ci --prefix apps/desktop --no-audit --no-fund
 
-      # 与正式链同一口径：目录通配 + guard-gate 汇总闸门（跳过数≠0 / 有失败 / 空集 任一即红）。
+      # 与正式链同一口径：目录通配 + guard-gate 汇总闸门（跳过数≠0 / 有失败 / 空集 任一即红；
+      # SKIP_LIVE=1 时唯一容忍恰 3 条活站实测跳过，其余跳过仍红）。
+      # --test-reporter=tap 必须：runner 上默认是 spec 风格无汇总行，guard-gate 会误判。
       - name: 前端守卫单测（node --test，目录通配）
+        # SKIP_LIVE=1 显式写在 env：可见可审计（追加验收要求），本 step 内
+        # node --test 与 guard-gate.cjs 都继承它，两者判据联动。
+        env:
+          SKIP_LIVE: '1'
         run: |
           set -o pipefail
-          node --test apps/desktop/*.test.cjs | tee frontend-guards.tap && rc=0 || rc=$?
+          node --test --test-reporter=tap apps/desktop/*.test.cjs | tee frontend-guards.tap && rc=0 || rc=$?
           if ! node apps/desktop/scripts/guard-gate.cjs frontend-guards.tap; then
             exit 1
           fi

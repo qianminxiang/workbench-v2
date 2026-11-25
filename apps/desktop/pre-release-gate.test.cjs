@@ -75,7 +75,7 @@ test("B3·预发门禁只读：不申请 contents: write，结构上无法建 Re
 // ── 3. 「等效」的全部内容：三条命令两边逐字相同 ──────────────────────────
 const COMMANDS = [
   { label: "Rust 单测（H3 编译证据载体）", cmd: "cargo test -p wb-core -p wbd --locked --no-fail-fast" },
-  { label: "前端守卫（目录通配）", cmd: "node --test apps/desktop/*.test.cjs" },
+  { label: "前端守卫（目录通配）", cmd: "node --test --test-reporter=tap apps/desktop/*.test.cjs" },
   { label: "服务端 e2e", cmd: "npm --prefix server test" },
 ];
 
