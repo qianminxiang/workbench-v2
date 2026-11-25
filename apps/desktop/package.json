@@ -1,0 +1,15 @@
+{
+  "name": "wb-desktop-guards",
+  "version": "0.0.0",
+  "private": true,
+  "description": "apps/desktop 下 *.test.cjs 守卫脚本的测试期依赖（不参与打包，产物仍是零依赖静态文件）",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test *.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

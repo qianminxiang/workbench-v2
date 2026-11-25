@@ -65,12 +65,23 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: 前端守卫单测（node --test，零依赖 · 目录通配）
+      - name: 前端守卫依赖（apps/desktop，jsdom 供渲染级断言）
+        # 2026-11-25 v3.4.0 质检 B1：monitor-tabs / settings-reorg 两条渲染级守卫需要 jsdom，
+        # 此前靠沙箱绝对路径 require，本工作流从未装过依赖，一旦这两条进入任一分支持就必红。
+        shell: pwsh
+        run: |
+          npm ci --prefix apps/desktop --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "前端守卫依赖安装失败（apps/desktop/package-lock.json）" }
+
+      - name: 前端守卫单测（node --test，目录通配）
         # 2026-11-20 v3.2.0 补：本工作流此前**完全没有** node 守卫步骤（不是通配写窄，
         # 是压根没有），所以任何 apps/desktop 守卫在这条流水线上都等于不存在。
         # 放在构建之前：守卫是静态文本断言，秒级完成，越早红越省 120 分钟 Windows 机时。
         # 通配由本步骤自己展开（PowerShell 不对原生命令做 * 展开，直接写 node --test *.test.cjs
         # 会把星号字面量传给 node，在 Node<22 上变成"找不到文件"的假红），故显式枚举目录。
+        # 2026-11-25 补：TAP 汇总由 guard-gate.cjs 判——跳过数 ≠ 0 / 有失败 / 空集 /
+        # 没有汇总行，任一成立即红。被跳过的守卫等于没验，但那会让整轮仍显示 pass，
+        # 是最典型的假绿来源。判据只写一份，两条工作流共用。
         shell: pwsh
         run: |
           node --version
@@ -78,8 +89,11 @@ jobs:
                    Sort-Object Name | ForEach-Object { "apps/desktop/$($_.Name)" }
           if ($files.Count -eq 0) { throw "apps/desktop 下没有 *.test.cjs，守卫缺失（不接受空集通过）" }
           Write-Host "待跑守卫 $($files.Count) 个：$($files -join ' ')"
-          node --test $files
-          if ($LASTEXITCODE -ne 0) { throw "前端守卫单测失败（apps/desktop/*.test.cjs）" }
+          node --test $files 2>&1 | Tee-Object -FilePath apps-desktop-guards.tap
+          $testRc = $LASTEXITCODE
+          node apps/desktop/scripts/guard-gate.cjs apps-desktop-guards.tap
+          if ($LASTEXITCODE -ne 0) { throw "守卫汇总判据未通过（见上方 ✗ 行）" }
+          if ($testRc -ne 0) { throw "前端守卫单测失败（apps/desktop/*.test.cjs）" }
 
       - name: 安装 tauri-cli 与 Python 依赖确认
         shell: pwsh
