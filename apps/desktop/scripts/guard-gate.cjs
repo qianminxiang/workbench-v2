@@ -11,8 +11,15 @@
 //      此时「fail 0 / skipped 0」都不成立为真（空文件最容易被读成全绿）。
 //   ② tests > 0 —— 不接受空集通过。
 //   ③ fail === 0。
-//   ④ skipped === 0 —— 被跳过的守卫等于没有验证，但它会让整轮仍显示 pass，
-//      是最典型的假绿来源；跳过必须可见且必须红。
+//   ④ skipped 判据（2026-11-25 追加授权修订，归修复单①边界；与 W9 的
+//      intel-canary.test.cjs SKIP_LIVE 门控联合对齐）：
+//      默认（SKIP_LIVE 未设）：skipped === 0 —— 被跳过的守卫等于没有验证，
+//      但它会让整轮仍显示 pass，是最典型的假绿来源；跳过必须可见且必须红。
+//      仅当显式 SKIP_LIVE=1 时，且仅容忍唯一一种组合：跳过恰好 3 条、
+//      且 TAP 里 3 条 skip 行全部是 W9 活站实测（境外 runner 物理不可达境内站，
+//      活站断言由境内环境验证——已知取舍，非验证通过）。
+//      其余任何情况（跳过数≠3 / 混入非活站跳过 / 未设 SKIP_LIVE 却有跳过）一律红，
+//      不得放宽成无条件放行。
 //
 // 用法：node apps/desktop/scripts/guard-gate.cjs <tap-file>
 // 退出码：0 = 通过；1 = 任一判据不成立（原因打到 stderr）。
@@ -47,17 +54,38 @@ const tests = count('tests');
 const fail = count('fail');
 const skipped = count('skipped');
 
+// 仅统计「TAP skip 行且测试名是 W9 活站实测」的条数——与 intel-canary.test.cjs
+// 的三例名逐一对应。用它防洗绿：SKIP_LIVE=1 时若有人把别的测试也悄悄 skip 掉，
+// 活站行数就对不上 skipped 总数，判红。
+const liveSkipLines = text.match(/^ok\s+\d+\s+-.*活站实测.*#\s*SKIP/mg) || [];
+const allowLiveSkip = process.env.SKIP_LIVE === '1';
+// 唯一被容忍的跳过组合（追加授权裁决原文：只容忍这一种，不得放宽）。
+const LIVE_SKIP_ALLOWED = 3;
+
 const problems = [];
 if (tests === null || fail === null || skipped === null) {
   problems.push('TAP 里没有 `# tests` / `# fail` / `# skipped` 汇总行（node 可能先崩了，不能当全绿）');
 } else {
   if (tests <= 0) problems.push(`tests=${tests}（不接受空集通过）`);
   if (fail !== 0) problems.push(`fail=${fail}（存在失败用例）`);
-  if (skipped !== 0) problems.push(`skipped=${skipped}（被跳过的守卫等于没有验证，按失败处理）`);
+  if (skipped !== 0) {
+    const tolerated = allowLiveSkip && skipped === LIVE_SKIP_ALLOWED && liveSkipLines.length === LIVE_SKIP_ALLOWED;
+    if (!tolerated) {
+      if (allowLiveSkip) {
+        problems.push(`skipped=${skipped}（SKIP_LIVE=1 只容忍恰 ${LIVE_SKIP_ALLOWED} 条活站实测跳过，实际活站 skip 行 ${liveSkipLines.length} 条）`);
+      } else {
+        problems.push(`skipped=${skipped}（被跳过的守卫等于没有验证，按失败处理）`);
+      }
+    }
+  }
 }
 
 if (problems.length) {
   for (const p of problems) console.error(`✗ ${p}`);
   process.exit(1);
 }
-console.log(`✓ 守卫通过：tests=${tests} fail=${fail} skipped=${skipped}`);
+if (skipped === LIVE_SKIP_ALLOWED && allowLiveSkip) {
+  console.log(`✓ 守卫通过：tests=${tests} fail=${fail} skipped=${skipped}（SKIP_LIVE=1：恰 ${LIVE_SKIP_ALLOWED} 条活站实测跳过，活站断言由境内环境验证）`);
+} else {
+  console.log(`✓ 守卫通过：tests=${tests} fail=${fail} skipped=${skipped}`);
+}
