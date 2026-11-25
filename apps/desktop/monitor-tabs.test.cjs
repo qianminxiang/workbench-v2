@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM } = require('/home/gem/.aily/.cli/npm/node_modules/jsdom');
+const { JSDOM } = require('jsdom');
 
 const SRC = path.join(__dirname, 'src');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
