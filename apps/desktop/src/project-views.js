@@ -4,7 +4,9 @@
  *      §5.4（手动建档两处定点）/ §6.1（空态铁律）。
  * 覆盖范围（工作项 W3）：项目列表 + 项目详情抽屉（560px）+ 过程记录录入弹层 +
  *      新建任务弹层 + 存量迁移向导（预览 → 确认，不自动执行）。
- *      全年河流视图与 Bento 摘要带属 W4，本模块不预置其 DOM。
+ * 覆盖范围（工作项 W4）：§3.1 三段式（Bento 摘要带 + 分段控件三视图）+
+ *      §5.2 时间线视图（>200 条按月折叠）+ §5.3 全年总览纵向时间河流
+ *      （月份节点 / 当月小结自动拼接 / 动作卡六要素 / 空态与加载、错误态）。
  *
  * 挂载三处均为加法（与 intel-projects.js 同一模式，避免与并行轨道 git 硬冲突）：
  *   1. index.html 在 app.js 之前引入本文件；
@@ -36,6 +38,12 @@
   const IMG_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
   // §5.1 定值：动作摘要 ≤500 字、图片 ≤9 张、附件 ≤5 个（计数器 / 角标如实呈现）。
   const BODY_MAX = 500, MAX_IMAGES = 9, MAX_FILES = 5;
+  // §5.3 河流起点 2026-11（2026-11-24 用户指定）：不是过滤器，是「不预置、不回填」的语义锚点——
+  // 月份节点一律由真实记录归月生长；补录发生日期早于此值的记录按真实日期归月、
+  // 在起点之上生成对应月份节点，不裁剪也不虚构（§7.4 数据真实口径）。
+  const RIVER_START = "2026-11";
+  // §5.2 时间线折叠阈值：超过 200 条按月折叠（当月展开、往月折叠）。
+  const TL_FOLD_LIMIT = 200;
 
   // ── 会话内状态（不落盘） ──────────────────────────────────────────────────
   const st = {
@@ -43,6 +51,9 @@
     projects: null,           // ProjectDigest[] | null（null = 尚未读到）
     error: null,              // 读取失败时的错误文本
     filter: { stage: "", area: "", kw: "" },
+    sub: "river",               // §3.1 分段控件：river（默认）/ list / timeline
+    river: { notes: null, error: null, loading: false, atts: {}, gen: 0 }, // 跨项目全量记录（河流/时间线/Bento 共用）
+    tl: { projectId: null },    // 时间线视图选中的项目
     drawer: null,             // { id, project, notes, atts, err } | null
     wizardShown: false,       // 本次会话是否已检查过迁移预览
     wizardDismissed: false,   // 用户点过「暂不迁移」（仅本会话内不再弹）
@@ -110,9 +121,12 @@
       const r = await invoke("project_list", { year: YEAR, includeArchived: false });
       st.projects = r.projects || [];
       st.loaded = true;
+      // W4：任务池重读后跨项目聚合随之作废重取（gen 递增使在途旧结果不落地）
+      st.river.notes = null; st.river.error = null;
       clearTimeout(skelTimer);
       render("reflow");
       if (st.projects.length === 0) maybeOfferMigration();
+      if (st.projects.length > 0) loadRiver(); else st.river.notes = [];
     } catch (e) {
       st.error = String(e);
       clearTimeout(skelTimer);
@@ -135,6 +149,47 @@
     mountWizard(plan);
   }
 
+  // ── 跨项目全量记录（W4：河流 / 时间线视图 / Bento 共用）────────────────
+  // 零新增 Rust——W2 的 project_list + project_notes 已够用；后端 ProjectNote
+  // 的 month_key() = occurred_at 前 7 位，前端同口径 slice(0, 7) 归月。
+  // gen 计数防竞态：任务池重读作废在途结果，旧回包不落地、不渲染。
+  async function loadRiver() {
+    if (st.river.loading || !st.loaded || !st.projects || !st.projects.length) return;
+    st.river.loading = true; st.river.error = null;
+    const gen = ++st.river.gen;
+    try {
+      const lists = await Promise.all(st.projects.map((d) =>
+        invoke("project_notes", { projectId: d.project.id })
+          .then((r) => (r.notes || []).map((n) => ({ ...n, __p: d.project })))
+          .catch(() => { throw new Error(`读取项目「${d.project.name}」的过程记录失败`); })
+      ));
+      if (gen !== st.river.gen) return;
+      const notes = lists.flat()
+        .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)));
+      st.river.notes = notes;
+      st.river.atts = {};
+      render("reflow");
+      // 附件缩略后台补齐：部分失败不阻断河流渲染（§6.2 部分失败不阻断）
+      const need = notes.filter((n) => n.attachment_count > 0);
+      if (need.length) {
+        await Promise.all(need.map(async (n) => {
+          try {
+            const r = await invoke("project_attachments", { noteId: n.id });
+            st.river.atts[n.id] = r.attachments || [];
+          } catch { st.river.atts[n.id] = null; }
+        }));
+        if (gen !== st.river.gen) return;
+        render("reflow");
+      }
+    } catch (e) {
+      if (gen !== st.river.gen) return;
+      st.river.error = String(e && e.message ? e.message : e);
+      render("reflow");
+    } finally {
+      if (gen === st.river.gen) st.river.loading = false;
+    }
+  }
+
   // ── 视图（app.js 的 viewProject 只调这里） ──────────────────────────────
   PV.view = function view() {
     const head = `
@@ -148,8 +203,16 @@
     if (st.error) return head + errCard(st.error);
     if (st.projects === null) return head + (st.skeleton ? skeleton() : `<div class="pv-list" style="min-height:120px"></div>`);
     if (st.projects.length === 0) return head + emptyCard();
-    return head + filterBar() + `<div class="pv-list">${rows()}</div>`;
+    // §3.1 三段式：标题行 → Bento 摘要带 → 分段控件三视图（全年河流默认）
+    return head + bento() + segBar() + subBody();
   };
+
+  /** §3.1 分段控件之后的视图主体：river（河流，默认）/ list（既有列表）/ timeline。 */
+  function subBody() {
+    if (st.sub === "list") return filterBar() + `<div class="pv-list">${rows()}</div>`;
+    if (st.sub === "timeline") return tlView();
+    return riverView();
+  }
 
   const errCard = (msg) => `
     <div class="pv-err">
@@ -166,15 +229,24 @@
       <div class="pv-skel"></div><div class="pv-skel"></div><div class="pv-skel"></div>
     </div>`;
 
-  /** §3.1 真零空态（文案逐字取自规格；不显示示例项目、不显示 0 项统计卡）。 */
+  /** §3.1 真零空态（文案逐字取自规格；不显示示例项目、不显示 0 项统计卡）。
+   *  W4 增补 §5.3「河流未起」三步引导与尾注——河流不预置任何月份节点，
+   *  首笔真实记录落库后自动生长当月节点 + 动作卡。 */
   const emptyCard = () => `
     <div class="pv-empty">
       <h3>从零开始，先建一条任务</h3>
       <p>任务库为空。新建一条任务、记一次过程记录，全年河流、待办与提醒都会随真实操作长出来；网点与情报可在对应版块恢复采集快照。</p>
+      <div class="pv-steps">
+        <span class="pv-steps-title">河流未起</span>
+        <div class="pv-step"><b>01</b><span><i>新建任务</i>给项目一个名字、阶段与计划日期</span></div>
+        <div class="pv-step"><b>02</b><span><i>记录过程动作</i>时间、地点、内容、照片与附件</span></div>
+        <div class="pv-step"><b>03</b><span><i>河流自动归月</i>月份节点、当月小结与卷首语同步更新</span></div>
+      </div>
       <div class="pv-empty-acts">
         <button class="btn" id="pv-new">新建任务</button>
         <button class="btn btn--ghost" id="pv-go-intel">先建情报项目</button>
       </div>
+      <p class="rv-note">每一次保存的过程记录，都会成为河上的一张卡片；没有照片就不显示照片位。</p>
     </div>`;
 
   /** §3.1 筛选条：状态 + 地区 + 关键词。**不含板块维度**（6 板块口径已退役）。 */
@@ -233,9 +305,221 @@
     }).join("");
   }
 
+  // ── Bento 摘要带（§3.1 三段式第二段；卷首语规格见 §5.3）──────────────────
+  // 卷首语是叙述不是考核（§5.3「不要做成 KPI 墙」）：数字全部真实统计，
+  // 无数据时不出现在句中（不写「0 次」，§5.3）。
+  // 三栏口径取舍：§3.1 实测为网点/舆情/待办（跨版块数据源），§5.3 实测为
+  // 动作数/活跃项目/带照片记录（本版块内聚合）。W4 采用 §5.3 口径——任务版块
+  // Bento 不耦合监控/情报/待办的数据读取；§3.1 跨版块三栏待定夺，PR 说明有标注。
+  function bento() {
+    const rn = st.river.notes;
+    if (rn === null) return `<div class="pv-bento"><div class="pv-skel pv-skel--lead"></div></div>`;
+    const months = [...new Set(rn.map((n) => String(n.occurred_at).slice(0, 7)))];
+    const activeProjects = [...new Set(rn.map((n) => n.__p.id))].length;
+    const withAtt = rn.filter((n) => n.attachment_count > 0);
+    const attsPending = withAtt.some((n) => !Object.prototype.hasOwnProperty.call(st.river.atts, n.id));
+    const photoCount = rn.filter((n) => (st.river.atts[n.id] || []).some((a) => isImgExt(a.ext))).length;
+    const now = new Date();
+    const curMonth = `${now.getFullYear()} 年 ${now.getMonth() + 1} 月`;
+    // 无数据时不出现在句中（§5.3）：0 动作 → 句子整句不渲染；0 个月 → 只留「当前 N 月」
+    const sentence = rn.length ? `河流记录了 ${rn.length} 个动作，流经 ${activeProjects} 个项目` : "";
+    const meta = [
+      months.length ? `${months.length} 个月有动作` : "",
+      `当前 ${curMonth}`,
+    ].filter(Boolean).join(" · ");
+    const cards = rn.length ? `
+      <div class="pv-bento-cards">
+        <div class="pv-bento-card"><span>动作数</span><b>${rn.length}</b></div>
+        <div class="pv-bento-card"><span>活跃项目</span><b>${activeProjects}</b></div>
+        <div class="pv-bento-card"><span>带照片记录</span><b>${attsPending ? "…" : String(photoCount)}</b></div>
+      </div>` : ""; // §6.1 铁律②：真零空态统计卡整块隐藏
+    return `
+      <div class="pv-bento">
+        <div class="pv-bento-lead">
+          <span class="pv-bento-kicker">全年总览 · 纵向时间河流</span>
+          <h3 class="pv-bento-title">把这一年的动作，按月摊开。</h3>
+          ${sentence ? `<p class="pv-bento-line">${sentence}</p>` : ""}
+          <span class="pv-bento-meta">${meta}</span>
+        </div>
+        ${cards}
+      </div>`;
+  }
+
+  // ── 分段控件（§3.1 实测顺序与默认：全年河流（默认）/ 列表 / 时间线）────
+  //    切换只改渲染面，不改数据、不改任务池。
+  function segBar() {
+    const seg = (key, zh) => `<button class="pv-seg-btn${st.sub === key ? " is-on" : ""}" data-sub="${key}" role="tab" aria-selected="${st.sub === key}">${zh}</button>`;
+    return `<div class="pv-seg" role="tablist">${seg("river", "全年河流")}${seg("list", "列表")}${seg("timeline", "时间线")}</div>`;
+  }
+
+  // ── 全年总览 · 纵向时间河流（§5.3 第 14 轮口径）────────────────────────
+  // 三态不降级（§6.1 铁律③）：读取失败 ≠ 河流未起/等待——错误卡有重试与诊断，
+  // 永远不把读取失败伪装成「还没有记录」。
+  function riverView() {
+    if (st.river.error) return `
+      <div class="pv-err">
+        <h3>读取全年记录失败</h3>
+        <p class="pv-err-code">${esc(st.river.error).slice(0, 200)}</p>
+        <div class="pv-err-acts">
+          <button class="btn" id="pv-rv-retry">重试</button>
+          <button class="btn btn--ghost pv-go-diag">查看诊断</button>
+        </div>
+      </div>`;
+    const rn = st.river.notes;
+    if (rn === null) return riverSkeleton();
+    if (!rn.length) return riverWaitCard();
+    return riverStream(rn);
+  }
+
+  // §5.3 加载态：河流主干骨架（竖向渐变灰带）+ 2 个月份节点骨架（卷首语灰条由 bento() 渲染）
+  const riverSkeleton = () => `
+    <div class="rv-skel" aria-busy="true">
+      <span class="rv-skel-trunk" aria-hidden="true"></span>
+      <div class="rv-skel-node"></div>
+      <div class="rv-skel-node"></div>
+    </div>`;
+
+  // §5.3「有任务无记录」态（文案逐字）：不显示空月份节点；卷首语位置由 bento() 以真实统计呈现
+  function riverWaitCard() {
+    return `
+      <div class="pv-empty">
+        <h3>河流等待第一笔动作</h3>
+        <p>已有 ${st.projects.length} 个项目建档，还没有过程动作。打开任务，记下本次联系、现场勘查或作业完成，河流会从那个月自然生长。</p>
+        <div class="pv-empty-acts">
+          <button class="btn" id="pv-river-record">打开任务记过程</button>
+          <button class="btn btn--ghost" id="pv-new-again">再建一条任务</button>
+        </div>
+        <p class="rv-note">每一次保存的过程记录，都会成为河上的一张卡片；没有照片就不显示照片位。</p>
+      </div>`;
+  }
+
+  /** 河流主体：月份一律由真实记录归月生长（§5.3 生长规则）——不预置、不铺满
+   *  12 个月、不回填 RIVER_START 之前的空月份节点；补录更早日期的记录按真实
+   *  归月自然出现在起点之上（§7.4 不裁剪不虚构）。 */
+  function riverStream(rn) {
+    const months = new Map();
+    rn.forEach((n) => {
+      const k = String(n.occurred_at).slice(0, 7);
+      if (!months.has(k)) months.set(k, []);
+      months.get(k).push(n);
+    });
+    const keys = [...months.keys()].sort(); // 时间正序：最早的月份在上
+    return `
+      <div class="rv-river">
+        <span class="rv-trunk" aria-hidden="true"></span>
+        ${keys.map((k) => riverMonth(k, months.get(k))).join("")}
+      </div>`;
+  }
+
+  const monthZh = (k) => {
+    const [y, m] = k.split("-");
+    return `${Number(y)} 年 ${Number(m)} 月`;
+  };
+
+  /** 月份节点 + 当月小结。小结由系统按当月记录自动拼接（2026-11-24 拍板：
+   *  不建子表），句式「N 个动作 · 活跃项目 P1 / P2 / P3（等 N 个）」（§5.3 实测）。 */
+  function riverMonth(k, items) {
+    const names = [...new Set(items.map((n) => n.__p.name))];
+    const namesZh = names.length <= 3
+      ? names.map((x) => esc(x)).join(" / ")
+      : `${names.slice(0, 3).map((x) => esc(x)).join(" / ")}（等 ${names.length} 个）`;
+    return `
+      <section class="rv-month">
+        <div class="rv-node">
+          <span class="rv-dot" aria-hidden="true"></span>
+          <div class="rv-node-txt">
+            <b>${monthZh(k)}</b>
+            <span>${items.length} 个动作 · 活跃项目 ${namesZh}</span>
+          </div>
+        </div>
+        <div class="rv-cards">${items.map(riverCard).join("")}</div>
+      </section>`;
+  }
+
+  /** 动作卡六要素（§5.3 实测）：日期 mono 宝蓝 / 项目名 13.5px·500（点击=
+   *  项目详情）/ 摘要 ≤2 行截断 / meta 行（地点 · 照片 N · 附件 N 逐项有才显示）/
+   *  58×42 缩略超出计数（无图不留灰框）/ 附件数仅 >0 显示。
+   *  整卡点击穿透到该记录的详情（§2.3 档③；记录详情=抽屉内滚到该记录）。 */
+  function riverCard(n) {
+    const list = st.river.atts[n.id];
+    const imgs = Array.isArray(list) ? list.filter((a) => isImgExt(a.ext)) : [];
+    const files = Array.isArray(list) ? list.filter((a) => !isImgExt(a.ext)) : [];
+    const t = timePart(n.occurred_at);
+    const meta = [
+      n.place ? esc(n.place) : "",
+      imgs.length ? `照片 ${imgs.length}` : "",
+      files.length ? `附件 ${files.length}` : "",
+    ].filter(Boolean).join(" · ");
+    const shown = imgs.slice(0, 6);
+    const more = imgs.length - shown.length;
+    const thumbs = shown.map((a) => {
+      const src = attSrc(a, dataDirCache);
+      return src
+        ? `<img class="rv-thumb" data-view="${esc(a.id)}" src="${esc(src)}" alt="${esc(a.file_name)}"
+             onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'rv-thumb rv-thumb--miss',textContent:'缺失'}))">`
+        : `<span class="rv-thumb rv-thumb--miss">缺失</span>`;
+    }).join("");
+    return `
+      <article class="rv-card" data-id="${esc(n.__p.id)}" data-note="${esc(n.id)}" role="button" tabindex="0">
+        <time class="rv-date">${esc(datePart(n.occurred_at))}${t ? " " + esc(t) : ""}</time>
+        <h4 class="rv-proj" data-id="${esc(n.__p.id)}">${esc(n.__p.name)}</h4>
+        ${n.body ? `<p class="rv-body">${esc(n.body)}</p>` : ""}
+        ${meta ? `<p class="rv-meta">${meta}</p>` : ""}
+        ${thumbs ? `<div class="rv-thumbs">${thumbs}${more > 0 ? `<span class="rv-thumb rv-thumb--more">+${more}</span>` : ""}</div>` : ""}
+      </article>`;
+  }
+
+  // ── 时间线视图（§5.2：三视图之三，范围=单个项目）───────────────────────
+  //    头部：项目选择 + 「项目名 · N 条」（§5.2 对比表：项目名 + 记录数）。
+  function tlView() {
+    const rn = st.river.notes;
+    if (rn === null) return riverSkeleton();
+    if (!st.projects.some((d) => d.project.id === st.tl.projectId)) {
+      const cand = st.projects.find((d) => d.note_count > 0) || st.projects[0];
+      st.tl.projectId = cand.project.id; // 默认选有记录的项目（ProjectDigest.note_count）
+    }
+    const cur = st.projects.find((d) => d.project.id === st.tl.projectId);
+    const opts = st.projects.map((d) => `<option value="${esc(d.project.id)}"${d.project.id === st.tl.projectId ? " selected" : ""}>${esc(d.project.name)}</option>`).join("");
+    const notes = rn.filter((n) => n.__p.id === st.tl.projectId);
+    const head = `
+      <div class="pv-tl-head">
+        <select class="pv-f" id="pv-tl-proj" aria-label="时间线项目">${opts}</select>
+        ${notes.length ? `<span class="mini">${esc(cur.project.name)} · ${notes.length} 条</span>` : ""}
+      </div>`;
+    if (!notes.length) return head + `
+      <div class="pv-empty">
+        <h3>时间线还没有记录</h3>
+        <p>该项目还没有过程动作。记下第一次联系或现场勘查，时间线会从这里开始。</p>
+        <div class="pv-empty-acts"><button class="btn" id="pv-tl-record">记录过程</button></div>
+      </div>`;
+    return head + tlFolded(notes, st.river.atts, null);
+  }
+
+  /** §5.2：本地数据一次读完；超过 TL_FOLD_LIMIT(200) 条按月折叠——当月展开、
+   *  往月折叠，折叠头「月份 · N 条」。≤200 条整列渲染（与 W3 抽屉时间线同构）。 */
+  function tlFolded(notes, atts, highlightId) {
+    if (notes.length <= TL_FOLD_LIMIT) return timeLine(notes, atts, highlightId);
+    const curKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+    const groups = new Map();
+    notes.forEach((n) => {
+      const k = String(n.occurred_at).slice(0, 7);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(n);
+    });
+    return [...groups.keys()].sort().reverse().map((k) => {
+      const items = groups.get(k);
+      const hasHl = highlightId && items.some((n) => n.id === highlightId);
+      return `<details class="pv-tl-fold"${k === curKey || hasHl ? " open" : ""}>
+        <summary>${monthZh(k)} · ${items.length} 条</summary>
+        ${timeLine(items, atts, highlightId)}
+      </details>`;
+    }).join("");
+  }
+
   // ── 事件绑定（app.js 的 bindView project 分支只调这里） ─────────────────
   PV.bind = function bind() {
     if (!st.loaded && !st.loading) load();
+    if (st.loaded && st.river.notes === null && !st.river.loading && !st.river.error) loadRiver();
     $("#pv-new")?.addEventListener("click", () => openNewTask());
     $("#pv-go-intel")?.addEventListener("click", () => gotoView("intel"));
     $("#pv-retry")?.addEventListener("click", () => { st.error = null; st.loaded = false; load(); });
@@ -260,6 +544,28 @@
     });
     // 关联计数徽标可点（§3.1：点开同一抽屉）
     $all(".pv-count").forEach((b) => b.addEventListener("click", () => openDrawer(b.dataset.id)));
+    // §3.1 分段控件：三视图切换只改渲染面（不改数据、不改任务池）
+    $all(".pv-seg-btn").forEach((b) => b.addEventListener("click", () => {
+      if (st.sub !== b.dataset.sub) { st.sub = b.dataset.sub; render("reflow"); }
+    }));
+    // §5.3 河流：错误重试只重取聚合（读取失败 ≠ 空态）；空态引导按钮
+    $("#pv-rv-retry")?.addEventListener("click", () => { st.river.error = null; st.river.notes = null; loadRiver(); });
+    $("#pv-river-record")?.addEventListener("click", () => openNoteModal({ mode: "note" }));
+    $("#pv-new-again")?.addEventListener("click", () => openNewTask());
+    // §5.2 时间线视图：项目切换与「记录过程」
+    $("#pv-tl-proj")?.addEventListener("change", (e) => { st.tl.projectId = e.target.value; render("reflow"); });
+    $("#pv-tl-record")?.addEventListener("click", () => openNoteModal({ mode: "note", projectId: st.tl.projectId }));
+    // §5.3 动作卡：整卡点开穿透到该记录的详情（抽屉滚到该记录）；
+    // 项目名单独点开 = 项目详情；缩略点击走图片预览层（下方全局 handler）。
+    $all(".rv-card").forEach((el) => {
+      const openNote = () => openDrawer(el.dataset.id).then(() => updateDrawer(el.dataset.note));
+      el.addEventListener("click", (e) => {
+        if (e.target.closest(".rv-thumb")) return;
+        if (e.target.closest(".rv-proj")) { openDrawer(el.dataset.id); return; }
+        openNote();
+      });
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openNote(); } });
+    });
   };
 
   /** app.js render() 每帧调用：切走任务版块时拆除本模块浮层（reflow 同视图不拆）。 */
@@ -348,7 +654,7 @@
     const notesHtml = !d.notes.length
       ? `<div class="pv-none">还没有过程记录</div>
          <div class="pv-none-act"><button class="btn btn--sm" id="pv-record-first">记录第一次动作</button></div>`
-      : timeLine(d.notes, d.atts, highlightId);
+      : tlFolded(d.notes, d.atts, highlightId);
     el.innerHTML = `
       <header class="pv-drawer-head">
         <span class="pv-badge pv-badge--${esc(p.stage)}">${esc(STAGE_ZH[p.stage] || p.stage)}</span>
@@ -809,6 +1115,18 @@
     const t = e.target.closest(".pv-tl-thumbs .pv-thumb[data-view]");
     if (!t || !st.drawer) return;
     const list = st.drawer.atts?.[t.closest(".pv-tl-item")?.dataset.note] || [];
+    const imgs = list.filter((a) => isImgExt(a.ext) && attSrc(a, dataDirCache));
+    const idx = imgs.findIndex((a) => a.id === t.dataset.view);
+    if (idx >= 0) openViewer(imgs, idx);
+  });
+
+  // 河流动作卡缩略点击 → 预览层（§5.3；与抽屉时间线同一预览层，不重复造轮子）
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest(".rv-thumbs .rv-thumb[data-view]");
+    if (!t) return;
+    const card = t.closest(".rv-card");
+    const list = card ? st.river.atts?.[card.dataset.note] : null;
+    if (!Array.isArray(list)) return;
     const imgs = list.filter((a) => isImgExt(a.ext) && attSrc(a, dataDirCache));
     const idx = imgs.findIndex((a) => a.id === t.dataset.view);
     if (idx >= 0) openViewer(imgs, idx);
