@@ -735,7 +735,9 @@ mod tests {
     fn migration_v6_applied_and_target_bumped() {
         let store = tmp_store("mig");
         assert_eq!(store.schema_version(), TARGET_SCHEMA_VERSION);
-        assert_eq!(TARGET_SCHEMA_VERSION, 6, "基线 b645562 已到 v5，手动建档从 v6 起");
+        // 不钉死具体数字：v3.4.0 起目标版本由 6 升到 7（新增 0007_project_track）。
+        // 本测试要守的是「v6 已应用且版本不再停在 v5」，钉死 6 会把它绑成版本号回归器。
+        assert!(TARGET_SCHEMA_VERSION >= 6, "基线 b645562 已到 v5，手动建档从 v6 起");
         // 三张表都在
         let conn = store.conn();
         for t in ["manual_project", "manual_link", "manual_merge_audit"] {

@@ -17,7 +17,9 @@ use rusqlite::{params, Connection, OpenFlags};
 // ───────────────────────────── 常量与类型 ─────────────────────────────
 
 /// 构建时嵌入的目标 schema 版本（架构 §4.8）。
-pub const TARGET_SCHEMA_VERSION: i64 = 6;
+/// v3.4.0 由 6 递增到 7（新增 `0007_project_track`）。回滚到 v3.3.1 时旧程序会
+/// 以 `SchemaTooNew` 拒绝打开已升到 v7 的库，故回滚必须同时还原迁移前的 L2 备份（架构 §5.3）。
+pub const TARGET_SCHEMA_VERSION: i64 = 7;
 
 /// L1 写前快照保留份数。
 pub const L1_KEEP: usize = 20;
@@ -563,6 +565,87 @@ CREATE TABLE IF NOT EXISTS manual_merge_audit (
 CREATE INDEX IF NOT EXISTS idx_manual_audit_manual ON manual_merge_audit(manual_id, at);
 "#;
 
+/// 迁移 v7（v3.4.0 项目跟踪过程数据模型，架构 §3.2）。
+///
+/// 三张表的分工刻意分开（过程记录是时间线的**唯一事实源**）：
+/// - `project`：项目本体。`stage` 存短码，中文标签由界面映射；
+///   `fiscal_year` 与 `work_item` 同口径，年度总览按 occurrence 归月而不按它硬分桶。
+/// - `project_note`：过程记录。`occurred_at`（发生时间）与 `created_at`（录入时间）
+///   **必须分开**——补录昨天的拜访今天录入，时间线要落在昨天；用 created_at 排序
+///   会让历史错位，这是过程记录类产品的经典塌方点。
+/// - `project_attachment`：附件。挂在过程记录上而非项目上；`sha256` 是内容指纹，
+///   同图跨记录重复上传可直接复用同一份落盘文件（跨记录去重回收，W2 落点）。
+///
+/// `work_item.project_id` 只增列、不动既有列（`DEFAULT ''` 表示未归档到项目）。
+/// `board_code` 是 NOT NULL 外键，退役 6 板块后新写入统一填占位值 `'prj'`，
+/// 故这里补一行 `domain_board('prj')` 让外键有合法引用；**旧行 board_code 原样保留**，
+/// 不改写存量数据（架构 §5.1-2）。
+///
+/// 只增不改：0001–0006 一律不动（架构 §4.8-5），本脚本只 CREATE TABLE / INDEX / ADD COLUMN。
+const SCHEMA_V7: &str = r#"
+CREATE TABLE IF NOT EXISTS project (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    client          TEXT,
+    area            TEXT,
+    stage           TEXT NOT NULL DEFAULT 'planned',
+    owner           TEXT,
+    summary         TEXT,
+    start_date      TEXT,
+    expect_end_date TEXT,
+    fiscal_year     INTEGER NOT NULL,
+    ext_json        TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT,
+    updated_at      TEXT,
+    updated_by      TEXT,
+    deleted_at      TEXT,
+    archived_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_project_year  ON project(fiscal_year, stage);
+CREATE INDEX IF NOT EXISTS idx_project_owner ON project(owner);
+
+CREATE TABLE IF NOT EXISTS project_note (
+    id               TEXT PRIMARY KEY,
+    project_id       TEXT NOT NULL REFERENCES project(id),
+    work_item_id     TEXT REFERENCES work_item(id),
+    occurred_at      TEXT NOT NULL,
+    title            TEXT,
+    body             TEXT,
+    place            TEXT,
+    kind             TEXT NOT NULL DEFAULT 'note',
+    attachment_count INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT,
+    updated_at       TEXT,
+    updated_by       TEXT,
+    deleted_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_note_project_time ON project_note(project_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_note_time         ON project_note(occurred_at);
+
+CREATE TABLE IF NOT EXISTS project_attachment (
+    id           TEXT PRIMARY KEY,
+    note_id      TEXT NOT NULL REFERENCES project_note(id),
+    file_name    TEXT NOT NULL,
+    ext          TEXT,
+    mime         TEXT,
+    sha256       TEXT NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    storage_path TEXT NOT NULL,
+    sort_no      INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT,
+    updated_by   TEXT,
+    deleted_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_patt_note ON project_attachment(note_id, sort_no);
+CREATE INDEX IF NOT EXISTS idx_patt_sha  ON project_attachment(sha256);
+
+ALTER TABLE work_item ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_item_project ON work_item(project_id);
+
+INSERT OR IGNORE INTO domain_board (code, zh_name, sheet_name)
+VALUES ('prj', '项目跟踪', '项目跟踪');
+"#;
+
 /// 迁移清单。**已发布的脚本永不修改**（架构 §4.8-5）。
 pub fn migrations() -> Vec<Migration> {
     vec![
@@ -572,6 +655,7 @@ pub fn migrations() -> Vec<Migration> {
         Migration { version: 4, name: "0004_intel_stage", sql: SCHEMA_V4 },
         Migration { version: 5, name: "0005_collab_f5", sql: SCHEMA_V5 },
         Migration { version: 6, name: "0006_intel_manual", sql: SCHEMA_V6 },
+        Migration { version: 7, name: "0007_project_track", sql: SCHEMA_V7 },
     ]
 }
 
