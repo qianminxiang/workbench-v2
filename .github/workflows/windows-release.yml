@@ -5,7 +5,11 @@ name: windows-release
 # 「体积红线实测」就无法产出。手动触发让有仓库的环境可以随时按需出包。
 on:
   push:
-    tags: ['v*']
+    # v3.4.0（质检 B3）：tag 过滤加一条排除 `!v*-rc*`，把**预发 tag**让给 pre-release-gate.yml。
+    # 正式 tag（v3.4.0 / v2.2.4 …）匹配 'v*' 且不匹配 'v*-rc*'，发布链行为一字未改；
+    # 预发 tag（v3.4.0-rc1 …）只匹配排除项 ⇒ 不再触发本文件，避免预发门禁误烧一次
+    # Windows 构建、甚至误建一个 Release。合入门禁口径见 pre-release-gate.yml 头注释。
+    tags: ['v*', '!v*-rc*']
   workflow_dispatch:
 
 # v2.1（2026-10-27）：tag 发布步要创建 GitHub Release（挂 latest.json / 安装包 / .sig），

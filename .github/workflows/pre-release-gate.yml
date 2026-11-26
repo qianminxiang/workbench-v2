@@ -1,0 +1,150 @@
+name: pre-release-gate
+
+# ══════════════════════════════════════════════════════════════════════════
+# 预发门禁（质检 B3 的执行载体）—— 本文件就是「PR 级 CI」的等效替代
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 一、这条门禁在流程里的位置（只看本段即可复述口径）
+#
+#   合入前：九个 PR 各自 PR 上**没有** CI 结论（本仓无 pull_request 触发器）。
+#   合入后：v3.4 链每合完一个头，打一个预发 tag `v3.4.0-rcN`（N 递增），
+#           由本 workflow 跑 test-core 全套；**绿了才允许打正式 tag `v3.4.0`**。
+#   出包：  正式 tag `v3.4.0` 仍由 windows-release.yml 走既有完整发布链
+#           （test-core → Windows 构建 → 体积/内存红线 → 单实例 → Release）。
+#
+#   一句话：预发 tag = 合入门禁；正式 tag = 出包。两者不是同一条流水线，
+#          预发 tag 不产出任何 Release 资产（本文件 permissions 只读，
+#          结构上就没有发布能力）。
+#
+#
+# 二、为什么用「预发 tag」而不是「pull_request 触发器」（方案取舍，已拍板）
+#
+#   加 `pull_request` 触发器看似更贴近 PR，但需要：① 一个能读该私有仓库状态、
+#   且能写 checks 的令牌面；② fork PR 还要额外处理 secrets 泄露面。
+#   本仓的推送通道是**借来的**凭据（不在维护方名下），把 token 面扩大到 PR
+#   事件上等于把借来的权限再借一层。
+#   预发 tag 走的是**推送通道本身已有的权限**（push tag 与 push branch 同源），
+#   **零新增授权面**；同时天然产出 B3 需的编译/单测留痕。
+#   一个载体同时关 B3（门禁无执行载体）与 H3（九头无编译证据）。
+#
+#
+# 三、覆盖口径（诚实声明）
+#
+#   · 本 workflow 跑的是**合并后的树**，不是逐 PR 头。取舍：
+#       逐头跑 = 9 次全量 cargo 编译（每次 5–9 分钟冷启动，串行等待与 runner
+#                额度都翻 9 倍），且每个头单独打 tag、单独留一份日志；
+#       合并树跑 = 1 次，覆盖「这些改动叠在一起之后到底能不能编译、单测过不过」，
+#                这恰恰是出包真正需要的结论（逐头通过 ≠ 合并后通过）。
+#     按工作伙伴认可的「等效门禁」口径执行：以**合并树**为验收对象。
+#     若后续要逐头证据，对每个头单独打 `v3.4.0-rcN-<head>` 即可复用本 workflow。
+#
+#   · 本 workflow 两个 job 合起来与 windows-release.yml 的 test-core **逐步等价**
+#     （同一命令、同一 --locked / --no-fail-fast / 目录通配 / npm ci / guard-gate 口径）。
+#     拆成两个 job 是刻意的：`gate-rust` 的绿/红只反映 Rust 侧，
+#     前端赤侧不会淹没 cargo 日志（反之亦然）。
+#
+#   · **境外 runner 不承载活站断言**：W9 金丝雀的活站三例（六安/宿州/滁州）要真实
+#     POST 境内政府站，GitHub 美国 runner 物理不可达（ETIMEDOUT，rc2 run 45542868385
+#     实证）。本 job 显式设 SKIP_LIVE=1 跳过这三例——**已知取舍，非验证通过**：
+#     活站三例由境内环境跑（本地对 apps/desktop 目录跑测试、不设 SKIP_LIVE，
+#     默认即含活站）。guard-gate.cjs 只容忍「SKIP_LIVE=1 且恰 3 条活站 skip」
+#     这一种组合，其余任何跳过仍判红，防洗绿。
+#     同一命令必须固定 `--test-reporter=tap`：runner 上 node --test 默认出 spec
+#     风格（无 `# tests` 汇总行），guard-gate 的 TAP 判据会误判（rc2 实证）。
+#
+#
+# 四、与正式发布路径的隔离（防误发布）
+#
+#   windows-release.yml 的 tag 过滤改为 `['v*', '!v*-rc*']`：
+#   正式 tag（`v3.4.0`、`v2.2.4` …）照原样触发发布链，行为一字未改；
+#   预发 tag（`v3.4.0-rc1` …）被排除，**不会**触发 Windows 构建、**不会**创建 Release。
+#   本 workflow 只读、只跑测试，不产物、不上传资产。
+#
+# ══════════════════════════════════════════════════════════════════════════
+
+on:
+  push:
+    # 预发 tag 命名：`v3.4.0-rc1`、`v3.4.0-rc2` …（`v<版本>-rc<N>`）
+    # 只在 rc 前缀上触发；正式 tag 由 windows-release.yml 独占（本文件不响应）。
+    tags: ['v*-rc*']
+  # 手动重跑：修掉上游阻断项后，不必重新打 tag 就能复验同一棵树。
+  # 这条不改变 tag 触发路径，只补一个「重跑」入口。
+  workflow_dispatch:
+
+# 只读：本 workflow 的结构性承诺是「跑测试、留日志，不产出、不发布」。
+# 不申请 contents: write，权限上就没有创建/修改 Release 的能力。
+permissions:
+  contents: read
+
+jobs:
+  # ── 门禁 A：Rust 编译 + 单测（H3 的编译证据载体、H4 用例的落点）──────────
+  gate-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 多包调用必须带 --no-fail-fast：cargo 默认 fail-fast 以**测试目标**为单位短路，
+      # 前一个包一红，后一个包根本不执行，日志里只出现一条 test result，
+      # 却极易被读成「两个包都验过」（门禁强度没变，被削的是红侧诊断信息）。
+      # 与本步等价的那行在 windows-release.yml test-core 的「核心单测」步。
+      - name: 核心单测（wb-core + wbd）
+        # tee 落一份日志再上传 artifact：CI 网页日志会随 run 过期，
+        # artifact 是可下载、可长期取证的原始文本（H3/H4 留痕就靠它）。
+        run: |
+          set -o pipefail
+          cargo test -p wb-core -p wbd --locked --no-fail-fast 2>&1 | tee cargo-test.log
+
+      # 留痕：即使本步红了也传，红侧日志同样要取证（门禁判红时最需要的正是原始日志）。
+      - name: 上传门禁日志（含红侧，供取证）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-rust-logs-${{ github.ref_name }}
+          path: cargo-test.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  # ── 门禁 B：前端守卫 + 服务端 e2e（test-core 的其余两步）─────────────────
+  gate-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与正式链同一步：jsdom 是渲染级守卫的测试期依赖（不参与打包）。
+      - name: 前端守卫依赖（apps/desktop，jsdom 供渲染级断言）
+        run: npm ci --prefix apps/desktop --no-audit --no-fund
+
+      # 与正式链同一口径：目录通配 + guard-gate 汇总闸门（跳过数≠0 / 有失败 / 空集 任一即红；
+      # SKIP_LIVE=1 时唯一容忍恰 3 条活站实测跳过，其余跳过仍红）。
+      # --test-reporter=tap 必须：runner 上默认是 spec 风格无汇总行，guard-gate 会误判。
+      - name: 前端守卫单测（node --test，目录通配）
+        # SKIP_LIVE=1 显式写在 env：可见可审计（追加验收要求），本 step 内
+        # node --test 与 guard-gate.cjs 都继承它，两者判据联动。
+        env:
+          SKIP_LIVE: '1'
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap apps/desktop/*.test.cjs | tee frontend-guards.tap && rc=0 || rc=$?
+          if ! node apps/desktop/scripts/guard-gate.cjs frontend-guards.tap; then
+            exit 1
+          fi
+          exit $rc
+
+      # 硬门：测试失败即构建失败。不得写成 `npm test || echo ...`——那会把失败吞掉。
+      - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
+        run: |
+          set -o pipefail
+          node -v
+          npm --prefix server test 2>&1 | tee server-e2e.log
+
+      - name: 上传门禁日志（含红侧，供取证）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-guards-logs-${{ github.ref_name }}
+          path: |
+            frontend-guards.tap
+            server-e2e.log
+          retention-days: 90
+          if-no-files-found: warn
