@@ -16,6 +16,7 @@ pub mod lead_dedup;
 pub mod local_time;
 pub mod model;
 pub mod pct;
+pub mod project;
 pub mod repo;
 pub mod rules;
 pub mod sfx;

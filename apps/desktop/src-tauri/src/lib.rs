@@ -1104,6 +1104,170 @@ struct SubsidyFilterArg {
 
 /// 补贴明细一键导出：**按当前筛选条件全量导出，不是只导当前页**（本功能的定义）。
 /// 前端把视图当前筛选序列化成 filters 传入；引擎对整个 CSV 应用筛选后写出 xlsx / csv。
+// ─────────── v3.4.0 项目跟踪（W2 数据层命令） ───────────
+//
+// 壳层只做参数整形与错误转字符串，全部逻辑在 `wb_core::project`，
+// 与 wbd CLI / 测试走同一批函数（避免三处各写一套校验）。
+
+#[tauri::command]
+fn project_list(paths: State<Mutex<AppPaths>>, year: i32, include_archived: Option<bool>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let rows = wb_core::project::list_projects(&store, year, include_archived.unwrap_or(false))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "projects": rows }))
+}
+
+#[tauri::command]
+fn project_get(paths: State<Mutex<AppPaths>>, id: String) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let p = wb_core::project::get_project(&store, id.trim()).map_err(err_string)?;
+    Ok(serde_json::json!({ "project": p }))
+}
+
+#[tauri::command]
+fn project_create(
+    paths: State<Mutex<AppPaths>>,
+    draft: wb_core::project::ProjectDraft,
+    year: i32,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let out = wb_core::project::create_project(&store, &draft, year)
+        .map_err(|e| e.reason())?;
+    Ok(serde_json::json!({ "project": out.project }))
+}
+
+#[tauri::command]
+fn project_update(
+    paths: State<Mutex<AppPaths>>,
+    id: String,
+    draft: wb_core::project::ProjectDraft,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let p = wb_core::project::update_project(&store, id.trim(), &draft, actor.as_deref().unwrap_or("ui"))
+        .map_err(|e| e.reason())?;
+    Ok(serde_json::json!({ "project": p }))
+}
+
+#[tauri::command]
+fn project_delete(paths: State<Mutex<AppPaths>>, id: String, actor: Option<String>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let changed = wb_core::project::soft_delete_project(&store, id.trim(), actor.as_deref().unwrap_or("ui"))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "deleted": changed }))
+}
+
+// ── 过程记录 ──
+
+#[tauri::command]
+fn project_notes(paths: State<Mutex<AppPaths>>, project_id: String) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let notes = wb_core::project::list_notes(&store, project_id.trim()).map_err(err_string)?;
+    Ok(serde_json::json!({ "notes": notes }))
+}
+
+#[tauri::command]
+fn project_note_create(
+    paths: State<Mutex<AppPaths>>,
+    draft: wb_core::project::NoteDraft,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let note = wb_core::project::create_note(&store, &draft, actor.as_deref().unwrap_or("ui"))
+        .map_err(|e| e.reason())?;
+    Ok(serde_json::json!({ "note": note }))
+}
+
+#[tauri::command]
+fn project_note_delete(paths: State<Mutex<AppPaths>>, id: String, actor: Option<String>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let changed = wb_core::project::soft_delete_note(&store, id.trim(), actor.as_deref().unwrap_or("ui"))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "deleted": changed }))
+}
+
+// ── 附件（内容寻址 + sha256 跨记录去重） ──
+
+#[tauri::command]
+fn project_attachments(paths: State<Mutex<AppPaths>>, note_id: String) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let list = wb_core::project::list_attachments(&store, note_id.trim()).map_err(err_string)?;
+    Ok(serde_json::json!({ "attachments": list }))
+}
+
+#[tauri::command]
+fn project_attach(
+    paths: State<Mutex<AppPaths>>,
+    note_id: String,
+    source_path: String,
+    file_name: Option<String>,
+    mime: Option<String>,
+    sort_no: Option<i64>,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let src = std::path::Path::new(source_path.trim());
+    // 未指定展示名时取源文件文件名（保留扩展名，卡片要按扩展名选图标）
+    let name = file_name
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| src.file_name().map(|s| s.to_string_lossy().to_string()))
+        .ok_or_else(|| "无法确定附件文件名".to_string())?;
+    let out = wb_core::project::attach_file(
+        &store,
+        note_id.trim(),
+        src,
+        &name,
+        mime.as_deref().filter(|m| !m.trim().is_empty()),
+        sort_no.unwrap_or(0),
+        actor.as_deref().unwrap_or("ui"),
+    )
+    .map_err(err_string)?;
+    Ok(serde_json::json!({ "attachment": out.attachment, "write": out.write }))
+}
+
+#[tauri::command]
+fn project_reclaim(paths: State<Mutex<AppPaths>>, dry_run: Option<bool>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let ledger = wb_core::project::reclaim_orphan_attachments(&store, dry_run.unwrap_or(true))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "ledger": ledger }))
+}
+
+// ── 存量 work_item 一次性迁移向导（预览 → 确认执行） ──
+
+#[tauri::command]
+fn project_migration_preview(paths: State<Mutex<AppPaths>>) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let plan = wb_core::project::preview_work_item_migration(&store).map_err(err_string)?;
+    Ok(serde_json::json!({ "plan": plan }))
+}
+
+#[tauri::command]
+fn project_migration_run(
+    paths: State<Mutex<AppPaths>>,
+    plan: wb_core::project::MigrationPlan,
+    year: i32,
+    actor: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let paths = paths.lock().unwrap();
+    let store = open_store(&paths)?;
+    let res = wb_core::project::run_work_item_migration(&store, &plan, year, actor.as_deref().unwrap_or("ui"))
+        .map_err(err_string)?;
+    Ok(serde_json::json!({ "result": res }))
+}
+
 #[tauri::command]
 fn subsidy_export(
     from: String,
@@ -1788,6 +1952,20 @@ pub fn run() {
             assign_owner,
             pending_owner_changes,
             ack_owner_changes,
+            // v3.4.0 项目跟踪（W2）
+            project_list,
+            project_get,
+            project_create,
+            project_update,
+            project_delete,
+            project_notes,
+            project_note_create,
+            project_note_delete,
+            project_attachments,
+            project_attach,
+            project_reclaim,
+            project_migration_preview,
+            project_migration_run,
         ])
         // B7：点关闭 = 最小化到托盘，晨报仍从托盘送达；
         // 只有托盘菜单「退出」才真正退出（退出后的补推靠 last_brief.json）。
