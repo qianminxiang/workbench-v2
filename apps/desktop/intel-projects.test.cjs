@@ -169,9 +169,14 @@ test("v3.3.1 口径：公告清单页删除，源站状态/补贴导出迁入设
   assert.ok(!app.includes("data-ip-mode="), "app.js 不应再有形态切换按钮");
   assert.ok(!mod.includes('data-ip-mode="list"'), "项目进程视图不应再有「公告清单」切换入口");
   assert.ok(!app.includes("data-verdict-key"), "公告卡片人工改判按钮应随清单页删除（项目视图工具条另有 data-ip-mark 入口）");
-  // 源站状态与补贴导出必须迁入设置页，线索转待办保留在项目视图下方
-  assert.ok(app.includes("<b>情报采集（源站状态）</b>"), "设置页必须有「情报采集（源站状态）」节");
-  assert.ok(app.includes("<b>补贴明细导出</b>"), "补贴明细导出必须保留（现位于设置页）");
+  // 源站状态与补贴导出必须迁入设置页，线索转待办保留在项目视图下方。
+  // v3.4.0：设置页改两列卡片布局，节标题从 `<b>` 换成 `.set-card__head` 结构，
+  // 所以判据改成「节标题文本 + 节卡片 data-set 标记」——不钉具体标签形式，
+  // 钉的是「这一节在不在、是不是这一节」。改标签不改归属，钉标签会假红。
+  assert.match(app, /data-set="intel"[\s\S]{0,200}情报采集/,
+    "设置页必须有 ② 情报采集节（源站状态）");
+  assert.match(app, /data-set="subsidy"[\s\S]{0,200}补贴明细导出/,
+    "补贴明细导出必须保留（③ 节，位于设置页）");
   assert.ok(app.includes("<b>线索转待办</b>"), "线索转待办必须保留（现挂项目进程视图下方）");
   assert.match(app, /function viewIntelSites\(\)/, "源站状态表渲染函数必须存在");
   // v3.3.1 弹窗修复回归钉：openModal 必须挂 .ip-scope 容器（挂 body 会脱离

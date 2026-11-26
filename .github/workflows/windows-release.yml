@@ -33,14 +33,34 @@ jobs:
         # 前一个包一红，后一个包根本不执行，日志里只出现一条 test result，
         # 却极易被读成「两个包都验过」（门禁强度没变，被削的是红侧诊断信息）。
         run: cargo test -p wb-core -p wbd --locked --no-fail-fast
-      - name: 前端守卫单测（node --test，零依赖 · 目录通配）
+      # ── 2026-11-25 v3.4.0 质检 B1 修复：前端守卫的 jsdom 依赖 ──
+      # 起因：monitor-tabs / settings-reorg 两条渲染级守卫此前 require 的是
+      # `/home/gem/.aily/.cli/npm/node_modules/jsdom`——沙箱绝对路径，CI runner 上不存在
+      # ⇒ 两个文件整体 `Cannot find module 'jsdom'`，通配一跑就是门禁必红。
+      # 修法：改为标准 `require('jsdom')` + apps/desktop/package.json 与 lock 声明，本步装依赖。
+      # 不采用「没有就跳过」：那样这 10 条渲染级断言（控件真渲染、页签真驱动）会集体失效，
+      # 而跳过路线最容易演变成「全跳过却显示全绿」。依赖缺失时的行为已实测：
+      #   # tests 1 / # pass 0 / # fail 1 / # skipped 0，退出码 1 —— 是硬红，不是静默跳过。
+      - name: 前端守卫依赖（apps/desktop，jsdom 供渲染级断言）
+        run: npm ci --prefix apps/desktop --no-audit --no-fund
+      - name: 前端守卫单测（node --test，目录通配）
         # 2026-11-20 v3.2.0 改：由「点名两个文件」改为「整目录通配」。
         # 原因（挂账项，11-19 教训的同一类缺陷）：点名式写法让目录里其余测试文件
         # 静默漏跑——新增的守卫只要没人记得往这行加名字，就等于测试不存在。
         # 改通配后：apps/desktop/*.test.cjs 全量执行，新增文件自动纳入，无需改本行。
-        # 当前覆盖：brief-coverage（晨报口径）、contrast-tokens（29 项对比度 + 机械风防回归）、
-        #          intel-projects（情报项目进程 v1.2 规格条款）。
-        run: node --test apps/desktop/*.test.cjs
+        # 2026-11-25 补：TAP 汇总由 guard-gate.cjs 判——跳过数 ≠ 0 / 有失败 / 空集 /
+        # 没有汇总行，任一成立即红。被跳过的守卫等于没验，但它会让整轮仍显示 pass，
+        # 是最典型的假绿来源。判据只写一份，两条工作流共用。
+        # node --test 的退出码经 `| tee` 会被 tee 吃掉，故用 pipefail 保真。
+        run: |
+          set -o pipefail
+          # 用 `&& rc=0 || rc=$?` 而不是裸 `$?`：runner 的 bash 带 -e，
+          # 裸写会让测试一红就在这一行退出，后面的汇总判据永远跑不到。
+          node --test apps/desktop/*.test.cjs | tee apps-desktop-guards.tap && rc=0 || rc=$?
+          if ! node apps/desktop/scripts/guard-gate.cjs apps-desktop-guards.tap; then
+            exit 1
+          fi
+          exit $rc
       - name: 服务端 e2e（Node 22 内置 node:sqlite，零 npm 依赖）
         # 硬门：测试失败即构建失败。此前写成 `npm test || echo ...` 会把失败吞掉，
         # 门禁形同虚设——复核方指出的「说全绿但无法复验」有一半源于此。

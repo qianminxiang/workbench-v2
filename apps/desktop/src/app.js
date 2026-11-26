@@ -607,49 +607,96 @@ function viewAdd() {
 // ── 视图：设置 ──
 // v2.1：多端同步入口已移除（用户放弃多端模式，本地功能离线完整可用）。
 // 免打扰 time input 接真实读写（get_prefs/set_prefs → sync_state 键值表）。
+/* ─── v3.4.0 设置版块（W7）─────────────────────────────────────────────
+   布局依据《设计基线落地规范》§4.1 / §3.5：两列网格 1fr 1fr、间距 14px，
+   六节顺序固定 ① 数据 → ② 情报采集 → ③ 补贴明细导出 → ④ 提醒送达 →
+   ⑤ 服务器同步 → ⑥ 更新，之后用分隔线接「账号管理」（成员管理迁入，方案 6.3）。
+   **六节名称与顺序不得改动**，改版只重排视觉、不改功能归属（规范 §4.1 原文）。
+
+   控件 ID 一个不动（§4.2 逐项映射表列的 22 个：imp-pick / imp-path / imp-go /
+   bk-go / sub-pick / sub-filter / sub-go / sub-status / upd-go / upd-status /
+   quiet-start / quiet-end / quiet-saved / sync-box / sync-url / sync-user /
+   sync-pass / sync-setup / sync-login / sync-logout / sync-now / sync-msg）。
+   全部事件绑定留在 bindView 内按同一批 ID 查找——改结构不改契约。 */
 function viewSettings() {
-  return `<div class="panel" style="padding:16px; max-width:960px">
-    <b>数据</b>
-    <div class="settings-row">
-      <span>导入存量 Excel</span>
-      <span><input type="text" id="imp-path" placeholder="…\\work_progress.xlsx" style="width:280px">
-      <button class="btn btn--ghost" id="imp-pick">选择文件…</button>
-      <button class="btn" id="imp-go">${ICO("import")}导入</button></span>
+  return `<div class="panel" style="padding:16px; max-width:1100px">
+    <div class="mini text-3" style="margin-bottom:12px">
+      服务器同步、数据管理、提醒送达与诊断。这里的每一项都作用于本机真实保存的状态。
     </div>
-    <div class="settings-row">
-      <span>立即全量备份</span>
-      <button class="btn btn--ghost" id="bk-go">立即备份</button>
-    </div>
-    <hr class="divider">
-    <b>情报采集（源站状态）</b>
-    ${viewIntelSites()}
-    <hr class="divider">
-    <b>补贴明细导出</b>（按筛选条件全量导出，非当前页）
-    ${viewSubsidyExport()}
-    <hr class="divider">
-    <b>提醒送达</b>
-    <div class="settings-row">
-      <span>免打扰时段</span>
-      <span style="display:flex;gap:8px;align-items:center">
-        <input type="time" id="quiet-start">
-        –
-        <input type="time" id="quiet-end">
-      </span>
-    </div>
-    <div class="settings-row">
-      <span class="mini" id="quiet-saved"></span>
-    </div>
-    <hr class="divider">
-    <b>服务器同步</b>
-    <div id="sync-box" style="min-height:24px"><span class="mini">读取同步状态中…</span></div>
-    <hr class="divider">
-    <b>更新</b>
-    <div class="settings-row">
-      <span>检查更新</span>
-      <span style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn--ghost" id="upd-go">检查更新</button>
-        <span class="mini" id="upd-status"></span>
-      </span>
+    <div class="settings-grid">
+
+      <!-- ① 数据 -->
+      <div class="set-card" data-set="data">
+        <div class="set-card__head">① 数据<span class="set-card__no">导入 / 备份</span></div>
+        <div class="settings-row">
+          <span>导入存量 Excel</span>
+          <span style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="imp-path" placeholder="…\\work_progress.xlsx" style="width:180px">
+            <button class="btn btn--ghost" id="imp-pick">选择文件…</button>
+            <button class="btn" id="imp-go">${ICO("import")}开始导入</button>
+          </span>
+        </div>
+        <div class="settings-row">
+          <span>立即全量备份</span>
+          <span><button class="btn btn--ghost" id="bk-go">立即备份</button></span>
+        </div>
+        <details class="set-card__hint" style="margin-top:8px">
+          <summary>改版说明</summary>
+          退役版块（晨报 / KPI / 单位 / 6 板块口径）的界面下掉，但本地库中的数据保留，
+          不迁库、不清库；升级后原有事项、线索、情报状态照常可读。
+        </details>
+      </div>
+
+      <!-- ② 情报采集（源站状态） -->
+      <div class="set-card" data-set="intel">
+        <div class="set-card__head">② 情报采集<span class="set-card__no">源站状态</span></div>
+        ${viewIntelSites()}
+      </div>
+
+      <!-- ③ 补贴明细导出 -->
+      <div class="set-card" data-set="subsidy">
+        <div class="set-card__head">③ 补贴明细导出<span class="set-card__no">按筛选条件全量导出</span></div>
+        ${viewSubsidyExport()}
+      </div>
+
+      <!-- ④ 提醒送达 -->
+      <div class="set-card" data-set="quiet">
+        <div class="set-card__head">④ 提醒送达<span class="set-card__no">免打扰时段</span></div>
+        <div class="settings-row">
+          <span>免打扰时段</span>
+          <span style="display:flex;gap:8px;align-items:center">
+            <input type="time" id="quiet-start">
+            –
+            <input type="time" id="quiet-end">
+          </span>
+        </div>
+        <div class="settings-row"><span class="mini" id="quiet-saved"></span></div>
+        <div class="set-card__hint">免打扰时段内不触发播报条与通知（默认 22:00–08:00）。</div>
+      </div>
+
+      <!-- ⑤ 服务器同步（独占整行：含三输入框与状态行，半列会折行） -->
+      <div class="set-card set-card--wide" data-set="sync">
+        <div class="set-card__head">⑤ 服务器同步<span class="set-card__no">多设备中枢</span></div>
+        <div id="sync-box" style="min-height:24px"><span class="mini">读取同步状态中…</span></div>
+      </div>
+
+      <!-- ⑥ 更新 -->
+      <div class="set-card set-card--wide" data-set="update">
+        <div class="set-card__head">⑥ 更新<span class="set-card__no">检查 / 下载 / 验签安装</span></div>
+        <div class="settings-row">
+          <span>当前版本 <span class="mini" id="upd-version">v3.4.0</span></span>
+          <span style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn--ghost" id="upd-go">检查更新</button>
+            <span class="mini" id="upd-status"></span>
+          </span>
+        </div>
+        <div class="set-card__hint">安装前须二次确认，安装包经 minisign/Ed25519 验签；公钥不匹配直接报错，不装未验签的包。</div>
+      </div>
+
+      <!-- 账号管理（成员管理迁入，分隔线示意「迁入项」） -->
+      <div class="settings-migrated" data-set="members">
+        ${viewMembersPanel()}
+      </div>
     </div>
   </div>`;
 }
@@ -660,18 +707,101 @@ function viewSettings() {
 // ── 视图：成员（F5 §3.3.1：可建、可改角色、可停用）──
 // 边界：这里只是本机库里的成员表，不引入登录与账号切换。角色决定谁能在成员页
 // 动手、以及「管理员可改任何人进度」这条判定。
+/* v3.4.0 · W7：成员行拆成三个 helper——设置页「账号管理」区（viewMembersPanel）
+   与独立成员视图（viewMembers，保留兼容旧入口）共用同一套行渲染，
+   避免两处各写一份导致徽标/操作按钮口径漂移。 */
+
+/** 角色徽标：管理员 / 普通成员。色 + 字双通道（不只靠颜色表达）。 */
+function roleBadge(m) {
+  return m.role === "admin"
+    ? '<span class="badge badge--admin">管理员</span>'
+    : '<span class="badge badge--member">普通成员</span>';
+}
+
+/** 状态徽标：启用中 / 已停用。停用后历史归属仍显示姓名，不转成「已删除用户」。 */
+function statusBadge(m) {
+  return m.status === "active"
+    ? '<span class="badge badge--active">启用中</span>'
+    : '<span class="badge badge--disabled">已停用</span>';
+}
+
+/** 行内操作：改角色 / 启用停用。
+ *  **保护规则前置拦截（规范 §4.3 三通道）**：当该行是「唯一启用中的管理员」时，
+ *  「降为成员」与「停用」两个按钮置为真实 disabled（不是只变灰还在响应点击），
+ *  右侧常驻 13px 警告文案，按钮 title 挂同文案 tooltip。
+ *  命令层（collab.rs）仍会独立拒绝——UI 只是第一道拦截，不是唯一防线。 */
+function memberOps(m, isAdmin, members) {
+  if (!isAdmin) return '<span class="mini text-3">需管理员</span>';
+  const activeAdmins = (members || []).filter((x) => x.role === "admin" && x.status === "active");
+  const isLastActiveAdmin = m.role === "admin" && m.status === "active" && activeAdmins.length <= 1;
+  const lockTip = "唯一启用中的管理员，需先新增另一名管理员";
+  const roleTo = m.role === "admin" ? "member" : "admin";
+  const roleZh = m.role === "admin" ? "降为成员" : "升为管理员";
+  const statusTo = m.status === "active" ? "disabled" : "active";
+  const statusZh2 = m.status === "active" ? "停用" : "恢复";
+  // 只有「降级」和「停用」两个方向会被最后一名管理员规则拦住；升为管理员 / 恢复不受限。
+  const roleLocked = isLastActiveAdmin && roleTo === "member";
+  const statusLocked = isLastActiveAdmin && statusTo === "disabled";
+  // 锁定时**保留 data-* 属性**、只加 disabled：属性仍在才说明「这还是同一个控件，
+  // 只是被禁用」，也才能验证恢复路径（加第二名管理员后重渲染解禁）。
+  // 真拦截靠 disabled —— 浏览器不会给 disabled 的 button 派发 click，
+  // 所以事件委托里的 closest() 永远不会命中它。
+  const btn = (locked, attrs, label) => locked
+    ? `<button class="btn btn--ghost chip--sm btn--locked" ${attrs} disabled title="${esc(lockTip)}" aria-disabled="true">${label}</button>`
+    : `<button class="btn btn--ghost chip--sm" ${attrs}>${label}</button>`;
+  const warn = (roleLocked || statusLocked)
+    ? `<span class="set-warn-inline" role="note">${esc(lockTip)}</span>`
+    : "";
+  return `${btn(roleLocked, `data-role-set="${esc(m.member_id)}" data-role="${roleTo}"`, roleZh)}
+    ${btn(statusLocked, `data-status-set="${esc(m.member_id)}" data-status="${statusTo}"`, statusZh2)}
+    ${warn}`;
+}
+
+/** 设置页「账号管理」区（成员管理迁入，规范 §4.3）。
+ *  只换入口位置、不改功能：member_list / member_create / member_set_role /
+ *  member_set_status 四个命令契约原样，行内操作不弹大窗、改动立即保存。 */
+function viewMembersPanel() {
+  const me = state.me;
+  const isAdmin = !!me && me.known && me.role === "admin";
+  const list = state.members || [];
+  const rows = list.map((m) => `<tr data-member-for="${esc(m.member_id)}">
+    <td><b>${esc(m.display_name)}</b>${m.display_name === (me?.member_name || "") ? ' <span class="mini text-3">（本机身份）</span>' : ""}</td>
+    <td>${roleBadge(m)}</td>
+    <td>${statusBadge(m)}</td>
+    <td class="mono mini">${esc((m.last_active_at || "").replace("T", " ").slice(0, 16) || "—")}</td>
+    <td>${memberOps(m, isAdmin, list)}</td>
+  </tr>`).join("");
+  // 空态与错误态文案分开：正常产品至少有 1 个账号，「未读取到账号数据」只用于读取失败。
+  const emptyRow = '<tr><td colspan="5"><span class="mini text-3">未读取到账号数据</span> <button class="btn btn--sm" id="member-retry">重试</button></td></tr>';
+  return `<div class="set-card__head">账号管理<span class="set-card__no">成员管理（迁入项 · 冻结保留）</span></div>
+    <div class="mini text-3" style="margin:6px 0 10px">
+      负责人按姓名匹配，因此不允许重名；最后一名启用中的管理员不能被降级或停用。
+    </div>
+    <div id="member-error"></div>
+    ${isAdmin ? `<div class="settings-row">
+      <span>新增成员</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="member-name" placeholder="姓名" style="width:150px" maxlength="32">
+        <select id="member-role"><option value="member">成员</option><option value="admin">管理员</option></select>
+        <button class="btn" id="member-add">添加成员</button>
+      </span>
+    </div>` : `<div class="mini text-3">当前身份不是管理员，只能查看。</div>`}
+    <table class="tbl" style="width:100%;margin-top:10px">
+      <thead><tr><th>姓名</th><th>角色</th><th>状态</th><th>最近活跃</th><th>操作</th></tr></thead>
+      <tbody>${rows || emptyRow}</tbody>
+    </table>
+    <div class="mini" id="member-msg" style="padding:8px 0"></div>`;
+}
+
 function viewMembers() {
   const me = state.me;
   const isAdmin = !!me && me.known && me.role === "admin";
   const rows = state.members.map((m) => `<tr data-member-for="${esc(m.member_id)}">
     <td><b>${esc(m.display_name)}</b>${m.display_name === (me?.member_name || "") ? ' <span class="mini text-3">（本机身份）</span>' : ""}</td>
-    <td>${m.role === "admin" ? "管理员" : "成员"}</td>
-    <td>${m.status === "active" ? "启用" : "已停用"}</td>
+    <td>${roleBadge(m)}</td>
+    <td>${statusBadge(m)}</td>
     <td class="mono mini">${esc((m.last_active_at || "").replace("T", " ").slice(0, 16) || "—")}</td>
-    <td>${isAdmin ? `<button class="btn btn--ghost chip--sm" data-role-set="${esc(m.member_id)}"
-        data-role="${m.role === "admin" ? "member" : "admin"}">${m.role === "admin" ? "降为成员" : "升为管理员"}</button>
-      <button class="btn btn--ghost chip--sm" data-status-set="${esc(m.member_id)}"
-        data-status="${m.status === "active" ? "disabled" : "active"}">${m.status === "active" ? "停用" : "恢复"}</button>` : '<span class="mini text-3">需管理员</span>'}</td>
+    <td>${memberOps(m, isAdmin, state.members)}</td>
   </tr>`).join("");
   return `<div class="panel" style="padding:16px; max-width:860px">
     <b>成员</b>
@@ -923,12 +1053,22 @@ function bindView() {
       if (!name) throw new Error("姓名必填");
       await invoke("member_create", { displayName: name, role });
     }));
+    $("#member-retry")?.addEventListener("click", async () => { await loadMembers(); render("reflow"); });
     return;
   }
 
   if (state.view === "settings") {
     bindIntelCollectControls(); // v3.3.1 设置页「情报采集（源站状态）」节
     bindSubsidyExportControls(); // v3.3.1 设置页「补贴明细导出」节
+    // v3.4.0 · W7：账号管理区（成员管理迁入）——添加成员与重试入口。
+    // 行内改角色/停用走模块作用域的 #main 委托（已拓宽守卫到 settings）。
+    $("#member-add")?.addEventListener("click", () => memberAct(async () => {
+      const name = $("#member-name").value.trim();
+      const role = $("#member-role").value;
+      if (!name) throw new Error("姓名必填");
+      await invoke("member_create", { displayName: name, role });
+    }));
+    $("#member-retry")?.addEventListener("click", async () => { await loadMembers(); render("reflow"); });
     const doImport = async (rawPath) => {
       const path = (rawPath || "").trim();
       if (!path) { alert("请先选择要导入的 Excel 文件（.xlsx）。"); return; }
@@ -1129,7 +1269,10 @@ const editMsg = (id, text, bad) => {
  *  不是「改一个字段」的反馈。回显文字在重渲染后会丢，调用方重渲染之后再补写。 */
 /** 读成员表：成员页与负责人下拉都靠它。失败不清空旧值——宁可显示上次的成员，
  *  也不要让负责人下拉突然变空、让人以为成员全被删了。 */
-/** 成员页写操作收口：成功后重拉成员表并重渲染；失败把后端原因原样显示在页脚。
+/** 成员页写操作收口：成功后重拉成员表并重渲染；失败把后端原因原样显示。
+ *  v3.4.0：错误分两处落位（规范 §4.3）——
+ *   - 保护规则类拒绝（最后一名管理员）→ 列表顶部红条「操作被拒绝：…」，**不改动列表状态**；
+ *   - 其余（重名、字段校验）→ 页脚 #member-msg 红字，添加区旁边也要能看到。
  *  放在模块作用域是刻意的——点击监听常驻 #main，视图重渲染后仍需复用同一套收口。 */
 async function memberAct(fn) {
   try {
@@ -1137,8 +1280,16 @@ async function memberAct(fn) {
     await loadMembers();
     render();
   } catch (e) {
+    const msg = String(e);
+    // 最后一名管理员保护：命令层拒绝后走顶部红条，避免用户以为"点了一下没反应"
+    if (msg.includes("最后一名") || msg.includes("管理员")) {
+      const bar = $("#member-error");
+      if (bar) {
+        bar.innerHTML = `<div class="set-error-bar" role="alert">操作被拒绝：${esc(msg)}</div>`;
+      }
+    }
     const el = $("#member-msg");
-    if (el) { el.textContent = String(e); el.style.color = "var(--red-fg)"; }
+    if (el) { el.textContent = msg; el.style.color = "var(--red-fg)"; }
   }
 }
 
@@ -1226,18 +1377,24 @@ $("#main").addEventListener("change", async (e) => {
   }
 });
 
-/* 成员页的角色 / 状态按钮：同样委托一次。
+/* 成员页 / 设置页「账号管理」的角色、状态按钮：同一套委托。
    必须注册在模块作用域：放进 bindView() 会随每次视图切换叠加一层，
-   切 N 次后点一次「停止」会连发 N 个请求。 */
+   切 N 次后点一次「停止」会连发 N 个请求。
+   守卫从「仅 members」拓宽为「members 或 settings」——v3.4.0 把成员管理迁进
+   设置页后，写操作发生在 settings 视图里；守卫不收容这层，按钮会静默失效。 */
 $("#main").addEventListener("click", (e) => {
-  if (state.view !== "members") return;
+  if (state.view !== "members" && state.view !== "settings") return;
   const roleBtn = e.target.closest("[data-role-set]");
   if (roleBtn) {
+    // 双保险：disabled 的 button 浏览端本就不会派发 click，但程序化 dispatchEvent
+    // 可以绕过 → 这里再拦一道，保证「视觉禁用 = 逻辑禁用」永远一致。
+    if (roleBtn.disabled) return;
     memberAct(() => invoke("member_set_role", { memberId: roleBtn.dataset.roleSet, role: roleBtn.dataset.role }));
     return;
   }
   const stBtn = e.target.closest("[data-status-set]");
   if (stBtn) {
+    if (stBtn.disabled) return;
     memberAct(() => invoke("member_set_status", { memberId: stBtn.dataset.statusSet, status: stBtn.dataset.status }));
   }
 });

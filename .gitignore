@@ -39,3 +39,6 @@ exports/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 前端守卫的 TAP 中间产物（CI 步骤生成后立即被 guard-gate.cjs 消费，不入库）
+apps-desktop-guards.tap
