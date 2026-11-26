@@ -348,11 +348,15 @@ test("门禁的门禁：CI 必须以目录口径跑全部桌面端守卫，不�
     const body = fs.readFileSync(path.join(ciDir, f), "utf8");
     if (!/apps\/desktop/.test(body)) continue;              // 与桌面端守卫无关的工作流，跳过
     if (!/node\s+--test/.test(body)) continue;               // 没跑 node 测试的，跳过
+    // 2026-11-25 追加授权适配：node --test 与目录通配之间现在有 --test-reporter=tap
+    // （GitHub runner 默认 spec 风格无汇总行，guard-gate 按 TAP 解析会误判，两条
+    // workflow 均已固定该 flag）。目录口径的语义不变——只是允许 flag 存在于命令里。
+    const FLAG = "(?:--[\\w-]+=[\\w]+\\s+)*";
     const dirLevel =
-      /node\s+--test\s+apps\/desktop\/\*\.test\.cjs/.test(body) ||
+      new RegExp(`node\\s+--test\\s+${FLAG}apps/desktop/\\*\\.test\\.cjs`).test(body) ||
       (/Get-ChildItem[^\n]*apps\/desktop/.test(body) && /node\s+--test\s+\$files/.test(body));
     // 点名式：node --test 后面直接跟具体文件名（而不是通配或变量）
-    const pointNamed = /node\s+--test\s+apps\/desktop\/(?!\*)[^\s*]+\.test\.cjs/.test(body);
+    const pointNamed = new RegExp(`node\\s+--test\\s+${FLAG}apps/desktop/(?!\\*)[^\\s*]+\\.test\\.cjs`).test(body);
     if (dirLevel) compliant.push(f);
     else if (pointNamed) violating.push(f);
   }
@@ -363,7 +367,8 @@ test("门禁的门禁：CI 必须以目录口径跑全部桌面端守卫，不�
 
   // 反向钉住：windows-release.yml 必须点名覆盖 intel-projects 所在目录（防有人把通配改回点名）
   const rel = fs.readFileSync(path.join(ciDir, "windows-release.yml"), "utf8");
-  assert.match(rel, /node\s+--test\s+apps\/desktop\/\*\.test\.cjs/,
+  // 同上：允许 --test-reporter=tap 等 flag 插在 --test 与通配之间（口径语义不变）
+  assert.match(rel, /node\s+--test\s+(?:--[\w-]+=[\w]+\s+)*apps\/desktop\/\*\.test\.cjs/,
     "windows-release.yml 的守卫步骤必须保持目录通配 apps/desktop/*.test.cjs");
 
   // 防空转：必须至少存在 1 处「多包 cargo test」写法，否则上面的通配检查可能形同虚设
