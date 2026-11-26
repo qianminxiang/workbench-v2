@@ -573,6 +573,18 @@
     if (view !== "project") closeAllOverlays();
   };
 
+  /** W5 待办版块穿透（§2.3）：待办行点项目名 → 打开该项目详情抽屉。 */
+  PV.openProjectById = function openProjectById(id) {
+    return openDrawer(id);
+  };
+
+  /** W5 §5.4 第二处建档入口：待办详情页顶部「手动建档」——与任务版块同一弹层
+   *  （openNoteModal mode=create），不出现第二个长得不一样的建档窗；
+   *  afterCreate 钩子在建档成功后回调，由待办侧生成一条指向该项目的待办。 */
+  PV.openCreateModal = function openCreateModal(cfg) {
+    openNoteModal({ mode: "create", afterCreate: cfg?.afterCreate });
+  };
+
   // ── 浮层骨架（遮罩按 §1.3：rgba(20,32,54,.34) + blur(5px)） ─────────────
   function overlay(cls, inner) {
     const mask = document.createElement("div");
@@ -773,6 +785,7 @@
       mode: cfg.mode, projectId: cfg.projectId || "",
       images: [], files: [],
       saving: false,
+      afterCreate: cfg.afterCreate || null, // §5.4：待办详情页建档成功钩子
     };
     const projOpts = () => (st.projects || [])
       .map((d) => `<option value="${esc(d.project.id)}"${d.project.id === m.projectId ? " selected" : ""}>${esc(d.project.name)}</option>`).join("");
@@ -910,6 +923,7 @@
       save.disabled = true;
       save.textContent = "保存中…";
       err.textContent = "";
+      const createdName = m.mode === "create" ? val("pname").value.trim() : ""; // §5.4 afterCreate 钩子入参
       try {
         let projectId = m.projectId;
         if (m.mode === "create") {
@@ -965,8 +979,13 @@
           } catch { /* 阶段回写失败不吞掉保存成功：记录已落库 */ }
         }
         close();
-        if (imgFail || fileFail) toast(`${imgFail} 张图片、${fileFail} 个附件未能保存，记录已保存`, 4000);
+        if (imgFail || fileFail) toast(`${imgFail} 张图片、${fileFail} 个附件未能保存`, 4000);
         else toast("已保存过程记录");
+        // §5.4 待办详情页建档：建档成功后由待办侧生成一条指向该项目的待办。
+        // 钩子失败不影响建档结果（记录已落库），也不吞掉后面的刷新。
+        if (m.mode === "create" && m.afterCreate) {
+          try { m.afterCreate(projectId, createdName); } catch { /* 钩子失败不回滚 */ }
+        }
         st.loaded = false; st.projects = null; // 强制重读列表
         load();
         if (st.drawer || m.mode === "create") {
