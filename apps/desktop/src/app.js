@@ -410,12 +410,18 @@ const MON_TABS = [
   {
     id: "douyin",
     title: "抖音舆情",
-    // enabled:false ⇒ 只渲染占位说明，不请求任何接口、不出演示条目
-    render: () => `<div class="mon-pane-placeholder">
+    // v3.4.0 巡检小闭环（附加条款④：默认关闭）：douyin-monitor.js 已加载且
+    // 用户在设置页开启时渲染真实巡检面板；未开启 / 模块缺失（老构建剥离 script）
+    // 都回落到下方原占位说明——占位文案与 W6 原版逐字一致（monitor-tabs 守卫依赖）。
+    render: () => (window.__DM && window.__DM.activated())
+      ? window.__DM.view()
+      : `<div class="mon-pane-placeholder">
       抖音舆情为有条件模块：接口额度待接入，人工巡检通道将先开放。<br>
       此页签只做占位，不预置任何演示数据；正式接入需试跑结论与拍板后另行实现。
     </div>`,
-    enabled: false,
+    // 页签角标跟随真实激活态（getter 每次渲染求值）：未开启显示（待接入），
+    // 开启后不再显示。摘除实验删掉整条注册项时 getter 一并消失，零残留。
+    get enabled() { return !!(window.__DM && window.__DM.activated()); },
   },
 ];
 
@@ -710,10 +716,13 @@ function viewSettings() {
         </details>
       </div>
 
-      <!-- ② 情报采集（源站状态） -->
+      <!-- ② 情报采集（源站状态 + 抖音舆情巡检小闭环） -->
       <div class="set-card" data-set="intel">
         <div class="set-card__head">② 情报采集<span class="set-card__no">源站状态</span></div>
         ${viewIntelSites()}
+        <!-- v3.4.0 抖音舆情巡检（免费通道）：六节名称与顺序不动（§4.1），纯加行；
+             模块缺失（老构建）时整块不渲染，零残留。 -->
+        ${window.__DM ? `<div id="dy-sec">${window.__DM.settingsRows()}</div>` : ""}
       </div>
 
       <!-- ③ 补贴明细导出 -->
@@ -1116,6 +1125,8 @@ function bindView() {
         render("reflow");
       });
     });
+    // v3.4.0 抖音舆情巡检小闭环：面板事件绑定在模块内（幂等，未激活时无面板直接返回）
+    if (window.__DM) window.__DM.bind();
     return;
   }
 
@@ -1133,6 +1144,7 @@ function bindView() {
   if (state.view === "settings") {
     bindIntelCollectControls(); // v3.3.1 设置页「情报采集（源站状态）」节
     bindSubsidyExportControls(); // v3.3.1 设置页「补贴明细导出」节
+    if (window.__DM) window.__DM.bindSettings(); // v3.4.0 抖音舆情巡检（② 卡内 dy-* 行）
     // v3.4.0 · W7：账号管理区（成员管理迁入）——添加成员与重试入口。
     // 行内改角色/停用走模块作用域的 #main 委托（已拓宽守卫到 settings）。
     $("#member-add")?.addEventListener("click", () => memberAct(async () => {
