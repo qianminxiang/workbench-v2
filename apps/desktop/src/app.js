@@ -247,6 +247,14 @@ function viewIntel() {
   return base + viewLeads();
 }
 
+/** v3.4.0 · W3 任务版块调度（与 viewIntel 同构）：本体在 project-views.js（window.__PV），
+ *  app.js 只做调度与缺模块降级，保持与并行实现轨的 git 隔离。 */
+function viewProject() {
+  return window.__PV
+    ? window.__PV.view()
+    : `<div class="panel"><div class="empty">任务版块未加载（project-views.js 缺失）。</div></div>`;
+}
+
 /** v3.3.1 · 源站状态小窗（设置页「情报采集」节渲染）：公告清单页删除后，
  *  原顶部采集统计条 + 源站状态表整体迁入设置页，站点行渲染逻辑原样保留。 */
 function viewIntelSites() {
@@ -681,6 +689,7 @@ const VIEWS = {
   brief: viewBrief, kanban: viewKanban, detail: viewDetail,
   timeline: viewTimeline, kpi: viewKpi, units: viewUnits,
   members: viewMembers,
+  project: viewProject, // v3.4.0 · W3 任务版块（第一入口，§2.1）
   intel: viewIntel, dealer: viewDealer,
   add: viewAdd, settings: viewSettings,
 };
@@ -689,6 +698,8 @@ function render(mode) {
   const main = $("#main");
   main.classList.remove("reflow-fade", "view-fade");
   main.innerHTML = (VIEWS[state.view] || viewBrief)();
+  // v3.4.0 · W3：切走任务版块时拆掉抽屉/弹层等浮层（PV.sync 幂等，其他视图无操作）
+  window.__PV?.sync(state.view);
   bindView();
   void main.offsetWidth; // 重启动画时间轴
   if (mode === "reflow") {
@@ -859,6 +870,12 @@ function bindView() {
         out.textContent = "添加失败：" + e;
       }
     });
+    return;
+  }
+
+  if (state.view === "project") {
+    // v3.4.0 · W3 任务版块：绑定与首载全部在模块内（project-views.js）。
+    if (window.__PV) window.__PV.bind();
     return;
   }
 

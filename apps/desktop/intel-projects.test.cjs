@@ -110,7 +110,11 @@ test("规格 §3：Calm Slate 令牌齐全、零 box-shadow、暗色全量覆盖
   // 全页零 box-shadow：本作用域内所有规则不得出现 box-shadow（规格 §3 硬结论 3）
   const start = tokens.indexOf("/* ══════════════════════════════════════════════════════════════════════════\n   v3.2.0 · 情报「项目进程」");
   assert.ok(start > 0, "找不到本视图的令牌/组件块起点注释");
-  const ipBlock = tokens.slice(start);
+  // v3.4.0 起 tokens.css 末尾追加了「任务版块 pv-*」（W3）块——那是另一套设计语言
+  // （磨砂浮层带投影档④，v3.4 规格 §5.4），不属于本视图作用域；零投影结论只约束
+  // 到 pv 块起点为止，不能扫到文件尾把别的作用域的投影算成本视图回归。
+  const pvStart = tokens.indexOf("任务版块 pv-*（W3");
+  const ipBlock = tokens.slice(start, pvStart > start ? pvStart : undefined);
   const shadows = [...ipBlock.matchAll(/box-shadow\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
   // 唯一允许的是显式 `none`（用来覆盖父级可能带来的阴影）
   const bad = shadows.filter((v) => v !== "none");
@@ -257,8 +261,11 @@ test("规格 §6 无障碍：动效尊重 prefers-reduced-motion、焦点环可�
 test("只做加法：不新增一级入口、不动既有导航与设置层", () => {
   const navBlock = html.slice(html.indexOf('<nav class="nav" id="nav"'), html.indexOf("</nav>"));
   const viewNames = [...navBlock.matchAll(/data-view="([a-z]+)"/g)].map((m) => m[1]);
-  assert.deepStrictEqual(viewNames, ["brief", "kanban", "detail", "timeline", "kpi", "units", "members", "intel", "dealer", "add", "settings"],
-    "一级入口必须仍是原来 11 个，不得为本视图新增入口（规格 §1 / A-4）");
+  // v3.4.0 规格 §2.1：任务（project）成为导航第一入口（共 12 项）。
+  // 本守卫原断言「11 项不变」已随 v3.4 过时——W1/W3 合入后改为钉住 12 项顺序，
+  // 防的是顺序漂移与再新增第 13 项，而不是拒绝规格内的演进。
+  assert.deepStrictEqual(viewNames, ["project", "brief", "kanban", "detail", "timeline", "kpi", "units", "members", "intel", "dealer", "add", "settings"],
+    "一级入口必须是 v3.4 的 12 项（project 第一位，§2.1），不得再增删或漂移");
   // 新模块必须在 app.js 之前引入（app.js 里 viewIntel 会读 window.__IP）
   const iMod = html.indexOf('<script src="intel-projects.js">');
   const iApp = html.indexOf('<script src="app.js">');

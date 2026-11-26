@@ -111,6 +111,8 @@
   </div>
 
   <nav class="nav" id="nav" style="margin-bottom:16px">
+    <!-- W3：任务为第一入口（规格 §2.1） -->
+    <button data-view="project"><svg class="ico" aria-hidden="true"><use href="#ic-radar"/></svg>任务</button>
     <button data-view="brief" aria-current="true"><svg class="ico" aria-hidden="true"><use href="#ic-bell"/></svg>晨报</button>
     <button data-view="kanban">看板</button>
     <button data-view="detail">明细</button>
@@ -198,6 +200,9 @@
      独立文件而不是并进 app.js：与并行数据接线轨（lib.rs / app.js 改动）
      在 git 上互不冲突；app.js 只在其 viewIntel() 里调度本模块。 -->
 <script src="intel-projects.js"></script>
+<!-- v3.4.0 · W3 任务版块（项目列表 + 详情抽屉 + 录入弹层 + 迁移向导）。
+     与 intel-projects.js 同构的独立模块：window.__PV，app.js 只调度。 -->
+<script src="project-views.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
