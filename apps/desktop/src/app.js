@@ -41,6 +41,8 @@ const state = {
   intelRun: null, // 采集中状态 {done,total,site}；null = 当前没有采集在跑。
                   // 存在 state 而不是只写在按钮上：切到别的舱段再切回来时
                   // 按钮是重建的，不恢复就会变回「立即刷新」，让人以为采集已经停了。
+  // v3.4.0 · W6：当前监控页签 id；undefined → activeMonTab 回落到第一个注册页签
+  monTab: undefined,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -65,7 +67,7 @@ async function reload() {
     await loadMembers();
     if (state.view === "intel") { await loadIntelByMode(); await loadLeads(); }
     else if (state.view === "settings") await loadIntel(); // v3.3.1 设置页新增「情报采集」节
-    if (state.view === "dealer") await loadDealer();
+    if (state.view === "dealer" || state.view === "monitor") await loadDealer(); // v3.4.0 · W6
     render();
     updateFilterCount();
   } catch (e) {
@@ -382,6 +384,67 @@ function viewLeads() {
 async function loadDealer() {
   try { state.dealer = await invoke("dealer_get"); } catch (_) { state.dealer = null; }
 }
+
+/* ── v3.4.0 · W6 监控版块：页签注册表驱动 ────────────────────────────────
+   《设计基线落地规范》§3.4 单内容区 + 页签切换（网点 / 抖音舆情），§3.4.1
+   规定抖音舆情是**有条件模块**：试跑结论 + 用户拍板前不实现真实接口，
+   界面只许出占位态与人工录入通道，不得预置演示条目。
+
+   **可摘除设计要求**（§3.4.1 原文 → 本实现的落法）：
+   1. 页签声明与渲染集中在这一个注册表 + 一个占位渲染函数 + 一组独立样式
+      （.mon-tabs / .mon-tab / .mon-pane-placeholder 在 tokens.css 里独立成块），
+      其余版块不直接引用 MON_TABS 内部函数；
+   2. 页签移除后布局自洽：**只剩一个页签时不渲染页签条**（下方 viewMonitor 里
+      的 `visible.length > 1` 判断），网点页签自动占满整宽，不留残影；
+   3. 摘除 = 从本表删掉 `{ id: "douyin", ... }` 这一条（外加删掉占位渲染分支），
+      零残留 —— 见 monitor-tabs.test.cjs 的「摘除后自洽」用例实际验证。
+   表里的 `enabled:false` 是**占位开关**，不是接口开关：没有真实抖音采集接口。 */
+const MON_TABS = [
+  {
+    id: "dealer",
+    title: "渠道网点",
+    // 页签体直接复用既有网点视图（v2.2 的 viewDealer），迁入不重写内容
+    render: () => viewDealer(),
+    enabled: true,
+  },
+  {
+    id: "douyin",
+    title: "抖音舆情",
+    // enabled:false ⇒ 只渲染占位说明，不请求任何接口、不出演示条目
+    render: () => `<div class="mon-pane-placeholder">
+      抖音舆情为有条件模块：接口额度待接入，人工巡检通道将先开放。<br>
+      此页签只做占位，不预置任何演示数据；正式接入需试跑结论与拍板后另行实现。
+    </div>`,
+    enabled: false,
+  },
+];
+
+/** 当前激活的监控页签。
+ *  注意 `enabled:false` 的语义是「内容未接入、只出占位」，**页签本身仍然可见**
+ *  （§3.4.1 要求界面出现「页签占位 + 人工录入通道」）——所以这里按 id 命中即可，
+ *  不按 enabled 过滤。真正被摘除时是整条注册项不存在，那时才会落到 dealer。 */
+function activeMonTab() {
+  const cur = MON_TABS.find((t) => t.id === state.monTab);
+  return cur || MON_TABS[0];
+}
+
+/** 监控版块总视图：页签条 + 当前页签内容。
+ *  **只剩一个页签时不渲染页签条**——这是 §3.4.1「摘除后布局自洽」的判据点：
+ *  抖音注册项被删掉后不能出现「只有一个页签的分段控件」，网点自动占满整宽。 */
+function viewMonitor() {
+  const tabs = MON_TABS;
+  const cur = activeMonTab();
+  // 页签条仅在 ≥2 个页签时出现（1 个 = 摘除后的形态，不渲染分段控件）
+  const tabBar = tabs.length > 1
+    ? `<div class="mon-tabs" role="tablist">
+        ${tabs.map((t) => `<button class="mon-tab" role="tab" data-mon-tab="${esc(t.id)}"
+          aria-selected="${String(t.id === cur?.id)}">${esc(t.title)}${t.enabled ? "" : ' <span class="mini text-3">（待接入）</span>'}</button>`).join("")}
+      </div>`
+    : "";
+  const body = cur ? cur.render() : `<div class="mon-pane-placeholder">监控版块暂无可用页签。</div>`;
+  return `${tabBar}${body}`;
+}
+
 function viewDealer() {
   const d = state.dealer;
   if (!d) {
@@ -832,6 +895,7 @@ const VIEWS = {
   project: viewProject, // v3.4.0 · W3 任务版块（第一入口，§2.1）
   todo: viewTodo,      // v3.4.0 · W5 待办版块（第二入口，§2.1）
   intel: viewIntel, dealer: viewDealer,
+  monitor: viewMonitor,        // v3.4.0 · W6：监控版块（页签容器，含网点 + 抖音占位）
   add: viewAdd, settings: viewSettings,
 };
 
@@ -1037,11 +1101,20 @@ function bindView() {
     return;
   }
 
-  if (state.view === "dealer") {
+  if (state.view === "dealer" || state.view === "monitor") {
+    // v3.4.0 · W6：dealer 深链兼容——旧链路（托盘 / 通知 gotoView("dealer")）仍能到达；
+    // 两者共用同一套网点刷新绑定。
     $("#dealer-refresh")?.addEventListener("click", async (e) => {
       e.target.textContent = "比对中…";
       e.target.disabled = true;
       try { await invoke("dealer_refresh"); } catch (err) { alert("启动比对失败：" + err); }
+    });
+    // 页签切换：只改 state.monTab 再重渲染（不重建监听，避免叠加）
+    document.querySelectorAll("[data-mon-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.monTab = btn.dataset.monTab;
+        render("reflow");
+      });
     });
     return;
   }
@@ -1520,9 +1593,9 @@ $("#nav").addEventListener("click", async (e) => {
   state.view = btn.dataset.view;
   document.querySelectorAll("#nav button").forEach((b) =>
     b.setAttribute("aria-current", String(b === btn)));
-  // FR-2/FR-1：进入情报/网点视图时按需拉取（离线失败只影响本视图）
+  // FR-2/FR-1：进入情报/监控视图时按需拉取（离线失败只影响本视图）
   if (state.view === "intel") { await loadIntelByMode(); await loadLeads(); }
-  if (state.view === "dealer") await loadDealer();
+  if (state.view === "dealer" || state.view === "monitor") await loadDealer(); // v3.4.0 · W6
   render();
 });
 // W8 退役清理：6 板块筛选条（板块 chips + filter-clear）已随退役入口下掉，
