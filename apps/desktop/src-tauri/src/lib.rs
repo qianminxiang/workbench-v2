@@ -1269,7 +1269,7 @@ fn todo_list(paths: State<Mutex<AppPaths>>, year: i32) -> Result<serde_json::Val
              WHERE w.fiscal_year = ?1 AND w.archived_at IS NULL AND w.deleted_at IS NULL
              ORDER BY (w.planned_end_date IS NULL), w.planned_end_date, w.seq_no",
         )
-        .map_err(err_string)?;
+        .map_err(|e| err_string(e.into()))?;
     let rows = stmt
         .query_map(rusqlite::params![year], |r| {
             let ext_json: String = r.get(8)?;
@@ -1290,7 +1290,7 @@ fn todo_list(paths: State<Mutex<AppPaths>>, year: i32) -> Result<serde_json::Val
                 "projectAlive": r.get::<_, i64>(13)? == 1,
             }))
         })
-        .map_err(err_string)?
+        .map_err(|e| err_string(e.into()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "todos": rows }))
@@ -1327,7 +1327,7 @@ fn todo_create(
             rusqlite::params![fiscal_year],
             |r| r.get(0),
         )
-        .map_err(err_string)?;
+        .map_err(|e| err_string(e.into()))?;
     conn.execute(
         "INSERT INTO work_item
            (id, seq_no, board_code, title,
@@ -1343,7 +1343,7 @@ fn todo_create(
         rusqlite::params![id, seq_no, title, due_date, owner,
                           project_id.unwrap_or_default(), fiscal_year, ts],
     )
-    .map_err(err_string)?;
+    .map_err(|e| err_string(e.into()))?;
     Ok(serde_json::json!({ "id": id }))
 }
 
