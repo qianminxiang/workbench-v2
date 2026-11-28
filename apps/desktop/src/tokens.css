@@ -298,6 +298,12 @@ body { background: var(--bg-canvas); min-height: 100vh; }
 .tbl th, .tbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-default); }
 .tbl th { color: var(--text-2); font-weight: 600; }
 
+/* 设置页可滚动区（2026-11-28 用户标注：源站表改滑动条、版块占面最小）：
+   限高 + 纵横双向滚动，表格内容超出一屏时表头跟随滚动，版块高度被压住。 */
+.set-scroll { max-height: 180px; overflow: auto; border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel, 8px); }
+.set-scroll .tbl th { position: sticky; top: 0; background: var(--bg-inset); z-index: 1; }
+
 /* ── 进度条（5 段 → 商务细条）：轨道 groove、点亮 ok ── */
 .gauge { display: flex; gap: 2px; height: 5px; align-items: center; }
 .gauge i { flex: 1; max-width: 26px; background: var(--bg-groove); border-radius: 2px; height: 4px;

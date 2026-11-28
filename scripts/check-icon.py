@@ -6,8 +6,9 @@
 #
 # ── 本脚本判什么、不判什么（边界四条，全部经实测，任一条被省略都会把门禁吹过头）──
 #
-#  1) 判「与已签署基线逐像素一致」——这是最强的断言，也是水印唯一能落地的地方。
-#     水印有没有，无法用亮度类数值代理判定：实测 r>200 与 r>=250 两种阈值在带印/无印
+# ── 已签署基线：alpha>=128 位掩膜，按 SHAPES 顺序位打包后 zlib 压缩再 base64 ──
+# 2026-11-28 重签（方案A·满铺宝蓝，用户 10:58 拍板）：六档全不透明 → 掩膜全 1（33 B / 44 B base64）。
+# 换图、改档位组合或任一像素变化后需再 --resign 重签。
 #     两版上给出完全相同的计数（徽章金属高光被算了进去）。故水印不按亮度判，而按
 #     「整档像素摘要必须等于已签署基线」。**代价：改图必须重签基线（见 --resign）。**
 #  2) 不判「基线本身对不对」。白名单只保证「和签署时一模一样」。基线自己带不带水印，
@@ -42,34 +43,28 @@
 import sys, struct, zlib, hashlib, os, base64
 
 PNG_SIG = b'\x89PNG\r\n\x1a\n'
-SOLID_LO = 25.0    # alpha>=128 像素占比下限（%）
-SOLID_HI = 90.0    # alpha>=128 像素占比上限（%）
+SOLID_LO = 98.0    # alpha>=128 像素占比下限（%）（方案A满铺基线：六档实测 100.00，留 2pp 冗余）
+SOLID_HI = 100.0   # alpha>=128 像素占比上限（%）（满铺 = 无透明区可侵蚀，率带只挡「意外抠出透明洞」）
 IOU_MIN = 99.5     # 与已签署基线掩膜的交并比下限（%）
 ALPHA_CUT = 128    # 掩膜二值化阈值：alpha>=128 记为「不透明」
 fail = []
 npass = 0
 
-# ── 已签署基线：7 档 alpha>=128 位掩膜，按 SHAPES 顺序位打包后 zlib 压缩再 base64 ──
-# 11272 B 原始位图 → 395 B 压缩 → 528 B base64。重建：zlib.decompress(base64.b64decode(...))
-SHAPES = ((256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (24, 24), (16, 16))
+# ── 已签署基线：alpha>=128 位掩膜，按 SHAPES 顺序位打包后 zlib 压缩再 base64 ──
+# 2026-11-28 重签（方案A·满铺宝蓝，用户 10:58 拍板）：六档全不透明 → 掩膜全 1（33 B / 44 B base64）。
+# 换图、改档位组合或任一像素变化后需再 --resign 重签。
+SHAPES = ((16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256))
 MASK_B64 = (
-    'eNrtmUmShCAQRSVY0DuOQN+Eo+HRPIpHqCULQlotcUgBceiIHn5WqZXxLMFv+IW0qhCIvx6N34Vc'
-    '827P/QrXEez5wl8xrhZuY1znm193IIo9y3bPexF4G+cy2/3VCdg41wfcBO7i3OdPf+EJPAuQ4jwr'
-    'z8ybFBc3uczKX8xfKa6+mevs5QUHBwcHBwcHBwcHBwcHBwcHB/8X/HWVP1S/a6/ywvrj3froUf21'
-    'uspZYf3YXeOmtP59VD8/qr83WfmSAvLi9wcue3rH7y+abPcSHWBVtgGFt1IIBOJ0fIYfH/TxwIhZ'
-    'CeI9kri5JuZoqJfRpw/NGTFnmnPinTQX5/P25v+RI0eO/Ef4Dd/7JfVT6rc7f+6Ifzvi75aMOVvy'
-    'PKjpiLqLjKARm8mQmmQ2Qa1wmYKaLLHl2BZtZ92q7XbS20z662l4I5+/zm5sZWx7vGX5ez3ePeI3'
-    'rptl/VaZDVqaE5L0xxG93LJflH14GY47HL/eTpzn+bO0w376zLfffz3Jtsrp+GegX/+HO/I='
+    'eNrtwTEBAAAAwqD+qWcLL6AAAAAAAAAAAAAAgJcBzciWxg=='
 )
 
 GOLDEN = {
-    256: '4a0464dc9ec484410cae3ae3d3653d96',
-    128: '921b5ce8bf64d9c4c9701ef247938de4',
-     64: '40524712bff6d01ae8a55d18309ef72e',
-     48: 'bca95035633705dbcb726eb5aac51cf9',
-     32: 'ef93012b7fcc83174f7c9d69868153d7',
-     24: '3c1fa9049153b8f2e647330120610e90',
-     16: '9c80d495fc37d3aca77d0a5933a03e69',
+    256: '15d19fa1f74c48c737913550e7ee2189',
+    128: '7e1bf2b774c6855f6968edf11fc4f904',
+     64: '3ef3949810c5bd3a43fdf891e9856676',
+     48: '70f1f3a972aaa507b63b2b1d4b7cd972',
+     32: 'c1ab97c6a6721c3333dd28f94023c4e8',
+     16: '7639a62f2c802302dfa1238548e18ae5',
 }
 
 
@@ -187,13 +182,14 @@ def main(ico_path, png_path, resign=False):
         w, h, cc, res, pl, bpp, sz, ofs = struct.unpack('<BBBBHHII', ico[off:off + 16])
         entries.append(dict(w=256 if w == 0 else w, h=256 if h == 0 else h,
                             bpp=bpp, sz=sz, ofs=ofs))
-    check(n == 7, 'ICO 目录项 = 7（实际 %d）' % n)
+    check(n == 6, 'ICO 目录项 = 6（实际 %d）' % n)
 
     sizes = [e['w'] for e in entries]
     # 顺序不判：Windows 对 ICO 目录项顺序并无强制要求（升序、降序、乱序都能正常取用），
     # 把「存储顺序」当合法性会误伤一个图形一像素没动的合法图标。这里只判齐全 + 无重复。
-    check(sorted(sizes) == [16, 24, 32, 48, 64, 128, 256],
-          '标准 7 档齐全且无重复：%s' % sizes)
+    # 2026-11-28 方案A（满铺宝蓝）：六档 = 16/32/48/64/128/256；24 档已随换图移除。
+    check(sorted(sizes) == [16, 32, 48, 64, 128, 256],
+          '标准 6 档齐全且无重复：%s' % sizes)
     check(all(e['bpp'] == 32 for e in entries), '全部 32bpp')
 
     # --- 2. 算术闭合 ---
@@ -228,11 +224,9 @@ def main(ico_path, png_path, resign=False):
         gated = sum(1 for v in a if v >= ALPHA_CUT)
         corners = [a[0], a[m['w'] - 1], a[(m['h'] - 1) * m['w']], a[m['h'] * m['w'] - 1]]
 
-        check(full > 0 and min(a) == 0 and solid < tot,
-              '%dx%d 有透明区：全透明 %d / 半透明 %d / 不透明 %d' % (e['w'], e['h'], full, semi, solid))
-        check(all(c == 0 for c in corners),
-              '%dx%d 四角 alpha = %s' % (e['w'], e['h'], corners))
-        # 率带：只判占比，不判图形完整（纯色方块也能过这一条，故不能单独成立）
+        # 2026-11-28 方案A（满铺宝蓝）：背景径向渐变铺满整幅（含四角），
+        # 无透明区是设计而非缺陷。透明底断言（有透明区/四角透明）与 PNG 同源断言一并移除，
+        # 率带改判「不透明率下限 98%」反向兜底（意外抠出透明洞会掉出率带被拦）。
         pct = gated / tot * 100.0
         check(SOLID_LO <= pct <= SOLID_HI,
               '%dx%d 不透明率 %.2f%% 落在 [%.0f%%, %.0f%%]（alpha>=%d %d/%d px）'
@@ -279,8 +273,8 @@ def main(ico_path, png_path, resign=False):
     # --- 4. 托盘图标一致性 ---
     m256 = png_meta(icon_png)
     check(m256['ctype'] == 6, 'icon.png 是 RGBA（color type %d）' % m256['ctype'])
-    check(m256['alpha'] is not None and m256['alpha'].count(0) > 0,
-          'icon.png 含全透明像素（托盘图标必须能融进浅色任务栏）')
+    # 2026-11-28 方案A：满铺底托盘图标（iconAsTemplate=false，见 tauri.conf.json），
+    # 「必须含全透明像素」断言随透明底设计一并移除。
     e256 = [e for e in entries if e['w'] == 256]
     if e256:
         blob256 = ico[e256[0]['ofs']:e256[0]['ofs'] + e256[0]['sz']]

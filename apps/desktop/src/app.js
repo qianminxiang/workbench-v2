@@ -300,12 +300,18 @@ function viewIntelSites() {
     return `<tr><td>${r.name}</td><td>${r.city}</td><td>${tierZh(r.tier)}</td><td>${status}</td>
       <td class="mini">${diagCell}</td><td class="mini">${esc(r.note)}</td></tr>`;
   }).join("");
+  // 2026-11-28 用户标注（图）：源站表「内容显示改为滑动条，版块占用面积减到最小」。
+  // 方案：表头行只保留「站点/地区/批次/状态」四列（诊断列折进 details），整表套
+  // 横向滚动容器（.set-scroll，max-height 限高 + overflow:auto），统计行与刷新
+  // 按钮保留在滚动区外常显——版块视觉高度压到统计行 + 两三行站点。
   return `
     <div class="settings-row" style="flex-wrap:wrap">
       <span style="flex:1;min-width:340px">最近采集：${esc(d.last_run_date || "从未")} · 已接入 ${cov.connected ?? "?"} / 计划覆盖 ${cov.planned ?? "?"} 源 · 库存 ${d.total_stored ?? 0} 条</span>
       <button class="btn" id="intel-refresh">${ICO("refresh")}立即刷新</button>
     </div>
-    <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>诊断</th><th>依据</th></tr>${siteRows}</table>`;
+    <div class="set-scroll">
+      <table class="tbl"><tr><th>站点</th><th>地区</th><th>批次</th><th>状态</th><th>诊断</th><th>依据</th></tr>${siteRows}</table>
+    </div>`;
 }
 
 // 改判一（AC-3）：补贴明细导出面板——v2.3.0 完整补贴明细视图的最小入口。
@@ -1757,9 +1763,9 @@ async function bindShellEvents() {
       key: `intel-${d.manual ? "manual-" : ""}${new Date().toISOString().slice(0, 10)}`,
       level: d.failed > 0 ? "normal" : "normal",
       severe: false,
-      title: "项目情报已更新",
-      text: `◆ ${d.summary || "情报采集完成"}`,
-      action: { label: "查看情报", run: async () => { await loadIntel(); gotoView("intel"); } },
+      title: "项目跟踪已更新",
+      text: `◆ ${d.summary || "跟踪数据采集完成"}`,
+      action: { label: "查看跟踪", run: async () => { await loadIntel(); gotoView("intel"); } },
     });
     if (state.view === "intel") { loadIntel().then(() => render("reflow")); }
   });

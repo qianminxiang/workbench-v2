@@ -863,7 +863,10 @@
         if (t && typeof t.invoke === "function") {
           try {
             const r = await t.invoke("manual_project_create", {
-              project_name: name, buyer: org,
+              // Tauri 2 运行时把后端 snake_case 参数名转为 camelCase 接收
+              // （实测报错：missing required key projectName），与 add_item 的
+              // planStartRaw 同一惯例；这里传 snake_case 会让后端永远收不到参数。
+              projectName: name, buyer: org,
               area: q("#ip-m-area").value.trim() || null,
               budget: q("#ip-m-budget").value.trim() || null,
               note: q("#ip-m-note").value.trim() || null,
@@ -1008,8 +1011,9 @@
         if (t && typeof t.invoke === "function" && manual.manual_id && cand.agg_key) {
           try {
             await t.invoke("manual_project_ignore", {
-              manual_id: manual.manual_id,
-              target_project: cand.agg_key,
+              // 参数名走 Tauri 2 camelCase 惯例（同 manual_project_create 修复）
+              manualId: manual.manual_id,
+              targetProject: cand.agg_key,
               actor: "ui",
             });
             IP.closeModal(); IP.load().then(() => rerender());
@@ -1029,8 +1033,9 @@
         if (t && typeof t.invoke === "function" && manual.manual_id && cand.agg_key) {
           try {
             await t.invoke("manual_project_merge", {
-              manual_id: manual.manual_id,
-              target_project: cand.agg_key,   // 公告聚合键（target 语义见 intel_manual::merge_into_announcement）
+              // 参数名走 Tauri 2 camelCase 惯例（同 manual_project_create 修复）
+              manualId: manual.manual_id,
+              targetProject: cand.agg_key,   // 公告聚合键（target 语义见 intel_manual::merge_into_announcement）
               name: cand.project_name,
               buyer: cand.org,
               actor: "ui",
