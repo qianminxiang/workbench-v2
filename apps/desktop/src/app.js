@@ -905,7 +905,7 @@ const VIEWS = {
   todo: viewTodo,      // v3.4.0 · W5 待办版块（第二入口，§2.1）
   intel: viewIntel, dealer: viewDealer,
   monitor: viewMonitor,        // v3.4.0 · W6：监控版块（页签容器，含网点 + 抖音占位）
-  add: viewAdd, settings: viewSettings,
+  settings: viewSettings, // v3.4.0 用户标注处理：「添加」导航入口删除；viewAdd 函数保留（W8 同款「只清入口不清数据」口径）
 };
 
 function render(mode) {

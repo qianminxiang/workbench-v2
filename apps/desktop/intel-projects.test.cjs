@@ -269,9 +269,10 @@ test("只做加法：不新增一级入口、不动既有导航与设置层", ()
   // v3.4.0 规格 §2.1：五版块导航。W8 退役清理后剩 6 个按钮；单B 并行两步：
   // W7 把「成员」入口迁入设置页（§4.3 账号管理），W6 把「网点」升级为「监控」
   // 页签容器（§3.4）。本守卫防的是顺序漂移与退役入口复活，而不是拒绝规格内的演进：
-  // W1/W3（12 项）→ W5（+todo，13 项）→ W8（-7 退役项，6 项）→ W6（dealer→monitor）。
-  assert.deepStrictEqual(viewNames, ["project", "todo", "intel", "monitor", "add", "settings"],
-    "一级入口必须是 W8 退役 + W6 网点→监控后的 6 项（project 第一、todo 第二，§2.1），退役入口不得复活");
+  // W1/W3（12 项）→ W5（+todo，13 项）→ W8（-7 退役项，6 项）→ W6（dealer→monitor）
+  // → v3.4.0 用户标注处理（2026-11-28）：「添加」入口删除，5 项定稿。
+  assert.deepStrictEqual(viewNames, ["project", "todo", "intel", "monitor", "settings"],
+    "一级入口必须是 W8 退役 + W6 网点→监控 + 添加入口删除后的 5 项（project 第一、todo 第二，§2.1），退役入口不得复活");
   // 迁入/升级必须是「移动」而不是「两处并存」——旧入口不得残留
   assert.ok(!viewNames.includes("members"), "「成员」入口必须已迁入设置页，不得在导航里残留");
   assert.ok(!viewNames.includes("dealer"), "「网点」已升级为「监控」，不得以旧名残留在导航");

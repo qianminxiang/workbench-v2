@@ -22,8 +22,9 @@ test("W8·入口下掉：七个退役入口不得出现在导航", () => {
   }
   const names = [...navBlock.matchAll(/data-view="([a-z]+)"/g)].map((m) => m[1]);
   // W6（单B）：「网点」升级为「监控」页签容器（design §3.4），退役后第 4 项为 monitor
-  assert.deepEqual(names, ["project", "todo", "intel", "monitor", "add", "settings"],
-    "退役后导航应为 6 项且顺序固定（W6 网点→监控）");
+  // v3.4.0 用户标注处理（2026-11-28）：「添加」导航入口删除，5 项定稿
+  assert.deepEqual(names, ["project", "todo", "intel", "monitor", "settings"],
+    "退役后导航应为 5 项且顺序固定（W6 网点→监控 + 添加入口删除）");
 });
 
 test("W8·6 板块筛选条下掉：宿主与模块级绑定必须同删（防 null 崩）", () => {
@@ -94,7 +95,9 @@ test("W8·不触碰设置页与并行单 B 分工面", () => {
   // 设置入口保留（B 的 W7 设置页六节重组在并行轨道，本 PR 不得动设置页）
   assert.ok(navBlock.includes('data-view="settings"'), "设置入口必须保留");
   assert.ok(app.includes("function viewSettings("), "viewSettings 必须原样保留");
-  // 快速添加入口保留（板块下拉去留属 add_item 语义议题，W8 不越界）
-  assert.ok(navBlock.includes('data-view="add"'), "添加入口必须保留");
-  assert.ok(app.includes('id="add-board"'), "快速添加的板块下拉保留（board_code NOT NULL 硬约束）");
+  // v3.4.0 用户标注处理（2026-11-28）：「添加」导航入口删除（viewAdd 视图函数与
+  // id="add-board" 板块下拉代码保留——W8 同款「只清入口不清数据」口径，防 add 深链与
+  // 未来恢复依赖；board_code NOT NULL 硬约束不受影响）
+  assert.ok(!navBlock.includes('data-view="add"'), "添加导航入口必须已删除");
+  assert.ok(app.includes('function viewAdd('), "viewAdd 视图函数保留（只清入口不清数据）");
 });
