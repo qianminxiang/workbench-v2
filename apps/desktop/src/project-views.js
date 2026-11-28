@@ -235,7 +235,7 @@
   const emptyCard = () => `
     <div class="pv-empty">
       <h3>从零开始，先建一条任务</h3>
-      <p>任务库为空。新建一条任务、记一次过程记录，全年河流、待办与提醒都会随真实操作长出来；网点与情报可在对应版块恢复采集快照。</p>
+      <p>任务库为空。新建一条任务、记一次过程记录，全年河流、待办与提醒都会随真实操作长出来；网点与跟踪可在对应版块恢复采集快照。</p>
       <div class="pv-steps">
         <span class="pv-steps-title">河流未起</span>
         <div class="pv-step"><b>01</b><span><i>新建任务</i>给项目一个名字、阶段与计划日期</span></div>
@@ -244,7 +244,7 @@
       </div>
       <div class="pv-empty-acts">
         <button class="btn" id="pv-new">新建任务</button>
-        <button class="btn btn--ghost" id="pv-go-intel">先建情报项目</button>
+        <button class="btn btn--ghost" id="pv-go-intel">先建跟踪项目</button>
       </div>
       <p class="rv-note">每一次保存的过程记录，都会成为河上的一张卡片；没有照片就不显示照片位。</p>
     </div>`;

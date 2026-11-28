@@ -272,7 +272,7 @@ function viewTodo() {
 function viewIntelSites() {
   const d = state.intel;
   if (!d) {
-    return `<div class="empty">情报数据加载失败（离线或数据库异常）。<br>
+    return `<div class="empty">跟踪数据加载失败（离线或数据库异常）。<br>
       <button class="btn" id="intel-refresh">${ICO("refresh")}重试</button></div>`;
   }
   const cov = d.coverage || {};
@@ -476,19 +476,25 @@ function viewDealer() {
       ${byCityList(d.added_by_city, "新增")}
       ${byCityList(d.removed_by_city, "消失")}`;
   }
-  // 三级树：安徽省 → 16 地市 → 区县（v2.2.1 改版：~190 家平铺观感是文字墙）
+  /* 2026-11-28 用户拍板方案C（全省分布）：每块「田」宽度=该市网点占比，
+     点地市下钻区县构成，一屏看全省格局（三级树观感被用户否决）。 */
   const tree = d.tree || [];
   const total = (d.snapshot || []).length;
+  const grand = tree.reduce((acc, c) => acc + c.total, 0) || 1;
+  const maxTotal = Math.max(...tree.map((c) => c.total), 1);
+  const cityBlocks = tree.map((c) => {
+    const w = Math.max(6, Math.round((c.total / grand) * 100));
+    const h = Math.max(10, Math.round((c.total / maxTotal) * 100));
+    const districts = (c.districts || []).map((dist) =>
+      `<li><span class="dl-bar" style="width:${Math.max(6, Math.round(((dist.count || 0) / (c.total || 1)) * 100))}%"></span>
+        <span class="dl-name">${esc(dist.district)}</span><span class="dl-count mono">${dist.count}</span></li>`).join("");
+    return `<details class="dl-city" style="flex-basis:${w}%">
+      <summary><span class="dl-city-name">${esc(c.city)}</span><span class="dl-badge mono">${c.total}</span></summary>
+      <ul class="dl-districts">${districts}</ul>
+    </details>`;
+  }).join("");
   const treeHtml = tree.length
-    ? tree.map((c, ci) => `
-      <details class="tree-city"${ci === 0 ? " open" : ""}>
-        <summary>${esc(c.city)}<span class="tree-badge">${c.total}</span></summary>
-        ${(c.districts || []).map((dist) => `
-        <details class="tree-district">
-          <summary>${esc(dist.district)}<span class="tree-badge">${dist.count}</span></summary>
-          <ul class="tree-dealers">${(dist.dealers || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
-        </details>`).join("")}
-      </details>`).join("")
+    ? `<div class="dl-province"><div class="dl-city-row">${cityBlocks}</div></div>`
     : '<div class="empty">暂无网点数据</div>';
   return `
   <div class="panel">
@@ -497,7 +503,7 @@ function viewDealer() {
     ${diffHtml}
   </div>
   <div class="panel">
-    <div><b>当前快照</b>（安徽省 · ${total} 家，按地市/区县归组）</div>
+    <div><b>全省分布</b>（安徽省 · ${total} 家，块宽=地市占比，点开看区县构成）</div>
     ${treeHtml}
   </div>`;
 }
@@ -724,7 +730,7 @@ function viewSettings() {
 
       <!-- ② 情报采集（源站状态 + 抖音舆情巡检小闭环） -->
       <div class="set-card" data-set="intel">
-        <div class="set-card__head">② 情报采集<span class="set-card__no">源站状态</span></div>
+        <div class="set-card__head">② 跟踪采集<span class="set-card__no">源站状态</span></div>
         ${viewIntelSites()}
         <!-- v3.4.0 抖音舆情巡检（免费通道）：六节名称与顺序不动（§4.1），纯加行；
              模块缺失（老构建）时整块不渲染，零残留。 -->

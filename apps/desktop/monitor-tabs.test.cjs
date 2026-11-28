@@ -70,7 +70,7 @@ test('W6 · 监控页签：网点 + 抖音两个页签，抖音标记"待接入"
     assert.strictEqual(main.querySelector('[data-mon-tab="dealer"]').getAttribute('aria-selected'), 'true');
     // 网点页签**正文**已渲染（不能只靠页签标题「渠道网点」判——那个标题本身就在页签按钮里，
     // 用它当判据会假绿：正文加载失败时页签标题仍在，测试照样通过。本轮实测踩过。）
-    assert.ok(main.textContent.includes('当前快照'), '默认页签应渲染网点正文（当前快照区块）');
+    assert.ok(main.textContent.includes('全省分布'), '默认页签应渲染网点正文（全省分布区块，方案C 改版 2026-11-28）');
     assert.ok(!main.textContent.includes('网点数据加载失败'), '默认页签不应停在加载失败态');
   } finally { closeAll(win); }
 });
@@ -145,8 +145,8 @@ test('W6 · 抖音可摘除：删掉注册项后监控自洽（不渲染单页�
 test('W6 · 网点页签内容与旧 viewDealer 一致（迁移不重写内容）', async () => {
   const { win, main } = await openMonitor();
   try {
-    // 网点页签应含 v2.2 既有要素：四件套 / 当前快照 / 上次比对
-    assert.ok(main.textContent.includes('当前快照'), '网点页签须保留「当前快照」区块');
+    // 网点页签应含既有要素：四件套 / 全省分布（方案C 改版后标题）/ 上次比对
+    assert.ok(main.textContent.includes('全省分布'), '网点页签须保留「全省分布」区块（2026-11-28 方案C）');
     assert.ok(main.textContent.includes('上次比对'), '网点页签须保留「上次比对」时间');
     assert.ok(main.querySelector('#dealer-refresh'), '网点刷新按钮须保留');
   } finally { closeAll(win); }

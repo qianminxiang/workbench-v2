@@ -17,7 +17,7 @@ const LIB = "src-tauri/src/lib.rs";
 test("W5 空态逐字（§3.2 实测文案）：标题、说明、两按钮，无示例待办", () => {
   const v = read(TV);
   assert.ok(v.includes("待办池是空的"), "空态标题被改动");
-  assert.ok(v.includes("待办不会凭空出现：给任务填下次计划日期、把情报推进到停滞、或从舆情与网点转一条待办，这里就会实时长出来。"), "空态正文被改动");
+  assert.ok(v.includes("待办不会凭空出现：给任务填下次计划日期、把跟踪推进到停滞、或从舆情与网点转一条待办，这里就会实时长出来。"), "空态正文被改动");
   assert.ok(v.includes('id="td-empty-create">手动建档'), "缺「手动建档」按钮");
   assert.ok(v.includes('id="td-empty-goto">去建任务'), "缺「去建任务」按钮");
   const noComments = v.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -54,7 +54,7 @@ test("W5 数据缺失态（§3.2）：原项目已不存在 → 置灰显示不�
 
 test("W5 来源徽标口径（§3.2 三类）：ext.v34_source 真实值才显示，人工新建不显示", () => {
   const v = read(TV);
-  assert.ok(/SRC_ZH = \{ intel: "情报导出", douyin: "舆情", dealer: "网点" \}/.test(v), "徽标三类缺失或被改");
+  assert.ok(/SRC_ZH = \{ intel: "跟踪导出", douyin: "舆情", dealer: "网点" \}/.test(v), "徽标三类缺失或被改");
   assert.ok(/t\.ext && t\.ext\.v34_source \? SRC_ZH/.test(v), "徽标必须认 ext.v34_source 真实值");
 });
 

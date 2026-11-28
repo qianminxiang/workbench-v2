@@ -24,7 +24,7 @@
   /** 闭环口径 = is_closed（Done | Cancelled）：已完成 / 已闭环 / 已取消。 */
   const CLOSED = new Set(["已完成", "已闭环", "已取消"]);
   /** 来源徽标（§3.2 三类）：ext.v34_source 的真实值才显示；人工新建无此键不显示。 */
-  const SRC_ZH = { intel: "情报导出", douyin: "舆情", dealer: "网点" };
+  const SRC_ZH = { intel: "跟踪导出", douyin: "舆情", dealer: "网点" };
   /** 状态筛选四档（§3.2：全部 / 待处理 / 今天到期 / 已闭环）。 */
   const FILTERS = [["all", "全部"], ["open", "待处理"], ["today", "今天到期"], ["closed", "已闭环"]];
   const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -129,7 +129,7 @@
       // 空态（§3.2 实测文案逐字）：不显示示例待办
       return `<section class="td-wrap"><div class="pv-empty">
         <h3>待办池是空的</h3>
-        <p>待办不会凭空出现：给任务填下次计划日期、把情报推进到停滞、或从舆情与网点转一条待办，这里就会实时长出来。</p>
+        <p>待办不会凭空出现：给任务填下次计划日期、把跟踪推进到停滞、或从舆情与网点转一条待办，这里就会实时长出来。</p>
         <div class="pv-empty-acts">
           <button class="btn" id="td-empty-create">手动建档</button>
           <button class="btn btn--ghost" id="td-empty-goto">去建任务</button>

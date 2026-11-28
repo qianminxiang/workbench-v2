@@ -976,7 +976,7 @@
         catch (_) { fail++; }
       }
       setFlash(fail ? "err" : "ok",
-        `${verdict === "core" ? "标记相关" : "标记无关"}：成功 ${ok} 条${fail ? `，失败 ${fail} 条（条目不在当前情报快照，需先刷新采集）` : ""}`);
+        `${verdict === "core" ? "标记相关" : "标记无关"}：成功 ${ok} 条${fail ? `，失败 ${fail} 条（条目不在当前跟踪快照，需先刷新采集）` : ""}`);
     }));
 
     q("#ip-export")?.addEventListener("click", () => {
